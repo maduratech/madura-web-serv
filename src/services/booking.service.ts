@@ -285,6 +285,7 @@ export async function getToursListing() {
     return {
       id: row.id,
       title: row.title,
+      flow_type: row.flow_type,
       destination,
       destination_slug: row.destination_ref?.slug || toSlug(destination),
       image_url:
