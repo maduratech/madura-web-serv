@@ -1,11 +1,20 @@
 import { Router } from 'express';
-import { getDestinationShowcase, getDestinations, getHeroSearchOptions, getTourDepartures, getTours } from '../../services/booking.service';
+import { getDestinationShowcase, getDestinations, getHeroSearchOptions, getTourDepartures, getTours, getToursListing } from '../../services/booking.service';
 
 const toursRouter = Router();
 
 toursRouter.get('/tours', async (_req, res, next) => {
   try {
     const tours = await getTours();
+    return res.json({ data: tours });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+toursRouter.get('/tours-listing', async (_req, res, next) => {
+  try {
+    const tours = await getToursListing();
     return res.json({ data: tours });
   } catch (error) {
     return next(error);

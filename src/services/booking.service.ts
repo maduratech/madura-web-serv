@@ -48,6 +48,21 @@ type DepartureRow = {
   departure_city?: { name?: string | null } | null;
 };
 
+type ListingTourRow = {
+  id: number;
+  title: string;
+  flow_type: 'enquiry' | 'booking' | 'both';
+  destination?: string | null;
+  destination_ref?: { name?: string | null; slug?: string | null; image_url?: string | null } | null;
+  departures?: Array<{
+    price?: number | null;
+    start_date?: string | null;
+    end_date?: string | null;
+    city?: string | null;
+    departure_city?: { name?: string | null } | null;
+  }> | null;
+};
+
 export async function getDestinations() {
   const { data, error } = await supabase
     .from('destinations')
@@ -207,6 +222,83 @@ export async function getTours() {
 
   rows.sort((a, b) => a.destination.localeCompare(b.destination) || a.title.localeCompare(b.title));
   return rows;
+}
+
+function toSlug(value: string): string {
+  return value.toLowerCase().trim().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-');
+}
+
+function inferCategory(title: string): 'Family' | 'Honeymoon' | 'Friends' | 'Group Tour' {
+  const lower = title.toLowerCase();
+  if (lower.includes('honeymoon') || lower.includes('couple')) return 'Honeymoon';
+  if (lower.includes('family')) return 'Family';
+  if (lower.includes('friends') || lower.includes('group')) return 'Friends';
+  return 'Group Tour';
+}
+
+function inferTheme(title: string): 'Adventure' | 'Culture' {
+  const lower = title.toLowerCase();
+  if (lower.includes('adventure') || lower.includes('trek') || lower.includes('safari')) return 'Adventure';
+  return 'Culture';
+}
+
+export async function getToursListing() {
+  const { data, error } = await supabase
+    .from('tours')
+    .select(
+      'id,title,flow_type,destination,destination_ref:destinations(name,slug,image_url),departures(price,start_date,end_date,city,departure_city:departure_cities(name))'
+    )
+    .order('title', { ascending: true });
+
+  if (error) {
+    throw new Error(`Failed to fetch tours listing: ${error.message}`);
+  }
+
+  const rows = (data || []) as ListingTourRow[];
+  return rows.map((row) => {
+    const departures = Array.isArray(row.departures) ? row.departures : [];
+    const prices = departures
+      .map((d) => Number(d.price))
+      .filter((price) => Number.isFinite(price) && price > 0);
+    const startEndPair = departures.find((d) => d.start_date && d.end_date);
+    let durationNights = 0;
+    if (startEndPair?.start_date && startEndPair?.end_date) {
+      const start = new Date(startEndPair.start_date);
+      const end = new Date(startEndPair.end_date);
+      const diffMs = end.getTime() - start.getTime();
+      durationNights = Math.max(1, Math.round(diffMs / (1000 * 60 * 60 * 24)));
+    } else {
+      durationNights = 3 + (row.id % 5);
+    }
+
+    const startingTwin = prices.length ? Math.min(...prices) : null;
+    const startingTriple = startingTwin ? Math.round(startingTwin * 0.9) : null;
+    const destination = row.destination_ref?.name || row.destination || 'Unknown';
+    const departureCities = Array.from(
+      new Set(
+        departures
+          .map((d) => String(d.departure_city?.name || d.city || '').trim())
+          .filter(Boolean)
+      )
+    );
+
+    return {
+      id: row.id,
+      title: row.title,
+      destination,
+      destination_slug: row.destination_ref?.slug || toSlug(destination),
+      image_url:
+        row.destination_ref?.image_url ||
+        'https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=900&q=80',
+      duration_nights: durationNights,
+      tour_category: inferCategory(row.title),
+      theme: inferTheme(row.title),
+      tour_type: row.flow_type === 'booking' ? 'Group Package' : 'Customizable',
+      starting_from_twin: startingTwin,
+      starting_from_triple: startingTriple,
+      departure_cities: departureCities,
+    };
+  });
 }
 
 export async function getTourDepartures(tourId: number) {
