@@ -21,6 +21,7 @@ export type CreateBookingInput = {
 };
 
 type DestinationRow = { id: number; name: string };
+type DepartureCityRow = { name: string };
 type TourRow = {
   id: number;
   title: string;
@@ -49,6 +50,42 @@ export async function getDestinations() {
   }
 
   return (data || []) as DestinationRow[];
+}
+
+export async function getDepartureCities() {
+  const { data, error } = await supabase
+    .from('departure_cities')
+    .select('name')
+    .order('name', { ascending: true });
+
+  if (!error) {
+    return ((data || []) as DepartureCityRow[]).map((row) => row.name).filter(Boolean);
+  }
+
+  const { data: fallback, error: fallbackError } = await supabase
+    .from('departures')
+    .select('city')
+    .order('city', { ascending: true });
+
+  if (fallbackError) {
+    throw new Error(`Failed to fetch departure cities: ${fallbackError.message}`);
+  }
+
+  return Array.from(
+    new Set(
+      (fallback || [])
+        .map((row: { city?: string | null }) => String(row.city || '').trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+export async function getHeroSearchOptions() {
+  const [destinations, departureFrom] = await Promise.all([getDestinations(), getDepartureCities()]);
+  return {
+    departureFrom,
+    goingTo: destinations.map((d) => d.name),
+  };
 }
 
 export async function getTours() {

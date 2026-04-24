@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getDestinations, getTourDepartures, getTours } from '../../services/booking.service';
+import { getDestinations, getHeroSearchOptions, getTourDepartures, getTours } from '../../services/booking.service';
 
 const toursRouter = Router();
 
@@ -16,6 +16,16 @@ toursRouter.get('/destinations', async (_req, res, next) => {
   try {
     const destinations = await getDestinations();
     return res.json({ data: destinations });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+toursRouter.get('/search-options', async (_req, res, next) => {
+  try {
+    const options = await getHeroSearchOptions();
+    res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
+    return res.json({ data: options });
   } catch (error) {
     return next(error);
   }
