@@ -53,6 +53,7 @@ type ListingTourRow = {
   title: string;
   flow_type: 'enquiry' | 'booking' | 'both';
   destination?: string | null;
+  tour_includes?: string[] | null;
   destination_ref?: { name?: string | null; slug?: string | null; image_url?: string | null } | null;
   departures?: Array<{
     price?: number | null;
@@ -246,7 +247,7 @@ export async function getToursListing() {
   const { data, error } = await supabase
     .from('tours')
     .select(
-      'id,title,flow_type,destination,destination_ref:destinations(name,slug,image_url),departures(price,start_date,end_date,city,departure_city:departure_cities(name))'
+      'id,title,flow_type,destination,tour_includes,destination_ref:destinations(name,slug,image_url),departures(price,start_date,end_date,city,departure_city:departure_cities(name))'
     )
     .order('title', { ascending: true });
 
@@ -298,7 +299,7 @@ export async function getToursListing() {
       starting_from_twin: startingTwin,
       starting_from_triple: startingTriple,
       departure_cities: departureCities,
-      tour_includes: ['Hotel', 'Meals', 'Flight', 'Sightseeing', 'Transport', 'Visa'],
+      tour_includes: Array.isArray(row.tour_includes) ? row.tour_includes : [],
     };
   });
 }
