@@ -18,6 +18,13 @@ export type CreateBookingInput = {
   children: number;
   infants: number;
   travellers: TravellerInput[];
+  manual_cost_summary?: {
+    currency: 'INR';
+    single: { per_adult: number; adults: number; children: Array<{ age: number; price: number }> };
+    double: { per_adult: number; adults: number; children: Array<{ age: number; price: number }> };
+    triple: { per_adult: number; adults: number; children: Array<{ age: number; price: number }> };
+    quad: { per_adult: number; adults: number; children: Array<{ age: number; price: number }> };
+  } | null;
 };
 
 type DestinationRow = { id: number; name: string };
@@ -409,16 +416,45 @@ export async function createBooking(input: CreateBookingInput) {
   const perPaxPrice = Number(departure.price || 0);
   const totalPrice = perPaxPrice * (adults + children + infants);
 
-  const { data: booking, error: bookingError } = await supabase
-    .from('bookings')
-    .insert({
-      tour_id: input.tour_id,
-      departure_id: input.departure_id,
-      total_price: totalPrice,
-      status: 'pending',
-    })
-    .select('id,tour_id,departure_id,total_price,status,created_at')
-    .single();
+  const bookingBaseInsert = {
+    tour_id: input.tour_id,
+    departure_id: input.departure_id,
+    total_price: totalPrice,
+    status: 'pending',
+  };
+
+  type BookingRow = { id: number; tour_id: number; departure_id: number; total_price: number; status: string };
+  let booking: BookingRow | null = null;
+  let bookingError: Error | null = null;
+
+  // Forward-compatible: save manual cost summary when column exists.
+  if (input.manual_cost_summary) {
+    const insertWithManualCost = await supabase
+      .from('bookings')
+      .insert({
+        ...bookingBaseInsert,
+        manual_cost_summary: input.manual_cost_summary,
+      })
+      .select('id,tour_id,departure_id,total_price,status,created_at')
+      .single();
+    booking = (insertWithManualCost.data as BookingRow | null) || null;
+    bookingError = insertWithManualCost.error || null;
+  }
+
+  // Backward-compatible fallback for environments where manual_cost_summary is not added yet.
+  if (!booking && bookingError && /column .*manual_cost_summary.* does not exist/i.test(String(bookingError.message || ''))) {
+    bookingError = null;
+  }
+
+  if (!booking && !bookingError) {
+    const baseInsert = await supabase
+      .from('bookings')
+      .insert(bookingBaseInsert)
+      .select('id,tour_id,departure_id,total_price,status,created_at')
+      .single();
+    booking = (baseInsert.data as BookingRow | null) || null;
+    bookingError = baseInsert.error || null;
+  }
 
   if (bookingError || !booking) {
     throw new Error(`Failed to create booking: ${bookingError?.message || 'Unknown error'}`);
