@@ -54,6 +54,11 @@ type ListingTourRow = {
   flow_type: 'enquiry' | 'booking' | 'both';
   destination?: string | null;
   tour_includes?: string[] | null;
+  twin_sharing_price?: number | null;
+  triple_sharing_price?: number | null;
+  single_sharing_price?: number | null;
+  child_with_bed_price?: number | null;
+  child_without_bed_price?: number | null;
   destination_ref?: { name?: string | null; slug?: string | null; image_url?: string | null } | null;
   departures?: Array<{
     price?: number | null;
@@ -244,12 +249,30 @@ function inferTheme(title: string): 'Adventure' | 'Culture' {
 }
 
 export async function getToursListing() {
-  const { data, error } = await supabase
+  let data: ListingTourRow[] | null = null;
+  let error: { message: string } | null = null;
+
+  const withDedicatedPricing = await supabase
     .from('tours')
     .select(
-      'id,title,flow_type,destination,tour_includes,destination_ref:destinations(name,slug,image_url),departures(price,start_date,end_date,city,departure_city:departure_cities(name))'
+      'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price,destination_ref:destinations(name,slug,image_url),departures(price,start_date,end_date,city,departure_city:departure_cities(name))'
     )
     .order('title', { ascending: true });
+
+  data = (withDedicatedPricing.data || []) as ListingTourRow[];
+  error = withDedicatedPricing.error;
+
+  // Backward compatible fallback until dedicated columns exist in all environments.
+  if (error && /column .* does not exist/i.test(String(error.message || ''))) {
+    const fallback = await supabase
+      .from('tours')
+      .select(
+        'id,title,flow_type,destination,tour_includes,destination_ref:destinations(name,slug,image_url),departures(price,start_date,end_date,city,departure_city:departure_cities(name))'
+      )
+      .order('title', { ascending: true });
+    data = (fallback.data || []) as ListingTourRow[];
+    error = fallback.error;
+  }
 
   if (error) {
     throw new Error(`Failed to fetch tours listing: ${error.message}`);
@@ -272,8 +295,12 @@ export async function getToursListing() {
       durationNights = 3 + (row.id % 5);
     }
 
-    const startingTwin = prices.length ? Math.min(...prices) : null;
-    const startingTriple = startingTwin ? Math.round(startingTwin * 0.9) : null;
+    const derivedTwin = prices.length ? Math.min(...prices) : null;
+    const startingTwin = row.twin_sharing_price ?? derivedTwin;
+    const startingTriple = row.triple_sharing_price ?? (startingTwin ? Math.round(startingTwin * 0.9) : null);
+    const startingSingle = row.single_sharing_price ?? null;
+    const startingChildWithBed = row.child_with_bed_price ?? null;
+    const startingChildWithoutBed = row.child_without_bed_price ?? null;
     const destination = row.destination_ref?.name || row.destination || 'Unknown';
     const departureCities = Array.from(
       new Set(
@@ -298,6 +325,9 @@ export async function getToursListing() {
       tour_type: row.flow_type === 'booking' ? 'Group Package' : 'Customizable',
       starting_from_twin: startingTwin,
       starting_from_triple: startingTriple,
+      starting_from_single: startingSingle,
+      starting_from_child_with_bed: startingChildWithBed,
+      starting_from_child_without_bed: startingChildWithoutBed,
       departure_cities: departureCities,
       tour_includes: Array.isArray(row.tour_includes) ? row.tour_includes : [],
     };
