@@ -298,6 +298,7 @@ export async function getToursListing() {
       starting_from_twin: startingTwin,
       starting_from_triple: startingTriple,
       departure_cities: departureCities,
+      tour_includes: ['Hotel', 'Meals', 'Flight', 'Sightseeing', 'Transport', 'Visa'],
     };
   });
 }
