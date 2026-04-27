@@ -8,7 +8,7 @@ export type TravellerInput = {
   last_name: string;
   phone: string;
   email: string;
-  pan: string;
+  pan?: string;
 };
 
 export type CreateBookingInput = {
@@ -400,8 +400,7 @@ function validateCreateBookingPayload(input: CreateBookingInput): void {
       !traveller.first_name ||
       !traveller.last_name ||
       !traveller.phone ||
-      !traveller.email ||
-      !traveller.pan
+      !traveller.email
     ) {
       throw new Error(`Traveller #${idx + 1} is missing required fields.`);
     }
@@ -482,7 +481,7 @@ export async function createBooking(input: CreateBookingInput) {
     last_name: traveller.last_name,
     phone: traveller.phone,
     email: traveller.email,
-    pan: traveller.pan,
+    pan: String(traveller.pan || ''),
   }));
 
   const { data: travellers, error: travellersError } = await supabase
