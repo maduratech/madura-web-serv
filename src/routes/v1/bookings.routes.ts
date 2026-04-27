@@ -17,7 +17,11 @@ bookingsRouter.post('/bookings', async (req, res, next) => {
 
 bookingsRouter.post('/enquiries', async (req, res, next) => {
   try {
-    const result = await createEnquiry(req.body);
+    const result = await createEnquiry({
+      ...req.body,
+      ip_address: req.ip,
+      user_agent: req.get('user-agent') || '',
+    });
     return res.status(201).json({
       message: 'Enquiry submitted successfully.',
       data: result,

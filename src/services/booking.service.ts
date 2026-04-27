@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabase';
 import { enqueueCrmBookingSync } from '../jobs/crm.job';
+import { env } from '../config/env';
 
 export type TravellerInput = {
   type: 'adult' | 'child' | 'infant';
@@ -29,17 +30,27 @@ export type CreateBookingInput = {
 
 export type CreateEnquiryInput = {
   tour_id: number;
-  departure_id: number;
+  departure_id?: number | null;
   name: string;
   phone: string;
   email?: string | null;
   departure_city: string;
   travel_date: string;
+  destination?: string;
+  duration?: string;
   adults: number;
   children: number;
   infants: number;
   rooms: number;
+  ip_address?: string;
+  user_agent?: string;
 };
+
+const enquiryIpRateMap = new Map<string, number[]>();
+const enquiryPhoneRateMap = new Map<string, number[]>();
+const ENQUIRY_RATE_WINDOW_MS = 10 * 60 * 1000; // 10 min
+const ENQUIRY_IP_RATE_MAX = 12;
+const ENQUIRY_PHONE_RATE_MAX = 5;
 
 type DestinationRow = { id: number; name: string };
 type DepartureCityRow = { name: string };
@@ -510,8 +521,8 @@ export async function createBooking(input: CreateBookingInput) {
 }
 
 function validateCreateEnquiryPayload(input: CreateEnquiryInput): void {
-  if (!input.tour_id || !input.departure_id) {
-    throw new Error('tour_id and departure_id are required.');
+  if (!input.tour_id) {
+    throw new Error('tour_id is required.');
   }
   if (!String(input.name || '').trim()) {
     throw new Error('name is required.');
@@ -527,12 +538,84 @@ function validateCreateEnquiryPayload(input: CreateEnquiryInput): void {
   }
 }
 
+function consumeSlidingWindowRateLimit(
+  store: Map<string, number[]>,
+  key: string,
+  limit: number,
+  windowMs: number
+) {
+  const now = Date.now();
+  const hits = (store.get(key) || []).filter((ts) => now - ts < windowMs);
+  if (hits.length >= limit) {
+    const retryAfterMs = windowMs - (now - hits[0]);
+    store.set(key, hits);
+    return { allowed: false, retryAfterMs };
+  }
+  hits.push(now);
+  store.set(key, hits);
+  return { allowed: true, retryAfterMs: 0 };
+}
+
+async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
+  const base = String(env.CRM_API_URL || '').replace(/\/$/, '');
+  if (!base) return;
+  const url = `${base}/api/lead/website`;
+
+  const payload = {
+    name: input.name,
+    phone: input.phone,
+    email: input.email || undefined,
+    destination: input.destination || undefined,
+    duration: input.duration || undefined,
+    date_of_travel: input.travel_date,
+    date: input.travel_date,
+    travel_date: input.travel_date,
+    enquiry: 'Tour Package',
+    starting_point: input.departure_city,
+    summary: `Website enquiry for ${input.destination || 'tour'} | ${input.duration || 'duration not specified'} | ${input.adults}A/${input.children}C | Rooms: ${input.rooms}`,
+    source: 'Website',
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`CRM lead forward failed: ${response.status} ${text}`.trim());
+  }
+}
+
 export async function createEnquiry(input: CreateEnquiryInput) {
   validateCreateEnquiryPayload(input);
 
-  const enquiryRow = {
+  const ipKey = String(input.ip_address || '').trim() || 'unknown';
+  const phoneKey = String(input.phone || '').trim().toLowerCase();
+
+  const ipRate = consumeSlidingWindowRateLimit(
+    enquiryIpRateMap,
+    ipKey,
+    ENQUIRY_IP_RATE_MAX,
+    ENQUIRY_RATE_WINDOW_MS
+  );
+  if (!ipRate.allowed) {
+    throw new Error('Too many enquiries from this network. Please try again later.');
+  }
+
+  const phoneRate = consumeSlidingWindowRateLimit(
+    enquiryPhoneRateMap,
+    phoneKey,
+    ENQUIRY_PHONE_RATE_MAX,
+    ENQUIRY_RATE_WINDOW_MS
+  );
+  if (!phoneRate.allowed) {
+    throw new Error('Too many enquiries for this phone number. Please try again shortly.');
+  }
+
+  const enquiryRowBase = {
     tour_id: input.tour_id,
-    departure_id: input.departure_id,
+    departure_id: input.departure_id || null,
     name: String(input.name || '').trim(),
     phone: String(input.phone || '').trim(),
     email: String(input.email || '').trim() || null,
@@ -543,28 +626,62 @@ export async function createEnquiry(input: CreateEnquiryInput) {
     infants: Number(input.infants || 0),
     rooms: Number(input.rooms || 0),
     status: 'new',
-    source: 'web',
+    source: 'Website',
   };
 
-  const primary = await supabase
+  const enquiryRowExtended = {
+    ...enquiryRowBase,
+    destination: String(input.destination || '').trim() || null,
+    duration: String(input.duration || '').trim() || null,
+  };
+
+  let primary = await supabase
     .from('enquiries')
-    .insert(enquiryRow)
+    .insert(enquiryRowExtended)
     .select('id,tour_id,departure_id,name,phone,email,departure_city,travel_date,adults,children,infants,rooms,status,created_at')
     .single();
 
+  if (primary.error && /column .* does not exist/i.test(String(primary.error.message || ''))) {
+    primary = await supabase
+      .from('enquiries')
+      .insert(enquiryRowBase)
+      .select('id,tour_id,departure_id,name,phone,email,departure_city,travel_date,adults,children,infants,rooms,status,created_at')
+      .single();
+  }
+
   if (!primary.error && primary.data) {
+    try {
+      await forwardEnquiryToCrm25(input);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[createEnquiry] CRM forward failed:', err);
+    }
     return { enquiry: primary.data };
   }
 
   // Fallback for environments using an alternate table name.
   if (primary.error && /relation .* does not exist/i.test(String(primary.error.message || ''))) {
-    const fallback = await supabase
+    let fallback = await supabase
       .from('booking_enquiries')
-      .insert(enquiryRow)
+      .insert(enquiryRowExtended)
       .select('id,tour_id,departure_id,name,phone,email,departure_city,travel_date,adults,children,infants,rooms,status,created_at')
       .single();
 
+    if (fallback.error && /column .* does not exist/i.test(String(fallback.error.message || ''))) {
+      fallback = await supabase
+        .from('booking_enquiries')
+        .insert(enquiryRowBase)
+        .select('id,tour_id,departure_id,name,phone,email,departure_city,travel_date,adults,children,infants,rooms,status,created_at')
+        .single();
+    }
+
     if (!fallback.error && fallback.data) {
+      try {
+        await forwardEnquiryToCrm25(input);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[createEnquiry] CRM forward failed:', err);
+      }
       return { enquiry: fallback.data };
     }
 
