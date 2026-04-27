@@ -27,6 +27,20 @@ export type CreateBookingInput = {
   } | null;
 };
 
+export type CreateEnquiryInput = {
+  tour_id: number;
+  departure_id: number;
+  name: string;
+  phone: string;
+  email?: string | null;
+  departure_city: string;
+  travel_date: string;
+  adults: number;
+  children: number;
+  infants: number;
+  rooms: number;
+};
+
 type DestinationRow = { id: number; name: string };
 type DepartureCityRow = { name: string };
 type DestinationShowcaseRow = {
@@ -494,5 +508,70 @@ export async function createBooking(input: CreateBookingInput) {
     booking,
     travellers: travellers || [],
   };
+}
+
+function validateCreateEnquiryPayload(input: CreateEnquiryInput): void {
+  if (!input.tour_id || !input.departure_id) {
+    throw new Error('tour_id and departure_id are required.');
+  }
+  if (!String(input.name || '').trim()) {
+    throw new Error('name is required.');
+  }
+  if (!String(input.phone || '').trim()) {
+    throw new Error('phone is required.');
+  }
+  if (!String(input.departure_city || '').trim()) {
+    throw new Error('departure_city is required.');
+  }
+  if (!String(input.travel_date || '').trim()) {
+    throw new Error('travel_date is required.');
+  }
+}
+
+export async function createEnquiry(input: CreateEnquiryInput) {
+  validateCreateEnquiryPayload(input);
+
+  const enquiryRow = {
+    tour_id: input.tour_id,
+    departure_id: input.departure_id,
+    name: String(input.name || '').trim(),
+    phone: String(input.phone || '').trim(),
+    email: String(input.email || '').trim() || null,
+    departure_city: String(input.departure_city || '').trim(),
+    travel_date: String(input.travel_date || '').trim(),
+    adults: Number(input.adults || 0),
+    children: Number(input.children || 0),
+    infants: Number(input.infants || 0),
+    rooms: Number(input.rooms || 0),
+    status: 'new',
+    source: 'web',
+  };
+
+  const primary = await supabase
+    .from('enquiries')
+    .insert(enquiryRow)
+    .select('id,tour_id,departure_id,name,phone,email,departure_city,travel_date,adults,children,infants,rooms,status,created_at')
+    .single();
+
+  if (!primary.error && primary.data) {
+    return { enquiry: primary.data };
+  }
+
+  // Fallback for environments using an alternate table name.
+  if (primary.error && /relation .* does not exist/i.test(String(primary.error.message || ''))) {
+    const fallback = await supabase
+      .from('booking_enquiries')
+      .insert(enquiryRow)
+      .select('id,tour_id,departure_id,name,phone,email,departure_city,travel_date,adults,children,infants,rooms,status,created_at')
+      .single();
+
+    if (!fallback.error && fallback.data) {
+      return { enquiry: fallback.data };
+    }
+
+    throw new Error(`Failed to create enquiry: ${fallback.error?.message || 'Unknown error'}`);
+  }
+
+  throw new Error(`Failed to create enquiry: ${primary.error?.message || 'Unknown error'}`);
 }
 
