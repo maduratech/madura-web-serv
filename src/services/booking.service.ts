@@ -653,6 +653,9 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
 
 export async function createEnquiry(input: CreateEnquiryInput) {
   validateCreateEnquiryPayload(input);
+  const isMissingTableError = (message: string) =>
+    /relation .* does not exist/i.test(message) ||
+    /could not find the table .* in the schema cache/i.test(message);
 
   const ipKey = String(input.ip_address || '').trim() || 'unknown';
   const phoneKey = String(input.phone || '').trim().toLowerCase();
@@ -770,7 +773,7 @@ export async function createEnquiry(input: CreateEnquiryInput) {
   }
 
   // Fallback for environments using an alternate table name.
-  if (primary.error && /relation .* does not exist/i.test(String(primary.error.message || ''))) {
+  if (primary.error && isMissingTableError(String(primary.error.message || ''))) {
     let fallback = await supabase
       .from('booking_enquiries')
       .insert(enquiryRowExtended)
@@ -831,7 +834,44 @@ export async function createEnquiry(input: CreateEnquiryInput) {
       return { enquiry: fallback.data };
     }
 
+    const fallbackMessage = String(fallback.error?.message || '');
+    if (isMissingTableError(fallbackMessage)) {
+      try {
+        // eslint-disable-next-line no-console
+        console.info('[tour-enquiry] forwarding to CRM without DB table', {
+          tourId: input.tour_id,
+          destination: String(input.destination || '').trim() || null,
+          hasLink: Boolean(String(input.page_url || '').trim()),
+        });
+        await forwardEnquiryToCrm25(input);
+        // eslint-disable-next-line no-console
+        console.info('[tour-enquiry] CRM forward success (no DB table)');
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[tour-enquiry] CRM forward failed (no DB table):', err);
+      }
+      return { enquiry: null };
+    }
+
     throw new Error(`Failed to create enquiry: ${fallback.error?.message || 'Unknown error'}`);
+  }
+
+  if (primary.error && isMissingTableError(String(primary.error.message || ''))) {
+    try {
+      // eslint-disable-next-line no-console
+      console.info('[tour-enquiry] forwarding to CRM without DB table', {
+        tourId: input.tour_id,
+        destination: String(input.destination || '').trim() || null,
+        hasLink: Boolean(String(input.page_url || '').trim()),
+      });
+      await forwardEnquiryToCrm25(input);
+      // eslint-disable-next-line no-console
+      console.info('[tour-enquiry] CRM forward success (no DB table)');
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[tour-enquiry] CRM forward failed (no DB table):', err);
+    }
+    return { enquiry: null };
   }
 
   throw new Error(`Failed to create enquiry: ${primary.error?.message || 'Unknown error'}`);
