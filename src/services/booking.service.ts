@@ -608,6 +608,13 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
     starting_point: input.departure_city,
     summary: `Website enquiry for ${input.destination || 'tour'} | ${input.duration || 'duration not specified'} | ${input.adults}A/${input.children}C | Rooms: ${input.rooms}`,
     source: 'website',
+    notes: [
+      {
+        type: 'note',
+        content: `Customer needs assistance for the ${input.destination || 'selected'} tour booking.`,
+        timestamp: new Date().toISOString(),
+      },
+    ],
   };
 
   const sourceCandidates: Array<string | null> = ['website', 'Website', 'WEB', null];
