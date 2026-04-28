@@ -690,7 +690,7 @@ export async function createEnquiry(input: CreateEnquiryInput) {
     infants: Number(input.infants || 0),
     rooms: Number(input.rooms || 0),
     status: 'new',
-    source: 'Website',
+    source: 'website',
   };
 
   const enquiryRowExtended = {
