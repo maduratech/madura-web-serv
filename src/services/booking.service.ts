@@ -42,6 +42,7 @@ export type CreateEnquiryInput = {
   children: number;
   infants: number;
   rooms: number;
+  room_details?: Array<{ adults: number; children: number; child_ages?: number[] }>;
   tour_title?: string;
   page_url?: string;
   ip_address?: string;
@@ -614,6 +615,19 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
     starting_point: input.departure_city,
     summary: `Website enquiry for ${input.destination || 'tour'} | ${input.duration || 'duration not specified'} | ${input.adults}A/${input.children}C | Rooms: ${input.rooms}`,
     source: 'website',
+    adults: input.adults,
+    children: input.children,
+    babies: input.infants || 0,
+    rooms: input.rooms,
+    room_details:
+      Array.isArray(input.room_details) && input.room_details.length > 0
+        ? input.room_details
+        : [
+            {
+              adults: input.adults,
+              children: input.children,
+            },
+          ],
     notes: [
       {
         type: 'note',
