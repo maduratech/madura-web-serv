@@ -599,6 +599,23 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
   const url = `${base}/api/lead/website`;
 
   const hasTourTitle = String(input.tour_title || '').trim().length > 0;
+  const normalizedRoomDetails =
+    Array.isArray(input.room_details) && input.room_details.length > 0
+      ? input.room_details.map((room) => ({
+          adults: Number(room?.adults || 0),
+          children: Number(room?.children || 0),
+          child_ages: Array.isArray(room?.child_ages)
+            ? room.child_ages.map((age) => Number(age)).filter((age) => Number.isFinite(age) && age > 0)
+            : [],
+        }))
+      : [
+          {
+            adults: Number(input.adults || 0),
+            children: Number(input.children || 0),
+            child_ages: [],
+          },
+        ];
+  const normalizedChildAges = normalizedRoomDetails.flatMap((room) => room.child_ages || []);
   const noteContent = hasTourTitle
     ? `Customer needs assistance for the tour booking - "${String(input.tour_title || '').trim()}". Link: ${String(input.page_url || '').trim() || 'Not provided'}`
     : `Customer needs assistance for the ${input.destination || 'selected'} tour booking.`;
@@ -612,22 +629,18 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
     date: input.travel_date,
     travel_date: input.travel_date,
     enquiry: 'Tour Package',
+    services: ['Tour Package'],
     starting_point: input.departure_city,
     summary: `Website enquiry for ${input.destination || 'tour'} | ${input.duration || 'duration not specified'} | ${input.adults}A/${input.children}C | Rooms: ${input.rooms}`,
     source: 'website',
     adults: input.adults,
     children: input.children,
     babies: input.infants || 0,
+    travelers: input.adults,
+    passengers: input.adults,
     rooms: input.rooms,
-    room_details:
-      Array.isArray(input.room_details) && input.room_details.length > 0
-        ? input.room_details
-        : [
-            {
-              adults: input.adults,
-              children: input.children,
-            },
-          ],
+    room_details: normalizedRoomDetails,
+    children_ages: normalizedChildAges,
     notes: [
       {
         type: 'note',
