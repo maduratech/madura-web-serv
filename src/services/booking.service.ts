@@ -595,7 +595,7 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
   if (!base) return;
   const url = `${base}/api/lead/website`;
 
-  const payload = {
+  const basePayload = {
     name: input.name,
     phone: input.phone,
     email: input.email || undefined,
@@ -607,18 +607,34 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
     enquiry: 'Tour Package',
     starting_point: input.departure_city,
     summary: `Website enquiry for ${input.destination || 'tour'} | ${input.duration || 'duration not specified'} | ${input.adults}A/${input.children}C | Rooms: ${input.rooms}`,
-    source: 'Website',
   };
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
+  const sourceCandidates: Array<string | null> = ['Website', 'website', 'WEB', null];
+  let lastError = '';
+
+  for (const source of sourceCandidates) {
+    const payload = source ? { ...basePayload, source } : basePayload;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (response.ok) return;
+
     const text = await response.text().catch(() => '');
-    throw new Error(`CRM lead forward failed: ${response.status} ${text}`.trim());
+    const errorText = `CRM lead forward failed: ${response.status} ${text}`.trim();
+    const isSourceEnumError = /invalid input value for enum lead_source_enum/i.test(text);
+    if (isSourceEnumError) {
+      // eslint-disable-next-line no-console
+      console.warn('[website-lead] CRM rejected source, retrying with fallback source', { attemptedSource: source ?? 'none' });
+      lastError = errorText;
+      continue;
+    }
+
+    throw new Error(errorText);
   }
+
+  throw new Error(lastError || 'CRM lead forward failed.');
 }
 
 export async function createEnquiry(input: CreateEnquiryInput) {
@@ -782,7 +798,10 @@ export async function createWebsiteLead(input: CreateWebsiteLeadInput) {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('[website-lead] CRM forward failed', err);
-    throw err;
+    return {
+      success: true,
+      forwarded: false,
+    };
   }
 
   return {
