@@ -607,9 +607,10 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
     enquiry: 'Tour Package',
     starting_point: input.departure_city,
     summary: `Website enquiry for ${input.destination || 'tour'} | ${input.duration || 'duration not specified'} | ${input.adults}A/${input.children}C | Rooms: ${input.rooms}`,
+    source: 'website',
   };
 
-  const sourceCandidates: Array<string | null> = ['Website', 'website', 'WEB', null];
+  const sourceCandidates: Array<string | null> = ['website', 'Website', 'WEB', null];
   let lastError = '';
 
   for (const source of sourceCandidates) {
