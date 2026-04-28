@@ -698,6 +698,16 @@ export async function createEnquiry(input: CreateEnquiryInput) {
     destination: String(input.destination || '').trim() || null,
     duration: String(input.duration || '').trim() || null,
   };
+  const enquiryRowBaseUpperSource = {
+    ...enquiryRowBase,
+    source: 'Website',
+  };
+  const enquiryRowExtendedUpperSource = {
+    ...enquiryRowExtended,
+    source: 'Website',
+  };
+  const { source: _sourceBase, ...enquiryRowBaseWithoutSource } = enquiryRowBase;
+  const { source: _sourceExtended, ...enquiryRowExtendedWithoutSource } = enquiryRowExtended;
 
   let primary = await supabase
     .from('enquiries')
@@ -711,6 +721,34 @@ export async function createEnquiry(input: CreateEnquiryInput) {
       .insert(enquiryRowBase)
       .select('id,tour_id,departure_id,name,phone,email,departure_city,travel_date,adults,children,infants,rooms,status,created_at')
       .single();
+  }
+  if (primary.error && /invalid input value for enum .*source/i.test(String(primary.error.message || ''))) {
+    primary = await supabase
+      .from('enquiries')
+      .insert(enquiryRowExtendedUpperSource)
+      .select('id,tour_id,departure_id,name,phone,email,departure_city,travel_date,adults,children,infants,rooms,status,created_at')
+      .single();
+    if (primary.error && /column .* does not exist/i.test(String(primary.error.message || ''))) {
+      primary = await supabase
+        .from('enquiries')
+        .insert(enquiryRowBaseUpperSource)
+        .select('id,tour_id,departure_id,name,phone,email,departure_city,travel_date,adults,children,infants,rooms,status,created_at')
+        .single();
+    }
+  }
+  if (primary.error && /invalid input value for enum .*source/i.test(String(primary.error.message || ''))) {
+    primary = await supabase
+      .from('enquiries')
+      .insert(enquiryRowExtendedWithoutSource)
+      .select('id,tour_id,departure_id,name,phone,email,departure_city,travel_date,adults,children,infants,rooms,status,created_at')
+      .single();
+    if (primary.error && /column .* does not exist/i.test(String(primary.error.message || ''))) {
+      primary = await supabase
+        .from('enquiries')
+        .insert(enquiryRowBaseWithoutSource)
+        .select('id,tour_id,departure_id,name,phone,email,departure_city,travel_date,adults,children,infants,rooms,status,created_at')
+        .single();
+    }
   }
 
   if (!primary.error && primary.data) {
@@ -745,6 +783,34 @@ export async function createEnquiry(input: CreateEnquiryInput) {
         .insert(enquiryRowBase)
         .select('id,tour_id,departure_id,name,phone,email,departure_city,travel_date,adults,children,infants,rooms,status,created_at')
         .single();
+    }
+    if (fallback.error && /invalid input value for enum .*source/i.test(String(fallback.error.message || ''))) {
+      fallback = await supabase
+        .from('booking_enquiries')
+        .insert(enquiryRowExtendedUpperSource)
+        .select('id,tour_id,departure_id,name,phone,email,departure_city,travel_date,adults,children,infants,rooms,status,created_at')
+        .single();
+      if (fallback.error && /column .* does not exist/i.test(String(fallback.error.message || ''))) {
+        fallback = await supabase
+          .from('booking_enquiries')
+          .insert(enquiryRowBaseUpperSource)
+          .select('id,tour_id,departure_id,name,phone,email,departure_city,travel_date,adults,children,infants,rooms,status,created_at')
+          .single();
+      }
+    }
+    if (fallback.error && /invalid input value for enum .*source/i.test(String(fallback.error.message || ''))) {
+      fallback = await supabase
+        .from('booking_enquiries')
+        .insert(enquiryRowExtendedWithoutSource)
+        .select('id,tour_id,departure_id,name,phone,email,departure_city,travel_date,adults,children,infants,rooms,status,created_at')
+        .single();
+      if (fallback.error && /column .* does not exist/i.test(String(fallback.error.message || ''))) {
+        fallback = await supabase
+          .from('booking_enquiries')
+          .insert(enquiryRowBaseWithoutSource)
+          .select('id,tour_id,departure_id,name,phone,email,departure_city,travel_date,adults,children,infants,rooms,status,created_at')
+          .single();
+      }
     }
 
     if (!fallback.error && fallback.data) {
