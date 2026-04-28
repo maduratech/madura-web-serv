@@ -42,6 +42,8 @@ export type CreateEnquiryInput = {
   children: number;
   infants: number;
   rooms: number;
+  tour_title?: string;
+  page_url?: string;
   ip_address?: string;
   user_agent?: string;
 };
@@ -595,6 +597,10 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
   if (!base) return;
   const url = `${base}/api/lead/website`;
 
+  const hasTourTitle = String(input.tour_title || '').trim().length > 0;
+  const noteContent = hasTourTitle
+    ? `Customer needs assistance for the tour booking - "${String(input.tour_title || '').trim()}". Link: ${String(input.page_url || '').trim() || 'Not provided'}`
+    : `Customer needs assistance for the ${input.destination || 'selected'} tour booking.`;
   const basePayload = {
     name: input.name,
     phone: input.phone,
@@ -611,7 +617,7 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
     notes: [
       {
         type: 'note',
-        content: `Customer needs assistance for the ${input.destination || 'selected'} tour booking.`,
+        content: noteContent,
         timestamp: new Date().toISOString(),
       },
     ],
@@ -709,10 +715,18 @@ export async function createEnquiry(input: CreateEnquiryInput) {
 
   if (!primary.error && primary.data) {
     try {
+      // eslint-disable-next-line no-console
+      console.info('[tour-enquiry] forwarding to CRM', {
+        tourId: input.tour_id,
+        destination: String(input.destination || '').trim() || null,
+        hasLink: Boolean(String(input.page_url || '').trim()),
+      });
       await forwardEnquiryToCrm25(input);
+      // eslint-disable-next-line no-console
+      console.info('[tour-enquiry] CRM forward success');
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.error('[createEnquiry] CRM forward failed:', err);
+      console.error('[tour-enquiry] CRM forward failed:', err);
     }
     return { enquiry: primary.data };
   }
@@ -735,10 +749,18 @@ export async function createEnquiry(input: CreateEnquiryInput) {
 
     if (!fallback.error && fallback.data) {
       try {
+        // eslint-disable-next-line no-console
+        console.info('[tour-enquiry] forwarding to CRM', {
+          tourId: input.tour_id,
+          destination: String(input.destination || '').trim() || null,
+          hasLink: Boolean(String(input.page_url || '').trim()),
+        });
         await forwardEnquiryToCrm25(input);
+        // eslint-disable-next-line no-console
+        console.info('[tour-enquiry] CRM forward success');
       } catch (err) {
         // eslint-disable-next-line no-console
-        console.error('[createEnquiry] CRM forward failed:', err);
+        console.error('[tour-enquiry] CRM forward failed:', err);
       }
       return { enquiry: fallback.data };
     }
