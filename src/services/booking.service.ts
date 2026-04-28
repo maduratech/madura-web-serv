@@ -789,6 +789,8 @@ export async function createEnquiry(input: CreateEnquiryInput) {
         destination: String(input.destination || '').trim() || null,
         hasLink: Boolean(String(input.page_url || '').trim()),
       });
+      // eslint-disable-next-line no-console
+      console.info(`[tour-enquiry] passenger snapshot: ${input.adults}A/${input.children}C, rooms=${input.rooms}`);
       await forwardEnquiryToCrm25(input);
       // eslint-disable-next-line no-console
       console.info('[tour-enquiry] CRM forward success');
@@ -851,6 +853,8 @@ export async function createEnquiry(input: CreateEnquiryInput) {
           destination: String(input.destination || '').trim() || null,
           hasLink: Boolean(String(input.page_url || '').trim()),
         });
+        // eslint-disable-next-line no-console
+        console.info(`[tour-enquiry] passenger snapshot: ${input.adults}A/${input.children}C, rooms=${input.rooms}`);
         await forwardEnquiryToCrm25(input);
         // eslint-disable-next-line no-console
         console.info('[tour-enquiry] CRM forward success');
@@ -870,6 +874,8 @@ export async function createEnquiry(input: CreateEnquiryInput) {
           destination: String(input.destination || '').trim() || null,
           hasLink: Boolean(String(input.page_url || '').trim()),
         });
+        // eslint-disable-next-line no-console
+        console.info(`[tour-enquiry] passenger snapshot: ${input.adults}A/${input.children}C, rooms=${input.rooms}`);
         await forwardEnquiryToCrm25(input);
         // eslint-disable-next-line no-console
         console.info('[tour-enquiry] CRM forward success (no DB table)');
@@ -891,6 +897,8 @@ export async function createEnquiry(input: CreateEnquiryInput) {
         destination: String(input.destination || '').trim() || null,
         hasLink: Boolean(String(input.page_url || '').trim()),
       });
+      // eslint-disable-next-line no-console
+      console.info(`[tour-enquiry] passenger snapshot: ${input.adults}A/${input.children}C, rooms=${input.rooms}`);
       await forwardEnquiryToCrm25(input);
       // eslint-disable-next-line no-console
       console.info('[tour-enquiry] CRM forward success (no DB table)');
