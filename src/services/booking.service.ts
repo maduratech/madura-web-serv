@@ -46,6 +46,15 @@ export type CreateEnquiryInput = {
   user_agent?: string;
 };
 
+export type CreateWebsiteLeadInput = {
+  name: string;
+  phone: string;
+  destination: string;
+  tour_id?: number;
+  ip_address?: string;
+  user_agent?: string;
+};
+
 const enquiryIpRateMap = new Map<string, number[]>();
 const enquiryPhoneRateMap = new Map<string, number[]>();
 const ENQUIRY_RATE_WINDOW_MS = 10 * 60 * 1000; // 10 min
@@ -538,6 +547,31 @@ function validateCreateEnquiryPayload(input: CreateEnquiryInput): void {
   }
 }
 
+function normalizePhoneNumber(rawPhone: string): string {
+  const trimmed = String(rawPhone || '').trim();
+  if (!trimmed) return '';
+  const hasPlusPrefix = trimmed.startsWith('+');
+  const digits = trimmed.replace(/\D/g, '');
+  return `${hasPlusPrefix ? '+' : ''}${digits}`;
+}
+
+function validateWebsiteLeadPayload(input: CreateWebsiteLeadInput): void {
+  if (!String(input.name || '').trim()) {
+    throw new Error('name is required.');
+  }
+  if (!String(input.destination || '').trim()) {
+    throw new Error('destination is required.');
+  }
+  const normalizedPhone = normalizePhoneNumber(String(input.phone || ''));
+  const digitsOnly = normalizedPhone.replace(/\D/g, '');
+  if (!digitsOnly) {
+    throw new Error('phone is required.');
+  }
+  if (digitsOnly.length < 7 || digitsOnly.length > 15) {
+    throw new Error('Enter a valid mobile number.');
+  }
+}
+
 function consumeSlidingWindowRateLimit(
   store: Map<string, number[]>,
   key: string,
@@ -689,5 +723,71 @@ export async function createEnquiry(input: CreateEnquiryInput) {
   }
 
   throw new Error(`Failed to create enquiry: ${primary.error?.message || 'Unknown error'}`);
+}
+
+export async function createWebsiteLead(input: CreateWebsiteLeadInput) {
+  validateWebsiteLeadPayload(input);
+
+  const normalizedPhone = normalizePhoneNumber(String(input.phone || ''));
+  const ipKey = String(input.ip_address || '').trim() || 'unknown';
+  const phoneKey = normalizedPhone.toLowerCase();
+
+  const ipRate = consumeSlidingWindowRateLimit(
+    enquiryIpRateMap,
+    ipKey,
+    ENQUIRY_IP_RATE_MAX,
+    ENQUIRY_RATE_WINDOW_MS
+  );
+  if (!ipRate.allowed) {
+    throw new Error('Too many enquiries from this network. Please try again later.');
+  }
+
+  const phoneRate = consumeSlidingWindowRateLimit(
+    enquiryPhoneRateMap,
+    phoneKey,
+    ENQUIRY_PHONE_RATE_MAX,
+    ENQUIRY_RATE_WINDOW_MS
+  );
+  if (!phoneRate.allowed) {
+    throw new Error('Too many enquiries for this phone number. Please try again shortly.');
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  // eslint-disable-next-line no-console
+  console.info('[website-lead] forwarding to CRM', {
+    destination: String(input.destination || '').trim(),
+    hasTourId: Boolean(input.tour_id),
+    hasIp: Boolean(input.ip_address),
+  });
+  try {
+    await forwardEnquiryToCrm25({
+      tour_id: Number(input.tour_id || 0),
+      departure_id: null,
+      name: String(input.name || '').trim(),
+      phone: normalizedPhone,
+      email: null,
+      departure_city: 'Website',
+      travel_date: today,
+      destination: String(input.destination || '').trim(),
+      duration: '',
+      adults: 1,
+      children: 0,
+      infants: 0,
+      rooms: 1,
+      ip_address: input.ip_address,
+      user_agent: input.user_agent,
+    });
+    // eslint-disable-next-line no-console
+    console.info('[website-lead] CRM forward success');
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[website-lead] CRM forward failed', err);
+    throw err;
+  }
+
+  return {
+    success: true,
+    forwarded: true,
+  };
 }
 
