@@ -1290,12 +1290,17 @@ export async function handleRazorpayWebhook(rawBody: string, signature: string |
 
   const { data: booking } = await supabase
     .from('bookings')
-    .select('id')
+    .select('id,payment_status,payment_id')
     .eq('payment_order_id', orderId)
     .maybeSingle();
   if (!booking?.id) return { processed: false, reason: 'booking_not_found' };
 
   if (event === 'payment.captured' || event === 'order.paid') {
+    const paySt = String((booking as { payment_status?: string | null }).payment_status || '').toLowerCase();
+    const existingPid = String((booking as { payment_id?: string | null }).payment_id || '').trim();
+    if (paySt === 'paid' && existingPid) {
+      return { processed: true, booking_id: booking.id, payment_status: 'paid', duplicate: true };
+    }
     await verifyBookingPayment({
       booking_id: booking.id,
       razorpay_order_id: orderId,
