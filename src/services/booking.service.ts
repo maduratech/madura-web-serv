@@ -164,6 +164,8 @@ async function syncBookingPaymentToCrm(input: {
   payment_status: string;
   amount: number;
   amount_slab?: number;
+  full_amount?: number;
+  remaining_amount?: number;
   payment_currency?: string;
   destination?: string;
   tour_title?: string;
@@ -199,6 +201,8 @@ async function syncBookingPaymentToCrm(input: {
       payment_status: input.payment_status,
       amount: input.amount,
       amount_slab: input.amount_slab,
+      full_amount: input.full_amount,
+      remaining_amount: input.remaining_amount,
       payment_currency: input.payment_currency || 'INR',
       destination: input.destination,
       tour_title: input.tour_title,
@@ -818,7 +822,7 @@ export async function createBooking(input: CreateBookingInput) {
 async function getBookingPaymentContext(bookingId: number) {
   const { data: booking, error } = await supabase
     .from('bookings')
-    .select('id,tour_id,departure_id,total_price,status,payment_amount')
+    .select('id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id')
     .eq('id', bookingId)
     .single();
   if (error || !booking) throw new Error('Booking not found.');
@@ -861,6 +865,7 @@ async function getBookingPaymentContext(bookingId: number) {
         )
       : 0;
   const durationLabel = derivedDurationNights > 0 ? `${derivedDurationNights}N` : '';
+  const durationDaysLabel = derivedDurationNights > 0 ? `${derivedDurationNights + 1} Days` : '';
   const primaryTraveller = (travellers as Array<{ email?: string; phone?: string; first_name?: string; last_name?: string }> | null)?.[0];
 
   return {
@@ -873,6 +878,7 @@ async function getBookingPaymentContext(bookingId: number) {
     travelDate,
     returnDate,
     durationLabel,
+    durationDaysLabel,
     primaryTraveller,
   };
 }
@@ -937,6 +943,16 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
   }
 
   const context = await getBookingPaymentContext(input.booking_id);
+  const existingPaymentId = String((context.booking as { payment_id?: string | null })?.payment_id || '').trim();
+  const existingPaymentStatus = String((context.booking as { payment_status?: string | null })?.payment_status || '').toLowerCase();
+  if (existingPaymentId && existingPaymentId === input.razorpay_payment_id && existingPaymentStatus === 'paid') {
+    return {
+      booking_id: context.booking.id,
+      status: 'confirmed',
+      payment_status: 'paid',
+      duplicate: true,
+    };
+  }
   let paidAmountInInr = Number((context.booking as { payment_amount?: number | null })?.payment_amount || 0);
   let paymentCurrency = 'INR';
   let paidAtIso = new Date().toISOString();
@@ -963,12 +979,16 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
     // eslint-disable-next-line no-console
     console.warn('[payment-verify] unable to fetch Razorpay payment details, using booking fallback:', err);
   }
+  const fullAmountInInr = Number((context.booking as { total_price?: number | null })?.total_price || 0);
+  const remainingAmountInInr = Math.max(0, fullAmountInInr - paidAmountInInr);
   const detailsNote =
     `Payment Status: SUCCESS\n` +
     `Booking ID: ${context.booking.id}\n` +
     `Razorpay Order ID: ${input.razorpay_order_id}\n` +
     `Razorpay Payment ID: ${input.razorpay_payment_id}\n` +
     `Amount Paid: ${paymentCurrency} ${Number(paidAmountInInr || 0).toLocaleString('en-IN')}\n` +
+    `Full Package Amount: INR ${Number(fullAmountInInr || 0).toLocaleString('en-IN')}\n` +
+    `Remaining Amount: INR ${Number(remainingAmountInInr || 0).toLocaleString('en-IN')}\n` +
     `Advance Slab: INR ${Number((context.booking as { payment_amount?: number | null })?.payment_amount || 0).toLocaleString('en-IN')}\n` +
     `Paid Time: ${paidAtIso}\n` +
     `Bank RRN: ${razorpayBankRrn || 'N/A'}\n` +
@@ -976,7 +996,7 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
     `Destination: ${context.destination || 'N/A'}\n` +
     `Travel Date: ${context.travelDate || 'N/A'}\n` +
     `Return Date: ${context.returnDate || 'N/A'}\n` +
-    `Duration: ${context.durationLabel || 'N/A'}\n` +
+    `Duration: ${context.durationDaysLabel || context.durationLabel || 'N/A'}\n` +
     `Departure City: ${context.departureCity || 'N/A'}\n` +
     `Tour Region: ${context.tourRegion || 'N/A'}`;
 
@@ -1017,12 +1037,14 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
       payment_status: 'success',
       amount: Number(paidAmountInInr || 0),
       amount_slab: Number((context.booking as { payment_amount?: number | null })?.payment_amount || 0),
+      full_amount: fullAmountInInr,
+      remaining_amount: remainingAmountInInr,
       payment_currency: paymentCurrency,
       destination: context.destination,
       tour_title: context.tourTitle,
       travel_date: context.travelDate,
       return_date: context.returnDate,
-      duration: context.durationLabel,
+      duration: context.durationDaysLabel || context.durationLabel,
       starting_point: context.departureCity,
       tour_region: context.tourRegion,
       departure_city: context.departureCity,
@@ -1100,7 +1122,7 @@ export async function updateBookingPaymentStatus(input: UpdateBookingPaymentStat
       tour_title: context.tourTitle,
       travel_date: context.travelDate,
       return_date: context.returnDate,
-      duration: context.durationLabel,
+      duration: context.durationDaysLabel || context.durationLabel,
       starting_point: context.departureCity,
       tour_region: context.tourRegion,
       departure_city: context.departureCity,
