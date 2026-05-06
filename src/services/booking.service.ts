@@ -170,9 +170,16 @@ async function syncBookingPaymentToCrm(input: {
   details_note: string;
   customer_phone?: string;
   customer_email?: string;
+  customer_name?: string;
 }) {
   const base = String(env.CRM_API_URL || '').replace(/\/$/, '');
   if (!base) return;
+  // eslint-disable-next-line no-console
+  console.info('[payment-crm-sync] started', {
+    booking_id: input.booking_id,
+    payment_status: input.payment_status,
+    destination: input.destination || null,
+  });
   const response = await fetch(`${base}/api/booking/payment-event`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -189,10 +196,56 @@ async function syncBookingPaymentToCrm(input: {
       note: input.details_note,
     }),
   });
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new Error(`CRM booking payment sync failed: ${response.status} ${text}`.trim());
+  if (response.ok) {
+    // eslint-disable-next-line no-console
+    console.info('[payment-crm-sync] success via /api/booking/payment-event', {
+      booking_id: input.booking_id,
+      payment_status: input.payment_status,
+    });
+    return;
   }
+
+  const text = await response.text().catch(() => '');
+  // eslint-disable-next-line no-console
+  console.warn('[payment-crm-sync] primary endpoint failed, trying fallback /api/lead/website', {
+    status: response.status,
+    body: text,
+  });
+
+  const fallbackResp = await fetch(`${base}/api/lead/website`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: input.customer_name || 'Website Customer',
+      phone: input.customer_phone || '',
+      email: input.customer_email || undefined,
+      destination: input.destination || undefined,
+      date_of_travel: input.travel_date || new Date().toISOString().slice(0, 10),
+      date: input.travel_date || new Date().toISOString().slice(0, 10),
+      travel_date: input.travel_date || new Date().toISOString().slice(0, 10),
+      enquiry: 'Tour Package',
+      source: 'website',
+      notes: [
+        {
+          type: 'note',
+          content: input.details_note,
+          timestamp: new Date().toISOString(),
+        },
+      ],
+      summary: `Booking payment update | status=${input.payment_status} | booking=${input.booking_id} | amount=${input.amount}`,
+      starting_point: input.departure_city || undefined,
+    }),
+  });
+
+  if (!fallbackResp.ok) {
+    const fallbackText = await fallbackResp.text().catch(() => '');
+    throw new Error(`CRM booking payment sync failed: ${fallbackResp.status} ${fallbackText}`.trim());
+  }
+  // eslint-disable-next-line no-console
+  console.info('[payment-crm-sync] success via fallback /api/lead/website', {
+    booking_id: input.booking_id,
+    payment_status: input.payment_status,
+  });
 }
 
 async function createBookingTransaction(input: {
@@ -892,6 +945,7 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
       departure_city: context.departureCity,
       customer_phone: context.primaryTraveller?.phone,
       customer_email: context.primaryTraveller?.email,
+      customer_name: `${context.primaryTraveller?.first_name || ''} ${context.primaryTraveller?.last_name || ''}`.trim(),
       details_note: detailsNote,
     });
   } catch (err) {
@@ -957,6 +1011,7 @@ export async function updateBookingPaymentStatus(input: UpdateBookingPaymentStat
       departure_city: context.departureCity,
       customer_phone: context.primaryTraveller?.phone,
       customer_email: context.primaryTraveller?.email,
+      customer_name: `${context.primaryTraveller?.first_name || ''} ${context.primaryTraveller?.last_name || ''}`.trim(),
       details_note: detailsNote,
     });
   } catch (err) {
