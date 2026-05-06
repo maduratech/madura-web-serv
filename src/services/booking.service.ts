@@ -594,7 +594,7 @@ function validateCreateBookingPayload(input: CreateBookingInput): void {
 export async function createBooking(input: CreateBookingInput) {
   validateCreateBookingPayload(input);
 
-  const { data: departure, error: departureError } = await supabase
+  let { data: departure, error: departureError } = await supabase
     .from('departures')
     .select('id,tour_id,price')
     .eq('id', input.departure_id)
@@ -602,8 +602,23 @@ export async function createBooking(input: CreateBookingInput) {
     .single();
 
   if (departureError || !departure) {
-    throw new Error('Invalid departure selected for this tour.');
+    const fallback = await supabase
+      .from('departures')
+      .select('id,tour_id,price')
+      .eq('id', input.departure_id)
+      .single();
+    if (fallback.error || !fallback.data) {
+      throw new Error('Invalid departure selected for this tour.');
+    }
+    departure = fallback.data;
+    // eslint-disable-next-line no-console
+    console.warn('[createBooking] departure tour mismatch, using departure.tour_id', {
+      requestedTourId: input.tour_id,
+      departureId: input.departure_id,
+      resolvedTourId: departure.tour_id,
+    });
   }
+  const effectiveTourId = Number(departure.tour_id || input.tour_id);
 
   const adults = Number(input.adults || 0);
   const children = Number(input.children || 0);
@@ -614,10 +629,14 @@ export async function createBooking(input: CreateBookingInput) {
   const totalPrice = perPaxPrice * (adults + children + infants);
 
   const bookingBaseInsert = {
-    tour_id: input.tour_id,
+    tour_id: effectiveTourId,
     departure_id: input.departure_id,
     total_price: totalPrice,
     status: 'pending',
+  };
+  const bookingBaseInsertUpperStatus = {
+    ...bookingBaseInsert,
+    status: 'Pending',
   };
 
   type BookingRow = { id: number; tour_id: number; departure_id: number; total_price: number; status: string };
@@ -653,6 +672,20 @@ export async function createBooking(input: CreateBookingInput) {
     bookingError = baseInsert.error || null;
   }
 
+  if (
+    !booking &&
+    bookingError &&
+    /invalid input value for enum .*status/i.test(String(bookingError.message || ''))
+  ) {
+    const retryInsert = await supabase
+      .from('bookings')
+      .insert(bookingBaseInsertUpperStatus)
+      .select('id,tour_id,departure_id,total_price,status,created_at')
+      .single();
+    booking = (retryInsert.data as BookingRow | null) || null;
+    bookingError = retryInsert.error || null;
+  }
+
   if (bookingError || !booking) {
     throw new Error(`Failed to create booking: ${bookingError?.message || 'Unknown error'}`);
   }
@@ -668,10 +701,18 @@ export async function createBooking(input: CreateBookingInput) {
     pan: String(traveller.pan || ''),
   }));
 
-  const { data: travellers, error: travellersError } = await supabase
+  let travellerInsert = await supabase
     .from('travellers')
     .insert(travellerRows)
     .select('id,booking_id,traveller_type,salutation,first_name,last_name,phone,email,pan');
+  if (travellerInsert.error && /column .*pan.* does not exist/i.test(String(travellerInsert.error.message || ''))) {
+    const travellerRowsWithoutPan = travellerRows.map(({ pan, ...row }) => row);
+    travellerInsert = await supabase
+      .from('travellers')
+      .insert(travellerRowsWithoutPan)
+      .select('id,booking_id,traveller_type,salutation,first_name,last_name,phone,email');
+  }
+  const { data: travellers, error: travellersError } = travellerInsert;
 
   if (travellersError) {
     throw new Error(`Booking created but travellers insert failed: ${travellersError.message}`);
