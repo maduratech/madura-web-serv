@@ -1,6 +1,8 @@
 import { supabase } from '../lib/supabase';
 import { enqueueCrmBookingSync } from '../jobs/crm.job';
 import { env } from '../config/env';
+import crypto from 'node:crypto';
+import Razorpay from 'razorpay';
 
 export type TravellerInput = {
   type: 'adult' | 'child' | 'infant';
@@ -26,6 +28,25 @@ export type CreateBookingInput = {
     triple: { per_adult: number; adults: number; children: Array<{ age: number; price: number }> };
     quad: { per_adult: number; adults: number; children: Array<{ age: number; price: number }> };
   } | null;
+};
+
+export type CreateBookingPaymentOrderInput = {
+  booking_id: number;
+};
+
+export type VerifyBookingPaymentInput = {
+  booking_id: number;
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+};
+
+export type UpdateBookingPaymentStatusInput = {
+  booking_id: number;
+  payment_status: 'cancelled' | 'failed' | 'pending';
+  reason?: string;
+  razorpay_order_id?: string;
+  razorpay_payment_id?: string;
 };
 
 export type CreateEnquiryInput = {
@@ -63,6 +84,146 @@ const enquiryPhoneRateMap = new Map<string, number[]>();
 const ENQUIRY_RATE_WINDOW_MS = 10 * 60 * 1000; // 10 min
 const ENQUIRY_IP_RATE_MAX = 12;
 const ENQUIRY_PHONE_RATE_MAX = 5;
+const DOMESTIC_ADVANCE_AMOUNT_INR = 1000;
+const SEA_MIDDLE_EAST_ADVANCE_AMOUNT_INR = 3000;
+const INTERNATIONAL_ADVANCE_AMOUNT_INR = 5000;
+
+const seaAndMiddleEastDestinations = new Set(
+  [
+    'uae',
+    'dubai',
+    'abu dhabi',
+    'qatar',
+    'oman',
+    'bahrain',
+    'kuwait',
+    'saudi arabia',
+    'singapore',
+    'malaysia',
+    'thailand',
+    'indonesia',
+    'vietnam',
+    'cambodia',
+    'laos',
+    'myanmar',
+    'philippines',
+    'sri lanka',
+    'maldives',
+  ].map((item) => item.toLowerCase())
+);
+
+const razorpayClient = new Razorpay({
+  key_id: env.RAZORPAY_KEY_ID || '',
+  key_secret: env.RAZORPAY_KEY_SECRET || '',
+});
+
+function normalizeText(value: string | null | undefined) {
+  return String(value || '')
+    .trim()
+    .toLowerCase();
+}
+
+function resolveTourRegionFromData(tourRegion: string, destination: string, continent: string) {
+  const region = normalizeText(tourRegion);
+  const destinationName = normalizeText(destination);
+  const continentName = normalizeText(continent);
+
+  if (region.includes('domestic') || destinationName === 'india') {
+    return 'domestic' as const;
+  }
+  if (
+    region.includes('sea') ||
+    region.includes('middle east') ||
+    seaAndMiddleEastDestinations.has(destinationName) ||
+    continentName === 'asia'
+  ) {
+    return 'sea_middle_east' as const;
+  }
+  return 'international' as const;
+}
+
+function getAdvanceAmountInInr(resolvedRegion: 'domestic' | 'sea_middle_east' | 'international') {
+  if (resolvedRegion === 'domestic') return DOMESTIC_ADVANCE_AMOUNT_INR;
+  if (resolvedRegion === 'sea_middle_east') return SEA_MIDDLE_EAST_ADVANCE_AMOUNT_INR;
+  return INTERNATIONAL_ADVANCE_AMOUNT_INR;
+}
+
+async function upsertBookingPaymentFields(bookingId: number, fields: Record<string, unknown>) {
+  const tryKeys = [fields, Object.fromEntries(Object.entries(fields).filter(([k]) => k !== 'payment_notes'))];
+  for (const payload of tryKeys) {
+    const { error } = await supabase.from('bookings').update(payload).eq('id', bookingId);
+    if (!error) return;
+    if (!/column .* does not exist/i.test(String(error.message || ''))) {
+      throw new Error(`Failed to update booking payment fields: ${error.message}`);
+    }
+  }
+}
+
+async function syncBookingPaymentToCrm(input: {
+  booking_id: number;
+  payment_status: string;
+  amount: number;
+  destination?: string;
+  tour_title?: string;
+  travel_date?: string;
+  departure_city?: string;
+  details_note: string;
+  customer_phone?: string;
+  customer_email?: string;
+}) {
+  const base = String(env.CRM_API_URL || '').replace(/\/$/, '');
+  if (!base) return;
+  const response = await fetch(`${base}/api/booking/payment-event`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      booking_id: input.booking_id,
+      payment_status: input.payment_status,
+      amount: input.amount,
+      destination: input.destination,
+      tour_title: input.tour_title,
+      travel_date: input.travel_date,
+      departure_city: input.departure_city,
+      customer_phone: input.customer_phone,
+      customer_email: input.customer_email,
+      note: input.details_note,
+    }),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`CRM booking payment sync failed: ${response.status} ${text}`.trim());
+  }
+}
+
+async function createBookingTransaction(input: {
+  booking_id: number;
+  payment_status: string;
+  amount: number;
+  currency: string;
+  payment_order_id?: string;
+  payment_id?: string;
+  note?: string;
+}) {
+  const payload = {
+    booking_id: input.booking_id,
+    transaction_type: 'payment',
+    payment_status: input.payment_status,
+    amount: Number(input.amount || 0),
+    currency: input.currency || 'INR',
+    payment_order_id: input.payment_order_id || null,
+    payment_id: input.payment_id || null,
+    gateway: 'razorpay',
+    note: input.note || null,
+  };
+  const { error } = await supabase.from('booking_transactions').insert(payload);
+  if (!error) return;
+  if (/relation .* does not exist/i.test(String(error.message || ''))) {
+    // eslint-disable-next-line no-console
+    console.warn('[booking-transaction] table missing, skipping insert');
+    return;
+  }
+  throw new Error(`Failed to create booking transaction: ${error.message}`);
+}
 
 type DestinationRow = { id: number; name: string };
 type DepartureCityRow = { name: string };
@@ -530,6 +691,300 @@ export async function createBooking(input: CreateBookingInput) {
     booking,
     travellers: travellers || [],
   };
+}
+
+async function getBookingPaymentContext(bookingId: number) {
+  const { data: booking, error } = await supabase
+    .from('bookings')
+    .select('id,tour_id,departure_id,total_price,status')
+    .eq('id', bookingId)
+    .single();
+  if (error || !booking) throw new Error('Booking not found.');
+
+  const [{ data: tour }, { data: departure }, { data: travellers }] = await Promise.all([
+    supabase
+      .from('tours')
+      .select('id,title,destination,tour_region,destination_ref:destinations(name,continent)')
+      .eq('id', booking.tour_id)
+      .maybeSingle(),
+    supabase
+      .from('departures')
+      .select('id,city,start_date,end_date')
+      .eq('id', booking.departure_id)
+      .maybeSingle(),
+    supabase
+      .from('travellers')
+      .select('id,first_name,last_name,email,phone')
+      .eq('booking_id', booking.id)
+      .order('id', { ascending: true }),
+  ]);
+
+  const tourTitle = String((tour as { title?: string })?.title || '').trim();
+  const destination = String((tour as { destination?: string })?.destination || '').trim();
+  const tourRegion = String((tour as { tour_region?: string })?.tour_region || '').trim();
+  const continent = String(
+    (tour as { destination_ref?: { continent?: string | null } | null })?.destination_ref?.continent || ''
+  ).trim();
+  const departureCity = String((departure as { city?: string })?.city || '').trim();
+  const travelDate = String((departure as { start_date?: string })?.start_date || '').trim();
+  const primaryTraveller = (travellers as Array<{ email?: string; phone?: string; first_name?: string; last_name?: string }> | null)?.[0];
+
+  return {
+    booking,
+    destination,
+    tourTitle,
+    tourRegion,
+    continent,
+    departureCity,
+    travelDate,
+    primaryTraveller,
+  };
+}
+
+export async function createBookingPaymentOrder(input: CreateBookingPaymentOrderInput) {
+  if (!input.booking_id) throw new Error('booking_id is required.');
+  if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
+    throw new Error('Razorpay credentials are not configured.');
+  }
+
+  const context = await getBookingPaymentContext(input.booking_id);
+  const resolvedRegion = resolveTourRegionFromData(context.tourRegion, context.destination, context.continent);
+  const advanceAmountInInr = getAdvanceAmountInInr(resolvedRegion);
+
+  const order = await razorpayClient.orders.create({
+    amount: advanceAmountInInr * 100,
+    currency: 'INR',
+    receipt: `booking_${context.booking.id}_${Date.now()}`,
+    notes: {
+      booking_id: String(context.booking.id),
+      destination: context.destination || 'N/A',
+      tour_title: context.tourTitle || 'N/A',
+      region: resolvedRegion,
+    },
+  });
+
+  try {
+    await upsertBookingPaymentFields(context.booking.id, {
+      payment_status: 'pending',
+      payment_order_id: order.id,
+      payment_amount: advanceAmountInInr,
+      payment_currency: 'INR',
+      payment_notes: `Payment initiated via Razorpay order ${order.id}`,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[payment-order] booking payment field update failed:', err);
+  }
+
+  return {
+    booking: context.booking,
+    razorpay_key_id: env.RAZORPAY_KEY_ID,
+    razorpay_order_id: order.id,
+    amount: advanceAmountInInr * 100,
+    currency: 'INR',
+    slab_region: resolvedRegion,
+    description: `Advance payment for ${context.tourTitle || context.destination || 'your tour'}`,
+  };
+}
+
+export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
+  if (!input.booking_id || !input.razorpay_order_id || !input.razorpay_payment_id || !input.razorpay_signature) {
+    throw new Error('booking_id, razorpay_order_id, razorpay_payment_id and razorpay_signature are required.');
+  }
+  const expectedSignature = crypto
+    .createHmac('sha256', String(env.RAZORPAY_KEY_SECRET || ''))
+    .update(`${input.razorpay_order_id}|${input.razorpay_payment_id}`)
+    .digest('hex');
+
+  if (expectedSignature !== input.razorpay_signature) {
+    throw new Error('Invalid payment signature.');
+  }
+
+  const context = await getBookingPaymentContext(input.booking_id);
+  const detailsNote =
+    `Payment Status: SUCCESS\n` +
+    `Booking ID: ${context.booking.id}\n` +
+    `Razorpay Order ID: ${input.razorpay_order_id}\n` +
+    `Razorpay Payment ID: ${input.razorpay_payment_id}\n` +
+    `Amount: INR ${Number(context.booking.total_price || 0).toLocaleString('en-IN')}\n` +
+    `Destination: ${context.destination || 'N/A'}\n` +
+    `Travel Date: ${context.travelDate || 'N/A'}\n` +
+    `Departure City: ${context.departureCity || 'N/A'}`;
+
+  try {
+    await upsertBookingPaymentFields(context.booking.id, {
+      status: 'confirmed',
+      payment_status: 'paid',
+      payment_order_id: input.razorpay_order_id,
+      payment_id: input.razorpay_payment_id,
+      payment_verified_at: new Date().toISOString(),
+      payment_notes: detailsNote,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[payment-verify] booking payment field update failed:', err);
+  }
+
+  try {
+    await createBookingTransaction({
+      booking_id: context.booking.id,
+      payment_status: 'success',
+      amount: Number(context.booking.total_price || 0),
+      currency: 'INR',
+      payment_order_id: input.razorpay_order_id,
+      payment_id: input.razorpay_payment_id,
+      note: detailsNote,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[payment-verify] transaction insert failed:', err);
+  }
+
+  try {
+    await syncBookingPaymentToCrm({
+      booking_id: context.booking.id,
+      payment_status: 'success',
+      amount: Number(context.booking.total_price || 0),
+      destination: context.destination,
+      tour_title: context.tourTitle,
+      travel_date: context.travelDate,
+      departure_city: context.departureCity,
+      customer_phone: context.primaryTraveller?.phone,
+      customer_email: context.primaryTraveller?.email,
+      details_note: detailsNote,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[payment-verify] CRM sync failed:', err);
+  }
+
+  return {
+    booking_id: context.booking.id,
+    status: 'confirmed',
+    payment_status: 'paid',
+  };
+}
+
+export async function updateBookingPaymentStatus(input: UpdateBookingPaymentStatusInput) {
+  if (!input.booking_id || !input.payment_status) {
+    throw new Error('booking_id and payment_status are required.');
+  }
+  const context = await getBookingPaymentContext(input.booking_id);
+  const detailsNote =
+    `Payment Status: ${String(input.payment_status).toUpperCase()}\n` +
+    `Booking ID: ${context.booking.id}\n` +
+    `Razorpay Order ID: ${input.razorpay_order_id || 'N/A'}\n` +
+    `Razorpay Payment ID: ${input.razorpay_payment_id || 'N/A'}\n` +
+    `Reason: ${input.reason || 'Not provided'}`;
+
+  try {
+    await upsertBookingPaymentFields(context.booking.id, {
+      status: 'pending',
+      payment_status: input.payment_status,
+      payment_order_id: input.razorpay_order_id || null,
+      payment_id: input.razorpay_payment_id || null,
+      payment_notes: detailsNote,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[payment-status] booking payment field update failed:', err);
+  }
+
+  try {
+    await createBookingTransaction({
+      booking_id: context.booking.id,
+      payment_status: input.payment_status,
+      amount: Number(context.booking.total_price || 0),
+      currency: 'INR',
+      payment_order_id: input.razorpay_order_id,
+      payment_id: input.razorpay_payment_id,
+      note: detailsNote,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[payment-status] transaction insert failed:', err);
+  }
+
+  try {
+    await syncBookingPaymentToCrm({
+      booking_id: context.booking.id,
+      payment_status: input.payment_status,
+      amount: Number(context.booking.total_price || 0),
+      destination: context.destination,
+      tour_title: context.tourTitle,
+      travel_date: context.travelDate,
+      departure_city: context.departureCity,
+      customer_phone: context.primaryTraveller?.phone,
+      customer_email: context.primaryTraveller?.email,
+      details_note: detailsNote,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[payment-status] CRM sync failed:', err);
+  }
+
+  return {
+    booking_id: context.booking.id,
+    status: 'pending',
+    payment_status: input.payment_status,
+  };
+}
+
+export async function handleRazorpayWebhook(rawBody: string, signature: string | undefined) {
+  const webhookSecret = String(env.RAZORPAY_WEBHOOK_SECRET || '');
+  if (!signature || !webhookSecret) {
+    throw new Error('Webhook signature validation failed.');
+  }
+  const expected = crypto.createHmac('sha256', webhookSecret).update(rawBody).digest('hex');
+  if (expected !== signature) {
+    throw new Error('Invalid webhook signature.');
+  }
+
+  const payload = JSON.parse(rawBody || '{}') as {
+    event?: string;
+    payload?: { payment?: { entity?: { order_id?: string; id?: string; status?: string } } };
+  };
+  const event = String(payload.event || '');
+  const paymentEntity = payload.payload?.payment?.entity;
+  const orderId = String(paymentEntity?.order_id || '');
+  const paymentId = String(paymentEntity?.id || '');
+
+  if (!orderId) {
+    return { processed: false, reason: 'missing_order_id' };
+  }
+
+  const { data: booking } = await supabase
+    .from('bookings')
+    .select('id')
+    .eq('payment_order_id', orderId)
+    .maybeSingle();
+  if (!booking?.id) return { processed: false, reason: 'booking_not_found' };
+
+  if (event === 'payment.captured' || event === 'order.paid') {
+    await verifyBookingPayment({
+      booking_id: booking.id,
+      razorpay_order_id: orderId,
+      razorpay_payment_id: paymentId,
+      razorpay_signature: crypto
+        .createHmac('sha256', String(env.RAZORPAY_KEY_SECRET || ''))
+        .update(`${orderId}|${paymentId}`)
+        .digest('hex'),
+    });
+    return { processed: true, booking_id: booking.id, payment_status: 'paid' };
+  }
+
+  if (event === 'payment.failed') {
+    await updateBookingPaymentStatus({
+      booking_id: booking.id,
+      payment_status: 'failed',
+      reason: String(paymentEntity?.status || 'payment.failed'),
+      razorpay_order_id: orderId,
+      razorpay_payment_id: paymentId,
+    });
+    return { processed: true, booking_id: booking.id, payment_status: 'failed' };
+  }
+
+  return { processed: false, reason: 'event_ignored', event };
 }
 
 function validateCreateEnquiryPayload(input: CreateEnquiryInput): void {

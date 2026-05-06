@@ -12,7 +12,8 @@
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "next": "^15.4.9"
+    "next": "^15.4.9",
+    "razorpay": "^2.9.6"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
