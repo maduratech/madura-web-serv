@@ -20,6 +20,9 @@ export type CreateBookingInput = {
   adults: number;
   children: number;
   infants: number;
+  /** Optional: stored when `bookings.rooms` / `bookings.room_details` exist (for CRM payment notes). */
+  rooms?: number;
+  room_details?: Array<{ adults: number; children: number; child_ages?: number[] }>;
   travellers: TravellerInput[];
   manual_cost_summary?: {
     currency: 'INR';
@@ -775,6 +778,19 @@ export async function createBooking(input: CreateBookingInput) {
     throw new Error(`Failed to create booking: ${bookingError?.message || 'Unknown error'}`);
   }
 
+  const roomPatch: Record<string, unknown> = {};
+  if (Number(input.rooms) > 0) roomPatch.rooms = Number(input.rooms);
+  if (Array.isArray(input.room_details) && input.room_details.length > 0) {
+    roomPatch.room_details = input.room_details;
+  }
+  if (Object.keys(roomPatch).length > 0) {
+    const { error: roomUpdateError } = await supabase.from('bookings').update(roomPatch).eq('id', booking.id);
+    if (roomUpdateError && !/column .* does not exist/i.test(String(roomUpdateError.message || ''))) {
+      // eslint-disable-next-line no-console
+      console.warn('[createBooking] optional rooms/room_details update skipped:', roomUpdateError.message);
+    }
+  }
+
   const travellerRows = input.travellers.map((traveller) => ({
     booking_id: booking.id,
     traveller_type: traveller.type,
@@ -819,30 +835,110 @@ export async function createBooking(input: CreateBookingInput) {
   };
 }
 
-async function getBookingPaymentContext(bookingId: number) {
-  const { data: booking, error } = await supabase
-    .from('bookings')
-    .select('id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id')
-    .eq('id', bookingId)
-    .single();
-  if (error || !booking) throw new Error('Booking not found.');
+type TravellerRowForNote = {
+  traveller_type?: string | null;
+  salutation?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  pan?: string | null;
+};
 
-  const [{ data: tour }, { data: departure }, { data: travellers }] = await Promise.all([
+function buildTravellersAndRoomsCrmNote(
+  travellers: TravellerRowForNote[],
+  rooms: number | null | undefined,
+  roomDetails: Array<{ adults?: number; children?: number; child_ages?: number[] }> | null | undefined
+): string {
+  const lines: string[] = ['', 'Travellers Info:'];
+  travellers.forEach((t, i) => {
+    const type = String(t.traveller_type || 'adult').toLowerCase();
+    const roleLabel =
+      type === 'child' ? 'child' : type === 'infant' ? 'infant' : 'adult';
+    lines.push(`Traveller ${i + 1} (${roleLabel})`);
+    lines.push(`Salutation: ${t.salutation?.trim() || '—'}`);
+    lines.push(`First Name: ${t.first_name?.trim() || '—'}`);
+    lines.push(`Last Name: ${t.last_name?.trim() || '—'}`);
+    lines.push(`Phone: ${t.phone?.trim() || '—'}`);
+    lines.push(`Email: ${t.email?.trim() || '—'}`);
+    lines.push(`PAN (Optional): ${String(t.pan || '').trim() || '—'}`);
+    lines.push('');
+  });
+
+  lines.push('Rooms & occupancy:');
+  if (Array.isArray(roomDetails) && roomDetails.length > 0) {
+    roomDetails.forEach((r, idx) => {
+      const a = Number(r.adults ?? 0);
+      const c = Number(r.children ?? 0);
+      const ages = Array.isArray(r.child_ages) ? r.child_ages.filter((n) => Number.isFinite(n)) : [];
+      const agePart = ages.length ? ` | Child ages: ${ages.join(', ')}` : '';
+      lines.push(`Room ${idx + 1}: ${a} Adult(s), ${c} Child(ren)${agePart}`);
+    });
+    lines.push(`Total rooms: ${rooms ?? roomDetails.length}`);
+  } else {
+    const a = travellers.filter((t) => String(t.traveller_type || 'adult').toLowerCase() === 'adult').length;
+    const c = travellers.filter((t) => String(t.traveller_type || '').toLowerCase() === 'child').length;
+    const inf = travellers.filter((t) => String(t.traveller_type || '').toLowerCase() === 'infant').length;
+    if (rooms != null && rooms > 0) {
+      lines.push(`Total rooms: ${rooms} (per-room Adults/Children not stored)`);
+    }
+    lines.push(`Travellers overall: ${a} Adult(s), ${c} Child(ren)${inf ? `, ${inf} Infant(s)` : ''}`);
+  }
+
+  return lines.join('\n');
+}
+
+async function getBookingPaymentContext(bookingId: number) {
+  let booking: Record<string, unknown> | null = null;
+  let bookingError: { message?: string } | null = null;
+
+  const bookingSelectWide =
+    'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id,rooms,room_details';
+  const bookingSelectNarrow =
+    'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id';
+
+  const wideRes = await supabase.from('bookings').select(bookingSelectWide).eq('id', bookingId).single();
+  if (wideRes.error && /column .* does not exist/i.test(String(wideRes.error.message || ''))) {
+    const narrowRes = await supabase.from('bookings').select(bookingSelectNarrow).eq('id', bookingId).single();
+    booking = (narrowRes.data as Record<string, unknown>) || null;
+    bookingError = narrowRes.error;
+  } else if (wideRes.error) {
+    throw new Error(`Booking not found: ${wideRes.error.message}`);
+  } else {
+    booking = (wideRes.data as Record<string, unknown>) || null;
+    bookingError = null;
+  }
+  if (bookingError || !booking) throw new Error('Booking not found.');
+
+  const loadTravellersForBooking = async (): Promise<TravellerRowForNote[]> => {
+    const bid = Number(booking.id);
+    const attempts = [
+      'id,traveller_type,salutation,first_name,last_name,phone,email,pan',
+      'id,traveller_type,salutation,first_name,last_name,phone,email',
+      'id,first_name,last_name,phone,email',
+    ];
+    for (const cols of attempts) {
+      const t = await supabase.from('travellers').select(cols).eq('booking_id', bid).order('id', { ascending: true });
+      if (!t.error) return (t.data || []) as TravellerRowForNote[];
+      if (!/column .* does not exist/i.test(String(t.error.message || ''))) {
+        throw new Error(`Failed to load travellers: ${t.error.message}`);
+      }
+    }
+    return [];
+  };
+  const travellerRowsLoaded = await loadTravellersForBooking();
+
+  const [{ data: tour }, { data: departure }] = await Promise.all([
     supabase
       .from('tours')
       .select('id,title,destination,tour_region,destination_ref:destinations(name,continent)')
-      .eq('id', booking.tour_id)
+      .eq('id', Number(booking.tour_id))
       .maybeSingle(),
     supabase
       .from('departures')
       .select('id,city,start_date,end_date')
-      .eq('id', booking.departure_id)
+      .eq('id', Number(booking.departure_id))
       .maybeSingle(),
-    supabase
-      .from('travellers')
-      .select('id,first_name,last_name,email,phone')
-      .eq('booking_id', booking.id)
-      .order('id', { ascending: true }),
   ]);
 
   const tourTitle = String((tour as { title?: string })?.title || '').trim();
@@ -866,10 +962,31 @@ async function getBookingPaymentContext(bookingId: number) {
       : 0;
   const durationLabel = derivedDurationNights > 0 ? `${derivedDurationNights}N` : '';
   const durationDaysLabel = derivedDurationNights > 0 ? `${derivedDurationNights + 1} Days` : '';
-  const primaryTraveller = (travellers as Array<{ email?: string; phone?: string; first_name?: string; last_name?: string }> | null)?.[0];
+  const primaryTraveller = travellerRowsLoaded[0];
+  const roomsStored = booking.rooms != null ? Number(booking.rooms) : null;
+  const roomDetailsStored = Array.isArray(booking.room_details)
+    ? (booking.room_details as Array<{ adults?: number; children?: number; child_ages?: number[] }>)
+    : null;
+  const travellersRoomsNote = buildTravellersAndRoomsCrmNote(
+    travellerRowsLoaded,
+    roomsStored,
+    roomDetailsStored
+  );
+
+  const bookingRow = booking as {
+    id: number;
+    tour_id: number;
+    departure_id: number;
+    total_price: number;
+    status: string;
+    payment_amount?: number | null;
+    payment_status?: string | null;
+    payment_id?: string | null;
+    payment_order_id?: string | null;
+  };
 
   return {
-    booking,
+    booking: bookingRow,
     destination,
     tourTitle,
     tourRegion,
@@ -880,6 +997,7 @@ async function getBookingPaymentContext(bookingId: number) {
     durationLabel,
     durationDaysLabel,
     primaryTraveller,
+    travellersRoomsNote,
   };
 }
 
@@ -998,7 +1116,8 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
     `Return Date: ${context.returnDate || 'N/A'}\n` +
     `Duration: ${context.durationDaysLabel || context.durationLabel || 'N/A'}\n` +
     `Departure City: ${context.departureCity || 'N/A'}\n` +
-    `Tour Region: ${context.tourRegion || 'N/A'}`;
+    `Tour Region: ${context.tourRegion || 'N/A'}` +
+    (context.travellersRoomsNote || '');
 
   try {
     await upsertBookingPaymentFields(context.booking.id, {
@@ -1053,8 +1172,8 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
       razorpay_bank_rrn: razorpayBankRrn,
       razorpay_description: razorpayDescription,
       paid_at: paidAtIso,
-      customer_phone: context.primaryTraveller?.phone,
-      customer_email: context.primaryTraveller?.email,
+      customer_phone: context.primaryTraveller?.phone ?? undefined,
+      customer_email: context.primaryTraveller?.email ?? undefined,
       customer_name: `${context.primaryTraveller?.first_name || ''} ${context.primaryTraveller?.last_name || ''}`.trim(),
       details_note: detailsNote,
     });
@@ -1081,7 +1200,8 @@ export async function updateBookingPaymentStatus(input: UpdateBookingPaymentStat
     `Razorpay Order ID: ${input.razorpay_order_id || 'N/A'}\n` +
     `Razorpay Payment ID: ${input.razorpay_payment_id || 'N/A'}\n` +
     `Advance Slab: INR ${Number((context.booking as { payment_amount?: number | null })?.payment_amount || 0).toLocaleString('en-IN')}\n` +
-    `Reason: ${input.reason || 'Not provided'}`;
+    `Reason: ${input.reason || 'Not provided'}` +
+    (context.travellersRoomsNote || '');
 
   try {
     await upsertBookingPaymentFields(context.booking.id, {
@@ -1128,8 +1248,8 @@ export async function updateBookingPaymentStatus(input: UpdateBookingPaymentStat
       departure_city: context.departureCity,
       razorpay_order_id: input.razorpay_order_id,
       razorpay_payment_id: input.razorpay_payment_id,
-      customer_phone: context.primaryTraveller?.phone,
-      customer_email: context.primaryTraveller?.email,
+      customer_phone: context.primaryTraveller?.phone ?? undefined,
+      customer_email: context.primaryTraveller?.email ?? undefined,
       customer_name: `${context.primaryTraveller?.first_name || ''} ${context.primaryTraveller?.last_name || ''}`.trim(),
       details_note: detailsNote,
     });
