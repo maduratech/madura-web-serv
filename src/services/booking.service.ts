@@ -159,7 +159,7 @@ const razorpayClient = new Razorpay({
 });
 
 /** One CRM payment-event per booking+gateway payment (verify + webhook often run together). */
-const bookingPaymentCrmSyncInflight = new Map<string, Promise<void>>();
+const bookingPaymentCrmSyncInflight = new Map<string, Promise<unknown>>();
 
 function normalizeText(value: string | null | undefined) {
   return String(value || '')
@@ -203,6 +203,12 @@ async function upsertBookingPaymentFields(bookingId: number, fields: Record<stri
   }
 }
 
+/** What the CRM `/api/booking/payment-event` route sends back to us. */
+export type CrmPaymentEventResult = {
+  lead_id: number | null;
+  mts_id: string | null;
+};
+
 async function syncBookingPaymentToCrm(input: {
   booking_id: number;
   payment_status: string;
@@ -232,19 +238,18 @@ async function syncBookingPaymentToCrm(input: {
   customer_phone?: string;
   customer_email?: string;
   customer_name?: string;
-}) {
+}): Promise<CrmPaymentEventResult | null> {
   const base = String(env.CRM_API_URL || '').replace(/\/$/, '');
-  if (!base) return;
+  if (!base) return null;
 
   const lockKey = [
     input.booking_id,
     String(input.payment_status || '').toLowerCase(),
     String(input.razorpay_payment_id || input.razorpay_order_id || '').trim() || 'no-gateway-ref',
   ].join(':');
-  const inflight = bookingPaymentCrmSyncInflight.get(lockKey);
+  const inflight = bookingPaymentCrmSyncInflight.get(lockKey) as Promise<CrmPaymentEventResult | null> | undefined;
   if (inflight) {
-    await inflight;
-    return;
+    return await inflight;
   }
 
   const run = (async () => {
@@ -287,14 +292,23 @@ async function syncBookingPaymentToCrm(input: {
       }),
     });
     if (response.ok) {
-      const payload = (await response.json().catch(() => ({}))) as { lead_id?: number; message?: string };
+      const payload = (await response.json().catch(() => ({}))) as {
+        lead_id?: number | null;
+        mts_id?: string | null;
+        message?: string;
+      };
+      const result: CrmPaymentEventResult = {
+        lead_id: payload?.lead_id ?? null,
+        mts_id: payload?.mts_id ?? null,
+      };
       // eslint-disable-next-line no-console
       console.info('[payment-crm-sync] success via /api/booking/payment-event', {
         booking_id: input.booking_id,
         payment_status: input.payment_status,
-        lead_id: payload?.lead_id || null,
+        lead_id: result.lead_id,
+        mts_id: result.mts_id,
       });
-      return;
+      return result;
     }
 
     const text = await response.text().catch(() => '');
@@ -336,18 +350,28 @@ async function syncBookingPaymentToCrm(input: {
       const fallbackText = await fallbackResp.text().catch(() => '');
       throw new Error(`CRM booking payment sync failed: ${fallbackResp.status} ${fallbackText}`.trim());
     }
+    const fallbackPayload = (await fallbackResp.json().catch(() => ({}))) as {
+      lead_id?: number | null;
+      mts_id?: string | null;
+    };
     // eslint-disable-next-line no-console
     console.info('[payment-crm-sync] success via fallback /api/lead/website', {
       booking_id: input.booking_id,
       payment_status: input.payment_status,
+      lead_id: fallbackPayload?.lead_id ?? null,
+      mts_id: fallbackPayload?.mts_id ?? null,
     });
+    return {
+      lead_id: fallbackPayload?.lead_id ?? null,
+      mts_id: fallbackPayload?.mts_id ?? null,
+    };
   })();
 
-  bookingPaymentCrmSyncInflight.set(lockKey, run);
+  bookingPaymentCrmSyncInflight.set(lockKey, run as Promise<unknown>);
   try {
-    await run;
+    return await run;
   } finally {
-    if (bookingPaymentCrmSyncInflight.get(lockKey) === run) {
+    if (bookingPaymentCrmSyncInflight.get(lockKey) === (run as unknown)) {
       bookingPaymentCrmSyncInflight.delete(lockKey);
     }
   }
@@ -986,7 +1010,7 @@ async function getBookingPaymentContext(bookingId: number) {
   let bookingError: { message?: string } | null = null;
 
   const bookingSelectWide =
-    'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id,rooms,room_details,display_currency,display_fx_rate';
+    'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id,rooms,room_details,display_currency,display_fx_rate,mts_id,crm_lead_id';
   const bookingSelectMid =
     'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id,rooms,room_details';
   const bookingSelectNarrow =
@@ -1087,6 +1111,8 @@ async function getBookingPaymentContext(bookingId: number) {
     payment_order_id?: string | null;
     display_currency?: string | null;
     display_fx_rate?: number | null;
+    mts_id?: string | null;
+    crm_lead_id?: number | null;
   };
 
   const displayCurrencyRaw = String(bookingRow.display_currency || '').toUpperCase().trim();
@@ -1181,6 +1207,8 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
       status: 'confirmed',
       payment_status: 'paid',
       duplicate: true,
+      mts_id: context.booking.mts_id ?? null,
+      lead_id: context.booking.crm_lead_id ?? null,
     };
   }
   let paidAmountInInr = Number((context.booking as { payment_amount?: number | null })?.payment_amount || 0);
@@ -1271,8 +1299,9 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
     console.warn('[payment-verify] transaction insert failed:', err);
   }
 
+  let crmSyncResult: CrmPaymentEventResult | null = null;
   try {
-    await syncBookingPaymentToCrm({
+    crmSyncResult = await syncBookingPaymentToCrm({
       booking_id: context.booking.id,
       payment_status: 'success',
       amount: Number(paidAmountInInr || 0),
@@ -1305,10 +1334,27 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
     console.error('[payment-verify] CRM sync failed:', err);
   }
 
+  // Persist mts_id + crm_lead_id back onto the booking row so subsequent flows
+  // (confirmation page reload, dashboard fetch, support look-up) can read them
+  // without re-asking the CRM. Forward-compatible: silently skipped when columns are missing.
+  if (crmSyncResult?.mts_id || crmSyncResult?.lead_id) {
+    try {
+      await upsertBookingPaymentFields(context.booking.id, {
+        mts_id: crmSyncResult?.mts_id || undefined,
+        crm_lead_id: crmSyncResult?.lead_id || undefined,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[payment-verify] booking mts_id update skipped:', err);
+    }
+  }
+
   return {
     booking_id: context.booking.id,
     status: 'confirmed',
     payment_status: 'paid',
+    mts_id: crmSyncResult?.mts_id ?? null,
+    lead_id: crmSyncResult?.lead_id ?? null,
   };
 }
 
@@ -1359,8 +1405,9 @@ export async function updateBookingPaymentStatus(input: UpdateBookingPaymentStat
     console.warn('[payment-status] transaction insert failed:', err);
   }
 
+  let crmSyncResult: CrmPaymentEventResult | null = null;
   try {
-    await syncBookingPaymentToCrm({
+    crmSyncResult = await syncBookingPaymentToCrm({
       booking_id: context.booking.id,
       payment_status: input.payment_status,
       amount: advanceSlabInInr,
@@ -1388,10 +1435,24 @@ export async function updateBookingPaymentStatus(input: UpdateBookingPaymentStat
     console.error('[payment-status] CRM sync failed:', err);
   }
 
+  if (crmSyncResult?.mts_id || crmSyncResult?.lead_id) {
+    try {
+      await upsertBookingPaymentFields(context.booking.id, {
+        mts_id: crmSyncResult?.mts_id || undefined,
+        crm_lead_id: crmSyncResult?.lead_id || undefined,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[payment-status] booking mts_id update skipped:', err);
+    }
+  }
+
   return {
     booking_id: context.booking.id,
     status: 'pending',
     payment_status: input.payment_status,
+    mts_id: crmSyncResult?.mts_id ?? context.booking.mts_id ?? null,
+    lead_id: crmSyncResult?.lead_id ?? context.booking.crm_lead_id ?? null,
   };
 }
 
