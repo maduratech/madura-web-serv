@@ -23,6 +23,10 @@ export type CreateBookingInput = {
   /** Optional: stored when `bookings.rooms` / `bookings.room_details` exist (for CRM payment notes). */
   rooms?: number;
   room_details?: Array<{ adults: number; children: number; child_ages?: number[] }>;
+  /** Optional: ISO 4217 code (INR/USD/AED/AUD) the customer saw on the booking page. */
+  display_currency?: string;
+  /** Optional: INR-base FX rate (units of `display_currency` per 1 INR) snapshot at booking time. */
+  display_fx_rate?: number;
   travellers: TravellerInput[];
   manual_cost_summary?: {
     currency: 'INR';
@@ -32,6 +36,40 @@ export type CreateBookingInput = {
     quad: { per_adult: number; adults: number; children: Array<{ age: number; price: number }> };
   } | null;
 };
+
+/** Server-side fallback INR → market rates (used when client didn't snapshot a rate). Keep in sync with `madura-web/src/config/market.ts`. */
+const SERVER_INR_FX_FALLBACK: Record<string, number> = {
+  INR: 1,
+  USD: 83,
+  AED: 22.6,
+  AUD: 54,
+};
+
+/**
+ * Format an INR amount with an optional secondary local-currency conversion.
+ * Returns `"INR 1,76,999"` when the customer's market is INR/unknown,
+ * or `"INR 1,76,999 (≈ AED 7,832)"` when a non-INR display currency is on the booking.
+ */
+function formatInrDual(
+  amountInInr: number,
+  displayCurrency: string | null | undefined,
+  displayFxRate: number | null | undefined
+): string {
+  const safeAmount = Number.isFinite(amountInInr) ? amountInInr : 0;
+  const inrPart = `INR ${Number(safeAmount || 0).toLocaleString('en-IN')}`;
+  const cur = String(displayCurrency || '').toUpperCase().trim();
+  if (!cur || cur === 'INR' || safeAmount <= 0) return inrPart;
+  const rateRaw = Number(displayFxRate);
+  const rate = rateRaw > 0 ? rateRaw : SERVER_INR_FX_FALLBACK[cur] || 0;
+  if (!rate) return inrPart;
+  const converted = safeAmount / rate;
+  let display: string;
+  if (cur === 'USD') display = `$${converted.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+  else if (cur === 'AED') display = `AED ${converted.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+  else if (cur === 'AUD') display = `AUD ${converted.toLocaleString('en-AU', { maximumFractionDigits: 0 })}`;
+  else display = `${cur} ${converted.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+  return `${inrPart} (≈ ${display})`;
+}
 
 export type CreateBookingPaymentOrderInput = {
   booking_id: number;
@@ -186,6 +224,10 @@ async function syncBookingPaymentToCrm(input: {
   razorpay_bank_rrn?: string;
   razorpay_description?: string;
   paid_at?: string;
+  /** ISO 4217 currency the customer saw on the booking page (e.g. AED). */
+  display_currency?: string | null;
+  /** INR-base FX rate snapshot (units of `display_currency` per 1 INR). */
+  display_fx_rate?: number | null;
   details_note: string;
   customer_phone?: string;
   customer_email?: string;
@@ -236,6 +278,8 @@ async function syncBookingPaymentToCrm(input: {
         razorpay_bank_rrn: input.razorpay_bank_rrn,
         razorpay_description: input.razorpay_description,
         paid_at: input.paid_at,
+        display_currency: input.display_currency || undefined,
+        display_fx_rate: input.display_fx_rate || undefined,
         customer_phone: input.customer_phone,
         customer_email: input.customer_email,
         customer_name: input.customer_name,
@@ -809,8 +853,31 @@ export async function createBooking(input: CreateBookingInput) {
   if (Array.isArray(input.room_details) && input.room_details.length > 0) {
     roomPatch.room_details = input.room_details;
   }
+  const displayCurrencyClean = String(input.display_currency || '').toUpperCase().trim();
+  if (displayCurrencyClean && displayCurrencyClean !== 'INR') {
+    roomPatch.display_currency = displayCurrencyClean;
+    if (Number(input.display_fx_rate) > 0) {
+      roomPatch.display_fx_rate = Number(input.display_fx_rate);
+    }
+  }
   if (Object.keys(roomPatch).length > 0) {
-    const { error: roomUpdateError } = await supabase.from('bookings').update(roomPatch).eq('id', booking.id);
+    const tryUpdate = await supabase.from('bookings').update(roomPatch).eq('id', booking.id);
+    let roomUpdateError = tryUpdate.error;
+    // Forward-compatible: if display_currency/display_fx_rate columns don't exist yet, retry without them.
+    if (
+      roomUpdateError &&
+      /column .*(display_currency|display_fx_rate).* does not exist/i.test(String(roomUpdateError.message || ''))
+    ) {
+      const slimPatch: Record<string, unknown> = { ...roomPatch };
+      delete slimPatch.display_currency;
+      delete slimPatch.display_fx_rate;
+      if (Object.keys(slimPatch).length > 0) {
+        const retry = await supabase.from('bookings').update(slimPatch).eq('id', booking.id);
+        roomUpdateError = retry.error || null;
+      } else {
+        roomUpdateError = null;
+      }
+    }
     if (roomUpdateError && !/column .* does not exist/i.test(String(roomUpdateError.message || ''))) {
       // eslint-disable-next-line no-console
       console.warn('[createBooking] optional rooms/room_details update skipped:', roomUpdateError.message);
@@ -919,15 +986,24 @@ async function getBookingPaymentContext(bookingId: number) {
   let bookingError: { message?: string } | null = null;
 
   const bookingSelectWide =
+    'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id,rooms,room_details,display_currency,display_fx_rate';
+  const bookingSelectMid =
     'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id,rooms,room_details';
   const bookingSelectNarrow =
     'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id';
 
   const wideRes = await supabase.from('bookings').select(bookingSelectWide).eq('id', bookingId).single();
   if (wideRes.error && /column .* does not exist/i.test(String(wideRes.error.message || ''))) {
-    const narrowRes = await supabase.from('bookings').select(bookingSelectNarrow).eq('id', bookingId).single();
-    booking = (narrowRes.data as Record<string, unknown>) || null;
-    bookingError = narrowRes.error;
+    // Some columns are missing — try mid (drops display_*), then narrow (drops rooms/room_details too).
+    const midRes = await supabase.from('bookings').select(bookingSelectMid).eq('id', bookingId).single();
+    if (midRes.error && /column .* does not exist/i.test(String(midRes.error.message || ''))) {
+      const narrowRes = await supabase.from('bookings').select(bookingSelectNarrow).eq('id', bookingId).single();
+      booking = (narrowRes.data as Record<string, unknown>) || null;
+      bookingError = narrowRes.error;
+    } else {
+      booking = (midRes.data as Record<string, unknown>) || null;
+      bookingError = midRes.error;
+    }
   } else if (wideRes.error) {
     throw new Error(`Booking not found: ${wideRes.error.message}`);
   } else {
@@ -1009,7 +1085,14 @@ async function getBookingPaymentContext(bookingId: number) {
     payment_status?: string | null;
     payment_id?: string | null;
     payment_order_id?: string | null;
+    display_currency?: string | null;
+    display_fx_rate?: number | null;
   };
+
+  const displayCurrencyRaw = String(bookingRow.display_currency || '').toUpperCase().trim();
+  const displayCurrency = displayCurrencyRaw && displayCurrencyRaw !== 'INR' ? displayCurrencyRaw : null;
+  const displayFxRate = Number(bookingRow.display_fx_rate) > 0 ? Number(bookingRow.display_fx_rate) : null;
+  const formatInr = (amount: number) => formatInrDual(amount, displayCurrency, displayFxRate);
 
   return {
     booking: bookingRow,
@@ -1024,6 +1107,9 @@ async function getBookingPaymentContext(bookingId: number) {
     durationDaysLabel,
     primaryTraveller,
     travellersRoomsNote,
+    displayCurrency,
+    displayFxRate,
+    formatInr,
   };
 }
 
@@ -1125,15 +1211,23 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
   }
   const fullAmountInInr = Number((context.booking as { total_price?: number | null })?.total_price || 0);
   const remainingAmountInInr = Math.max(0, fullAmountInInr - paidAmountInInr);
+  const advanceSlabInInr = Number((context.booking as { payment_amount?: number | null })?.payment_amount || 0);
+  const customerCurrencyLine = context.displayCurrency
+    ? `\nCustomer Display Currency: ${context.displayCurrency}${context.displayFxRate ? ` (1 INR ≈ ${(1 / context.displayFxRate).toFixed(6)} ${context.displayCurrency} | 1 ${context.displayCurrency} ≈ INR ${context.displayFxRate})` : ''}`
+    : '';
+  const paymentCurrencyAmount =
+    paymentCurrency && paymentCurrency !== 'INR'
+      ? `${paymentCurrency} ${Number(paidAmountInInr || 0).toLocaleString('en-IN')}`
+      : context.formatInr(paidAmountInInr);
   const detailsNote =
     `Payment Status: SUCCESS\n` +
     `Booking ID: ${context.booking.id}\n` +
     `Razorpay Order ID: ${input.razorpay_order_id}\n` +
     `Razorpay Payment ID: ${input.razorpay_payment_id}\n` +
-    `Amount Paid: ${paymentCurrency} ${Number(paidAmountInInr || 0).toLocaleString('en-IN')}\n` +
-    `Full Package Amount: INR ${Number(fullAmountInInr || 0).toLocaleString('en-IN')}\n` +
-    `Remaining Amount: INR ${Number(remainingAmountInInr || 0).toLocaleString('en-IN')}\n` +
-    `Advance Slab: INR ${Number((context.booking as { payment_amount?: number | null })?.payment_amount || 0).toLocaleString('en-IN')}\n` +
+    `Amount Paid: ${paymentCurrencyAmount}\n` +
+    `Full Package Amount: ${context.formatInr(fullAmountInInr)}\n` +
+    `Remaining Amount: ${context.formatInr(remainingAmountInInr)}\n` +
+    `Advance Slab: ${context.formatInr(advanceSlabInInr)}\n` +
     `Paid Time: ${paidAtIso}\n` +
     `Bank RRN: ${razorpayBankRrn || 'N/A'}\n` +
     `Description: ${razorpayDescription || 'N/A'}\n` +
@@ -1143,6 +1237,7 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
     `Duration: ${context.durationDaysLabel || context.durationLabel || 'N/A'}\n` +
     `Departure City: ${context.departureCity || 'N/A'}\n` +
     `Tour Region: ${context.tourRegion || 'N/A'}` +
+    customerCurrencyLine +
     (context.travellersRoomsNote || '');
 
   try {
@@ -1181,7 +1276,7 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
       booking_id: context.booking.id,
       payment_status: 'success',
       amount: Number(paidAmountInInr || 0),
-      amount_slab: Number((context.booking as { payment_amount?: number | null })?.payment_amount || 0),
+      amount_slab: advanceSlabInInr,
       full_amount: fullAmountInInr,
       remaining_amount: remainingAmountInInr,
       payment_currency: paymentCurrency,
@@ -1198,6 +1293,8 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
       razorpay_bank_rrn: razorpayBankRrn,
       razorpay_description: razorpayDescription,
       paid_at: paidAtIso,
+      display_currency: context.displayCurrency,
+      display_fx_rate: context.displayFxRate,
       customer_phone: context.primaryTraveller?.phone ?? undefined,
       customer_email: context.primaryTraveller?.email ?? undefined,
       customer_name: `${context.primaryTraveller?.first_name || ''} ${context.primaryTraveller?.last_name || ''}`.trim(),
@@ -1220,13 +1317,18 @@ export async function updateBookingPaymentStatus(input: UpdateBookingPaymentStat
     throw new Error('booking_id and payment_status are required.');
   }
   const context = await getBookingPaymentContext(input.booking_id);
+  const advanceSlabInInr = Number((context.booking as { payment_amount?: number | null })?.payment_amount || 0);
+  const customerCurrencyLine = context.displayCurrency
+    ? `\nCustomer Display Currency: ${context.displayCurrency}${context.displayFxRate ? ` (1 ${context.displayCurrency} ≈ INR ${context.displayFxRate})` : ''}`
+    : '';
   const detailsNote =
     `Payment Status: ${String(input.payment_status).toUpperCase()}\n` +
     `Booking ID: ${context.booking.id}\n` +
     `Razorpay Order ID: ${input.razorpay_order_id || 'N/A'}\n` +
     `Razorpay Payment ID: ${input.razorpay_payment_id || 'N/A'}\n` +
-    `Advance Slab: INR ${Number((context.booking as { payment_amount?: number | null })?.payment_amount || 0).toLocaleString('en-IN')}\n` +
+    `Advance Slab: ${context.formatInr(advanceSlabInInr)}\n` +
     `Reason: ${input.reason || 'Not provided'}` +
+    customerCurrencyLine +
     (context.travellersRoomsNote || '');
 
   try {
@@ -1261,8 +1363,8 @@ export async function updateBookingPaymentStatus(input: UpdateBookingPaymentStat
     await syncBookingPaymentToCrm({
       booking_id: context.booking.id,
       payment_status: input.payment_status,
-      amount: Number((context.booking as { payment_amount?: number | null })?.payment_amount || 0),
-      amount_slab: Number((context.booking as { payment_amount?: number | null })?.payment_amount || 0),
+      amount: advanceSlabInInr,
+      amount_slab: advanceSlabInInr,
       payment_currency: 'INR',
       destination: context.destination,
       tour_title: context.tourTitle,
@@ -1274,6 +1376,8 @@ export async function updateBookingPaymentStatus(input: UpdateBookingPaymentStat
       departure_city: context.departureCity,
       razorpay_order_id: input.razorpay_order_id,
       razorpay_payment_id: input.razorpay_payment_id,
+      display_currency: context.displayCurrency,
+      display_fx_rate: context.displayFxRate,
       customer_phone: context.primaryTraveller?.phone ?? undefined,
       customer_email: context.primaryTraveller?.email ?? undefined,
       customer_name: `${context.primaryTraveller?.first_name || ''} ${context.primaryTraveller?.last_name || ''}`.trim(),
