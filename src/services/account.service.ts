@@ -70,19 +70,31 @@ export async function fetchCrmHistoryForPhone(phone: string): Promise<CrmHistory
   return (await response.json()) as CrmHistoryResult;
 }
 
+/** Fields sent to CRM on profile save (phone match takes priority over email on the CRM side). */
+export type ProfileCrmSnapshot = {
+  full_name?: string | null;
+  phone?: string | null;
+  avatar_url?: string | null;
+  email?: string | null;
+};
+
 /**
  * Push a profile change to the CRM customers table. Persists the resolved
  * crm_customer_id on the local profile so subsequent syncs stay in lockstep.
+ *
+ * Pass a **full snapshot** after saving to Supabase (`profile` row + auth email)
+ * so name, phone, avatar, and email are all pushed together — not only the
+ * fields that changed in the last PATCH.
  */
 export async function syncProfileToCrm(
   ctx: AuthContext,
-  patch: { full_name?: string | null; phone?: string | null; avatar_url?: string | null }
+  patch: ProfileCrmSnapshot
 ): Promise<{ crm_customer_id: number; action: 'created' | 'updated' } | null> {
   const { base, secret } = requireCrmIntegration();
-  const fullName = (patch.full_name ?? ctx.fullName ?? '').trim();
-  const phone = (patch.phone ?? ctx.phone ?? '').trim();
-  const avatarUrl = (patch.avatar_url ?? ctx.avatarUrl ?? '').trim();
-  const email = String(ctx.email || '').trim();
+  const fullName = String(patch.full_name ?? ctx.fullName ?? '').trim();
+  const phone = String(patch.phone ?? ctx.phone ?? '').trim();
+  const avatarUrl = String(patch.avatar_url ?? ctx.avatarUrl ?? '').trim();
+  const email = String(patch.email ?? ctx.email ?? '').trim();
 
   if (!fullName && !phone && !email) return null;
 
@@ -98,6 +110,8 @@ export async function syncProfileToCrm(
       email: email || undefined,
       phone: phone || undefined,
       avatar_url: avatarUrl || undefined,
+      /** Hint for CRM: resolve duplicate rows by phone before email. */
+      match_priority: 'phone_then_email',
     }),
   });
   if (!response.ok) {
@@ -228,16 +242,27 @@ export async function updateProfileAndSyncToCrm(
 
   let crmResult: Awaited<ReturnType<typeof syncProfileToCrm>> = null;
   try {
+    const u = updated as {
+      full_name?: string | null;
+      phone?: string | null;
+      avatar_url?: string | null;
+      email?: string | null;
+      crm_customer_id?: number | null;
+    };
     crmResult = await syncProfileToCrm(
       {
         ...ctx,
-        fullName: (updated as { full_name?: string | null }).full_name ?? null,
-        phone: (updated as { phone?: string | null }).phone ?? null,
-        avatarUrl: (updated as { avatar_url?: string | null }).avatar_url ?? null,
-        crmCustomerId:
-          (updated as { crm_customer_id?: number | null }).crm_customer_id ?? null,
+        fullName: u.full_name ?? null,
+        phone: u.phone ?? null,
+        avatarUrl: u.avatar_url ?? null,
+        crmCustomerId: u.crm_customer_id ?? null,
       },
-      cleaned
+      {
+        full_name: u.full_name,
+        phone: u.phone,
+        avatar_url: u.avatar_url,
+        email: u.email ?? ctx.email,
+      }
     );
   } catch (err) {
     // eslint-disable-next-line no-console
