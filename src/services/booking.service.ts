@@ -27,6 +27,8 @@ export type CreateBookingInput = {
   display_currency?: string;
   /** Optional: INR-base FX rate (units of `display_currency` per 1 INR) snapshot at booking time. */
   display_fx_rate?: number;
+  /** Optional: auth.users id when the booking is placed by a signed-in customer (P2). */
+  user_id?: string;
   travellers: TravellerInput[];
   manual_cost_summary?: {
     currency: 'INR';
@@ -109,6 +111,8 @@ export type CreateEnquiryInput = {
   page_url?: string;
   ip_address?: string;
   user_agent?: string;
+  /** Optional: auth.users id when the enquiry is filed by a signed-in customer (P2). */
+  user_id?: string;
 };
 
 export type CreateWebsiteLeadInput = {
@@ -884,17 +888,21 @@ export async function createBooking(input: CreateBookingInput) {
       roomPatch.display_fx_rate = Number(input.display_fx_rate);
     }
   }
+  if (input.user_id) {
+    roomPatch.user_id = input.user_id;
+  }
   if (Object.keys(roomPatch).length > 0) {
     const tryUpdate = await supabase.from('bookings').update(roomPatch).eq('id', booking.id);
     let roomUpdateError = tryUpdate.error;
-    // Forward-compatible: if display_currency/display_fx_rate columns don't exist yet, retry without them.
+    // Forward-compatible: if optional columns don't exist yet, retry without them.
     if (
       roomUpdateError &&
-      /column .*(display_currency|display_fx_rate).* does not exist/i.test(String(roomUpdateError.message || ''))
+      /column .*(display_currency|display_fx_rate|user_id).* does not exist/i.test(String(roomUpdateError.message || ''))
     ) {
       const slimPatch: Record<string, unknown> = { ...roomPatch };
       delete slimPatch.display_currency;
       delete slimPatch.display_fx_rate;
+      delete slimPatch.user_id;
       if (Object.keys(slimPatch).length > 0) {
         const retry = await supabase.from('bookings').update(slimPatch).eq('id', booking.id);
         roomUpdateError = retry.error || null;
@@ -1768,6 +1776,20 @@ export async function createEnquiry(input: CreateEnquiryInput) {
   }
 
   if (!primary.error && primary.data) {
+    // Persist optional user_id link (silently skipped when the column doesn't exist yet).
+    if (input.user_id) {
+      const enquiryId = (primary.data as { id?: number })?.id;
+      if (enquiryId) {
+        const { error: linkErr } = await supabase
+          .from('enquiries')
+          .update({ user_id: input.user_id })
+          .eq('id', enquiryId);
+        if (linkErr && !/column .* does not exist/i.test(String(linkErr.message || ''))) {
+          // eslint-disable-next-line no-console
+          console.warn('[tour-enquiry] user_id link skipped:', linkErr.message);
+        }
+      }
+    }
     try {
       // eslint-disable-next-line no-console
       console.info('[tour-enquiry] forwarding to CRM', {

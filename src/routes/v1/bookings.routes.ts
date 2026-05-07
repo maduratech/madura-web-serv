@@ -8,12 +8,16 @@ import {
   updateBookingPaymentStatus,
   verifyBookingPayment
 } from '../../services/booking.service';
+import { attachAuthIfPresent } from '../../middlewares/auth.middleware';
 
 const bookingsRouter = Router();
 
-bookingsRouter.post('/bookings', async (req, res, next) => {
+bookingsRouter.post('/bookings', attachAuthIfPresent, async (req, res, next) => {
   try {
-    const result = await createBooking(req.body);
+    const result = await createBooking({
+      ...req.body,
+      user_id: req.auth?.userId,
+    });
     return res.status(201).json({
       message: 'Booking created successfully.',
       data: result,
@@ -87,12 +91,13 @@ bookingsRouter.post('/payments/razorpay/webhook', async (req, res, next) => {
   }
 });
 
-bookingsRouter.post('/enquiries', async (req, res, next) => {
+bookingsRouter.post('/enquiries', attachAuthIfPresent, async (req, res, next) => {
   try {
     const result = await createEnquiry({
       ...req.body,
       ip_address: req.ip,
       user_agent: req.get('user-agent') || '',
+      user_id: req.auth?.userId,
     });
     return res.status(201).json({
       message: 'Enquiry submitted successfully.',
