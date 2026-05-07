@@ -3,6 +3,14 @@ import { env } from '../config/env';
 import type { AuthContext } from '../middlewares/auth.middleware';
 
 /** Lead-shaped record returned by CRM `/api/customer/by-phone/:phone`. */
+export type CrmAssignedStaff = {
+  name: string;
+  phone: string;
+  email: string;
+  extension_no: number | string | null;
+};
+
+/** CRM lead row returned by `/api/customer/by-phone` / `by-email`. */
 export type CrmHistoryLead = {
   lead_id: number;
   mts_id: string | null;
@@ -17,8 +25,10 @@ export type CrmHistoryLead = {
   return_date: string | null;
   duration: string | null;
   assigned_staff_name: string | null;
+  assigned_staff?: CrmAssignedStaff | null;
   source: string | null;
-  summary: string | null;
+  /** Legacy — CRM no longer sends raw enquiry summaries to the website. */
+  summary?: string | null;
   booking_id_in_requirements: number | string | null;
   created_at: string;
   last_updated: string;
@@ -26,17 +36,229 @@ export type CrmHistoryLead = {
 
 export type CrmHistoryCustomer = {
   id: number;
+  salutation?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
   full_name: string | null;
   email: string | null;
   phone: string | null;
   avatar_url: string | null;
   date_added: string | null;
+  company?: string | null;
+  nationality?: string | null;
+  gst_number?: string | null;
+  pan_number?: string | null;
+  date_of_birth?: string | null;
+  passport_number?: string | null;
+  passport_expiry_date?: string | null;
+  address_street?: string | null;
+  address_city?: string | null;
+  address_state?: string | null;
+  address_country?: string | null;
+  address_zip?: string | null;
 };
 
 export type CrmHistoryResult = {
   customer: CrmHistoryCustomer | null;
   leads: CrmHistoryLead[];
 };
+
+export type ProfileRow = {
+  id: string;
+  email?: string | null;
+  full_name?: string | null;
+  phone?: string | null;
+  avatar_url?: string | null;
+  crm_customer_id?: number | null;
+  salutation?: string | null;
+  company?: string | null;
+  nationality?: string | null;
+  gst_number?: string | null;
+  pan_number?: string | null;
+  date_of_birth?: string | null;
+  passport_number?: string | null;
+  passport_expiry_date?: string | null;
+  address_street?: string | null;
+  address_city?: string | null;
+  address_state?: string | null;
+  address_country?: string | null;
+  address_zip?: string | null;
+};
+
+const PROFILE_SELECT =
+  'id,email,full_name,phone,avatar_url,crm_customer_id,salutation,company,nationality,gst_number,pan_number,date_of_birth,passport_number,passport_expiry_date,address_street,address_city,address_state,address_country,address_zip';
+
+export type AccountMePayload = {
+  user_id: string;
+  email: string | null;
+  full_name: string | null;
+  phone: string | null;
+  avatar_url: string | null;
+  crm_customer_id: number | null;
+  salutation: string | null;
+  company: string | null;
+  nationality: string | null;
+  gst_number: string | null;
+  pan_number: string | null;
+  date_of_birth: string | null;
+  passport_number: string | null;
+  passport_expiry_date: string | null;
+  address_street: string | null;
+  address_city: string | null;
+  address_state: string | null;
+  address_country: string | null;
+  address_zip: string | null;
+  /** Latest CRM snapshot for this login (phone/email match). */
+  crm_customer: CrmHistoryCustomer | null;
+};
+
+function crmFullName(c: CrmHistoryCustomer | null | undefined): string | null {
+  if (!c) return null;
+  const direct = String(c.full_name || '').trim();
+  if (direct) return direct;
+  const joined = [c.first_name, c.last_name].filter(Boolean).join(' ').trim();
+  return joined || null;
+}
+
+function isEmpty(v: unknown): boolean {
+  return v == null || String(v).trim() === '';
+}
+
+function pickLocalOrCrm(local: unknown, crmVal: unknown): string | null {
+  if (!isEmpty(local)) return String(local).trim();
+  if (crmVal != null && !isEmpty(crmVal)) return String(crmVal).trim();
+  return null;
+}
+
+/** Loads profiles row from DB (extended columns — falls back if migration not applied). */
+export async function fetchProfileRowForUser(userId: string): Promise<ProfileRow | null> {
+  const attempt = async (sel: string) =>
+    supabase.from('profiles').select(sel).eq('id', userId).maybeSingle();
+
+  const wide = await attempt(PROFILE_SELECT);
+  if (!wide.error && wide.data)
+    return wide.data as unknown as ProfileRow;
+
+  const narrow = await attempt('id,email,full_name,phone,avatar_url,crm_customer_id');
+  if (!narrow.error && narrow.data)
+    return narrow.data as unknown as ProfileRow;
+
+  return null;
+}
+
+/**
+ * When the website profile row still has blank fields, copy values from the CRM
+ * customer record so name / passport / address appear without manual re-entry.
+ */
+export async function persistProfileFieldsFromCrm(
+  userId: string,
+  crm: CrmHistoryResult
+): Promise<void> {
+  const c = crm.customer;
+  if (!c?.id) return;
+
+  const row = await fetchProfileRowForUser(userId);
+  if (!row) return;
+
+  const patch: Record<string, string | number | null> = {};
+
+  const nm = crmFullName(c);
+  if (isEmpty(row.full_name) && nm) patch.full_name = nm;
+  if (!(row.crm_customer_id != null && row.crm_customer_id > 0)) patch.crm_customer_id = c.id;
+  if (isEmpty(row.phone) && c.phone) patch.phone = String(c.phone).trim();
+
+  const pairs: [keyof ProfileRow, keyof CrmHistoryCustomer][] = [
+    ['salutation', 'salutation'],
+    ['company', 'company'],
+    ['nationality', 'nationality'],
+    ['gst_number', 'gst_number'],
+    ['pan_number', 'pan_number'],
+    ['date_of_birth', 'date_of_birth'],
+    ['passport_number', 'passport_number'],
+    ['passport_expiry_date', 'passport_expiry_date'],
+    ['address_street', 'address_street'],
+    ['address_city', 'address_city'],
+    ['address_state', 'address_state'],
+    ['address_country', 'address_country'],
+    ['address_zip', 'address_zip'],
+  ];
+  for (const [pk, ck] of pairs) {
+    const cur = row[pk];
+    const next = c[ck];
+    if (isEmpty(cur) && next != null && !isEmpty(next)) {
+      patch[pk as string] = String(next).trim();
+    }
+  }
+
+  if (Object.keys(patch).length === 0) return;
+
+  const { error } = await supabase.from('profiles').update(patch).eq('id', userId);
+  if (error && /column/i.test(String(error.message))) {
+    const minimal: Record<string, string | number> = {};
+    if ('full_name' in patch && patch.full_name) minimal.full_name = String(patch.full_name);
+    if ('crm_customer_id' in patch && patch.crm_customer_id != null) {
+      minimal.crm_customer_id = patch.crm_customer_id as number;
+    }
+    if ('phone' in patch && patch.phone) minimal.phone = String(patch.phone);
+    if (Object.keys(minimal).length === 0) return;
+    const retry = await supabase.from('profiles').update(minimal).eq('id', userId);
+    if (retry.error) {
+      // eslint-disable-next-line no-console
+      console.warn('[account] CRM→profile sync fallback failed:', retry.error.message);
+    }
+    return;
+  }
+  if (error) {
+    // eslint-disable-next-line no-console
+    console.warn('[account] CRM→profile sync failed:', error.message);
+  }
+}
+
+export function buildAccountMePayload(
+  ctx: AuthContext,
+  profile: ProfileRow | null,
+  crm: CrmHistoryResult
+): AccountMePayload {
+  const c = crm.customer;
+  return {
+    user_id: ctx.userId,
+    email: ctx.email ?? profile?.email ?? null,
+    full_name: pickLocalOrCrm(profile?.full_name ?? ctx.fullName, crmFullName(c)),
+    phone: pickLocalOrCrm(profile?.phone ?? ctx.phone, c?.phone ?? null),
+    avatar_url: pickLocalOrCrm(profile?.avatar_url ?? ctx.avatarUrl, c?.avatar_url ?? null),
+    crm_customer_id:
+      ctx.crmCustomerId ?? profile?.crm_customer_id ?? (c?.id != null ? c.id : null),
+    salutation: pickLocalOrCrm(profile?.salutation, c?.salutation ?? null),
+    company: pickLocalOrCrm(profile?.company, c?.company ?? null),
+    nationality: pickLocalOrCrm(profile?.nationality, c?.nationality ?? null),
+    gst_number: pickLocalOrCrm(profile?.gst_number, c?.gst_number ?? null),
+    pan_number: pickLocalOrCrm(profile?.pan_number, c?.pan_number ?? null),
+    date_of_birth: pickLocalOrCrm(profile?.date_of_birth, c?.date_of_birth ?? null),
+    passport_number: pickLocalOrCrm(profile?.passport_number, c?.passport_number ?? null),
+    passport_expiry_date: pickLocalOrCrm(
+      profile?.passport_expiry_date,
+      c?.passport_expiry_date ?? null
+    ),
+    address_street: pickLocalOrCrm(profile?.address_street, c?.address_street ?? null),
+    address_city: pickLocalOrCrm(profile?.address_city, c?.address_city ?? null),
+    address_state: pickLocalOrCrm(profile?.address_state, c?.address_state ?? null),
+    address_country: pickLocalOrCrm(profile?.address_country, c?.address_country ?? null),
+    address_zip: pickLocalOrCrm(profile?.address_zip, c?.address_zip ?? null),
+    crm_customer: c,
+  };
+}
+
+export async function buildAccountMeForUser(ctx: AuthContext): Promise<AccountMePayload> {
+  let crm: CrmHistoryResult = { customer: null, leads: [] };
+  try {
+    crm = await fetchCrmHistoryForProfile(ctx.phone, ctx.email);
+  } catch {
+    crm = { customer: null, leads: [] };
+  }
+  await persistProfileFieldsFromCrm(ctx.userId, crm);
+  const profile = await fetchProfileRowForUser(ctx.userId);
+  return buildAccountMePayload(ctx, profile, crm);
+}
 
 function requireCrmIntegration(): { base: string; secret: string } {
   const base = String(env.CRM_API_URL || '').replace(/\/$/, '');
@@ -122,7 +344,39 @@ export type ProfileCrmSnapshot = {
   phone?: string | null;
   avatar_url?: string | null;
   email?: string | null;
+  salutation?: string | null;
+  company?: string | null;
+  nationality?: string | null;
+  gst_number?: string | null;
+  pan_number?: string | null;
+  date_of_birth?: string | null;
+  passport_number?: string | null;
+  passport_expiry_date?: string | null;
+  address_street?: string | null;
+  address_city?: string | null;
+  address_state?: string | null;
+  address_country?: string | null;
+  address_zip?: string | null;
 };
+
+function profilePatchHasCrmExtras(p: ProfileCrmSnapshot): boolean {
+  const keys: (keyof ProfileCrmSnapshot)[] = [
+    'salutation',
+    'company',
+    'nationality',
+    'gst_number',
+    'pan_number',
+    'date_of_birth',
+    'passport_number',
+    'passport_expiry_date',
+    'address_street',
+    'address_city',
+    'address_state',
+    'address_country',
+    'address_zip',
+  ];
+  return keys.some((k) => typeof p[k] === 'string' && String(p[k]).trim() !== '');
+}
 
 /**
  * Push a profile change to the CRM customers table. Persists the resolved
@@ -142,7 +396,44 @@ export async function syncProfileToCrm(
   const avatarUrl = String(patch.avatar_url ?? ctx.avatarUrl ?? '').trim();
   const email = String(patch.email ?? ctx.email ?? '').trim();
 
-  if (!fullName && !phone && !email) return null;
+  const body: Record<string, unknown> = {
+    crm_customer_id: ctx.crmCustomerId || undefined,
+    full_name: fullName || undefined,
+    email: email || undefined,
+    phone: phone || undefined,
+    avatar_url: avatarUrl || undefined,
+    match_priority: 'phone_then_email',
+  };
+
+  const extras: (keyof ProfileCrmSnapshot)[] = [
+    'salutation',
+    'company',
+    'nationality',
+    'gst_number',
+    'pan_number',
+    'date_of_birth',
+    'passport_number',
+    'passport_expiry_date',
+    'address_street',
+    'address_city',
+    'address_state',
+    'address_country',
+    'address_zip',
+  ];
+  for (const k of extras) {
+    const v = patch[k];
+    if (typeof v === 'string' && v.trim()) body[k] = v.trim();
+  }
+
+  if (
+    !fullName &&
+    !phone &&
+    !email &&
+    !profilePatchHasCrmExtras(patch) &&
+    !(ctx.crmCustomerId && ctx.crmCustomerId > 0)
+  ) {
+    return null;
+  }
 
   const response = await crmFetch(`${base}/api/customer/sync`, {
     method: 'POST',
@@ -150,15 +441,7 @@ export async function syncProfileToCrm(
       'Content-Type': 'application/json',
       'x-integration-secret': secret,
     },
-    body: JSON.stringify({
-      crm_customer_id: ctx.crmCustomerId || undefined,
-      full_name: fullName || undefined,
-      email: email || undefined,
-      phone: phone || undefined,
-      avatar_url: avatarUrl || undefined,
-      /** Hint for CRM: resolve duplicate rows by phone before email. */
-      match_priority: 'phone_then_email',
-    }),
+    body: JSON.stringify(body),
   });
   if (!response.ok) {
     const text = await response.text().catch(() => '');
@@ -279,12 +562,30 @@ export async function fetchEnquiriesForUser(userId: string): Promise<DashboardEn
 /** Update profile + push to CRM. Returns the patched profile. */
 export async function updateProfileAndSyncToCrm(
   ctx: AuthContext,
-  patch: { full_name?: string; phone?: string; avatar_url?: string }
+  patch: Partial<ProfileCrmSnapshot>
 ) {
   const cleaned: Record<string, string | null> = {};
-  if (typeof patch.full_name === 'string') cleaned.full_name = patch.full_name.trim() || null;
-  if (typeof patch.phone === 'string') cleaned.phone = patch.phone.trim() || null;
-  if (typeof patch.avatar_url === 'string') cleaned.avatar_url = patch.avatar_url.trim() || null;
+  const strKeys: (keyof ProfileCrmSnapshot)[] = [
+    'full_name',
+    'phone',
+    'avatar_url',
+    'salutation',
+    'company',
+    'nationality',
+    'gst_number',
+    'pan_number',
+    'date_of_birth',
+    'passport_number',
+    'passport_expiry_date',
+    'address_street',
+    'address_city',
+    'address_state',
+    'address_country',
+    'address_zip',
+  ];
+  for (const k of strKeys) {
+    if (typeof patch[k] === 'string') cleaned[k as string] = String(patch[k]).trim() || null;
+  }
 
   if (Object.keys(cleaned).length === 0) {
     throw new Error('Nothing to update.');
@@ -294,19 +595,25 @@ export async function updateProfileAndSyncToCrm(
     .from('profiles')
     .update(cleaned)
     .eq('id', ctx.userId)
-    .select('id,email,full_name,phone,avatar_url,crm_customer_id')
+    .select(PROFILE_SELECT)
     .single();
   if (error || !updated) {
-    throw new Error(`Failed to update profile: ${error?.message || 'unknown error'}`);
+    const fallback = await supabase
+      .from('profiles')
+      .update(cleaned)
+      .eq('id', ctx.userId)
+      .select('id,email,full_name,phone,avatar_url,crm_customer_id')
+      .single();
+    if (fallback.error || !fallback.data) {
+      throw new Error(`Failed to update profile: ${error?.message || fallback.error?.message || 'unknown error'}`);
+    }
+    return finishProfileSync(ctx, fallback.data as ProfileRow);
   }
 
-  const u = updated as {
-    full_name?: string | null;
-    phone?: string | null;
-    avatar_url?: string | null;
-    email?: string | null;
-    crm_customer_id?: number | null;
-  };
+  return finishProfileSync(ctx, updated as ProfileRow);
+}
+
+async function finishProfileSync(ctx: AuthContext, u: ProfileRow) {
   const snapshotCtx: AuthContext = {
     ...ctx,
     fullName: u.full_name ?? null,
@@ -319,16 +626,28 @@ export async function updateProfileAndSyncToCrm(
     phone: u.phone,
     avatar_url: u.avatar_url,
     email: u.email ?? ctx.email,
+    salutation: u.salutation,
+    company: u.company,
+    nationality: u.nationality,
+    gst_number: u.gst_number,
+    pan_number: u.pan_number,
+    date_of_birth: u.date_of_birth,
+    passport_number: u.passport_number,
+    passport_expiry_date: u.passport_expiry_date,
+    address_street: u.address_street,
+    address_city: u.address_city,
+    address_state: u.address_state,
+    address_country: u.address_country,
+    address_zip: u.address_zip,
   };
 
-  // Never block the HTTP response on CRM — sync can hang if CRM_URL/DNS is wrong.
   void syncProfileToCrm(snapshotCtx, snapshot).catch((err) => {
     // eslint-disable-next-line no-console
     console.warn('[account] background CRM profile sync failed:', err);
   });
 
   return {
-    profile: updated,
+    profile: u,
     crm: null,
     crm_sync_started: true as const,
   };

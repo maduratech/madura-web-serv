@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireAuth } from '../../middlewares/auth.middleware';
 import {
+  buildAccountMeForUser,
   fetchBookingsForUser,
   fetchCrmHistoryForProfile,
   fetchEnquiriesForUser,
@@ -9,18 +10,14 @@ import {
 
 const accountRouter = Router();
 
-/** GET /api/v1/account/me — basic auth check + profile snapshot. */
-accountRouter.get('/account/me', requireAuth, async (req, res) => {
-  return res.status(200).json({
-    data: {
-      user_id: req.auth!.userId,
-      email: req.auth!.email,
-      full_name: req.auth!.fullName,
-      phone: req.auth!.phone,
-      avatar_url: req.auth!.avatarUrl,
-      crm_customer_id: req.auth!.crmCustomerId,
-    },
-  });
+/** GET /api/v1/account/me — auth check + profile merged with CRM when configured. */
+accountRouter.get('/account/me', requireAuth, async (req, res, next) => {
+  try {
+    const data = await buildAccountMeForUser(req.auth!);
+    return res.status(200).json({ data });
+  } catch (err) {
+    return next(err);
+  }
 });
 
 /** GET /api/v1/account/bookings — paid + pending bookings for the signed-in user. */
@@ -63,10 +60,25 @@ accountRouter.get('/account/crm-history', requireAuth, async (req, res, next) =>
 accountRouter.post('/account/profile', requireAuth, async (req, res, next) => {
   try {
     const patch = req.body || {};
+    const pickStr = (k: string) =>
+      typeof patch[k] === 'string' ? (patch[k] as string) : undefined;
     const result = await updateProfileAndSyncToCrm(req.auth!, {
-      full_name: typeof patch.full_name === 'string' ? patch.full_name : undefined,
-      phone: typeof patch.phone === 'string' ? patch.phone : undefined,
-      avatar_url: typeof patch.avatar_url === 'string' ? patch.avatar_url : undefined,
+      full_name: pickStr('full_name'),
+      phone: pickStr('phone'),
+      avatar_url: pickStr('avatar_url'),
+      salutation: pickStr('salutation'),
+      company: pickStr('company'),
+      nationality: pickStr('nationality'),
+      gst_number: pickStr('gst_number'),
+      pan_number: pickStr('pan_number'),
+      date_of_birth: pickStr('date_of_birth'),
+      passport_number: pickStr('passport_number'),
+      passport_expiry_date: pickStr('passport_expiry_date'),
+      address_street: pickStr('address_street'),
+      address_city: pickStr('address_city'),
+      address_state: pickStr('address_state'),
+      address_country: pickStr('address_country'),
+      address_zip: pickStr('address_zip'),
     });
     return res.status(200).json({ data: result });
   } catch (err) {
