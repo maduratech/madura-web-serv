@@ -247,14 +247,13 @@ export async function fetchEnquiriesForUser(userId: string): Promise<DashboardEn
     .limit(100);
   if (error) {
     const msg = String(error.message || '');
-    // Table never created, or user_id column / RLS not migrated yet — don't 500 the dashboard.
+    // Table never created or not exposed to PostgREST — normal until you migrate.
     if (
       /relation .* does not exist/i.test(msg) ||
       /could not find the table/i.test(msg) ||
+      /schema cache/i.test(msg) ||
       /column .*user_id/i.test(msg)
     ) {
-      // eslint-disable-next-line no-console
-      console.warn('[account] enquiries table unavailable:', msg);
       return [];
     }
     // Forward-compatible: drop unknown columns if any are missing.
@@ -266,8 +265,6 @@ export async function fetchEnquiriesForUser(userId: string): Promise<DashboardEn
         .order('created_at', { ascending: false })
         .limit(100);
       if (fallback.error) {
-        // eslint-disable-next-line no-console
-        console.warn('[account] enquiries fallback failed:', fallback.error.message);
         return [];
       }
       return ((fallback.data || []) as unknown) as DashboardEnquiry[];
