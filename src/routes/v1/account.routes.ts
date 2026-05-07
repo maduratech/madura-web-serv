@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { requireAuth } from '../../middlewares/auth.middleware';
 import {
   fetchBookingsForUser,
-  fetchCrmHistoryForPhone,
+  fetchCrmHistoryForProfile,
   fetchEnquiriesForUser,
   updateProfileAndSyncToCrm,
 } from '../../services/account.service';
@@ -43,19 +43,17 @@ accountRouter.get('/account/enquiries', requireAuth, async (req, res, next) => {
   }
 });
 
-/** GET /api/v1/account/crm-history — leads/queries from the CRM keyed by user's phone. */
+/** GET /api/v1/account/crm-history — leads from CRM: match by phone first, then login email. */
 accountRouter.get('/account/crm-history', requireAuth, async (req, res, next) => {
   try {
     const phone = String(req.auth!.phone || '').trim();
-    if (!phone) {
-      return res.status(200).json({
-        data: { customer: null, leads: [] },
-        message:
-          'Phone is missing on your profile. Add it under My Account to see your CRM history.',
-      });
-    }
-    const data = await fetchCrmHistoryForPhone(phone);
-    return res.status(200).json({ data });
+    const email = String(req.auth!.email || '').trim();
+    const data = await fetchCrmHistoryForProfile(phone, email);
+    const message =
+      !phone && !data.customer
+        ? 'Add a phone on your profile for the strongest match. We also search by your login email.'
+        : undefined;
+    return res.status(200).json({ data, message });
   } catch (err) {
     return next(err);
   }

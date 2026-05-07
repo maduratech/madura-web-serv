@@ -49,25 +49,71 @@ function requireCrmIntegration(): { base: string; secret: string } {
   return { base, secret };
 }
 
+const CRM_FETCH_TIMEOUT_MS = 15000;
+
+async function crmFetch(url: string, init?: RequestInit): Promise<Response> {
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), CRM_FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(id);
+  }
+}
+
 /**
- * Fetch the customer's lead history from the CRM.
- * Returns null-customer when there's no CRM record yet (new user).
+ * Fetch CRM lead history: **phone first** (last 10 digits), then **login email**
+ * when phone is missing or too short — matches CRM customers created with email only.
  */
-export async function fetchCrmHistoryForPhone(phone: string): Promise<CrmHistoryResult> {
+export async function fetchCrmHistoryForProfile(
+  phone: string | null | undefined,
+  email: string | null | undefined
+): Promise<CrmHistoryResult> {
   const { base, secret } = requireCrmIntegration();
-  const cleaned = String(phone || '').replace(/\D/g, '');
-  if (cleaned.length < 10) {
-    return { customer: null, leads: [] };
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length >= 10) {
+    const last10 = digits.slice(-10);
+    try {
+      const response = await crmFetch(`${base}/api/customer/by-phone/${encodeURIComponent(last10)}`, {
+        method: 'GET',
+        headers: { 'x-integration-secret': secret },
+      });
+      if (response.ok) {
+        return (await response.json()) as CrmHistoryResult;
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[account] CRM by-phone fetch failed:', err);
+    }
   }
-  const response = await fetch(`${base}/api/customer/by-phone/${encodeURIComponent(cleaned)}`, {
-    method: 'GET',
-    headers: { 'x-integration-secret': secret },
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new Error(`CRM history fetch failed: ${response.status} ${text}`.trim());
+
+  const em = String(email || '')
+    .trim()
+    .toLowerCase();
+  if (em.includes('@')) {
+    try {
+      const response = await crmFetch(
+        `${base}/api/customer/by-email/${encodeURIComponent(em)}`,
+        {
+          method: 'GET',
+          headers: { 'x-integration-secret': secret },
+        }
+      );
+      if (response.ok) {
+        return (await response.json()) as CrmHistoryResult;
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[account] CRM by-email fetch failed:', err);
+    }
   }
-  return (await response.json()) as CrmHistoryResult;
+
+  return { customer: null, leads: [] };
+}
+
+/** @deprecated use fetchCrmHistoryForProfile — kept for direct callers */
+export async function fetchCrmHistoryForPhone(phone: string): Promise<CrmHistoryResult> {
+  return fetchCrmHistoryForProfile(phone, null);
 }
 
 /** Fields sent to CRM on profile save (phone match takes priority over email on the CRM side). */
@@ -98,7 +144,7 @@ export async function syncProfileToCrm(
 
   if (!fullName && !phone && !email) return null;
 
-  const response = await fetch(`${base}/api/customer/sync`, {
+  const response = await crmFetch(`${base}/api/customer/sync`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -200,18 +246,35 @@ export async function fetchEnquiriesForUser(userId: string): Promise<DashboardEn
     .order('created_at', { ascending: false })
     .limit(100);
   if (error) {
+    const msg = String(error.message || '');
+    // Table never created, or user_id column / RLS not migrated yet — don't 500 the dashboard.
+    if (
+      /relation .* does not exist/i.test(msg) ||
+      /could not find the table/i.test(msg) ||
+      /column .*user_id/i.test(msg)
+    ) {
+      // eslint-disable-next-line no-console
+      console.warn('[account] enquiries table unavailable:', msg);
+      return [];
+    }
     // Forward-compatible: drop unknown columns if any are missing.
-    if (/column .* does not exist/i.test(String(error.message || ''))) {
+    if (/column .* does not exist/i.test(msg)) {
       const fallback = await supabase
         .from('enquiries')
         .select('id,destination,travel_date,created_at')
         .eq('user_id', userId)
         .order('created_at', { ascending: false })
         .limit(100);
-      if (fallback.error) throw new Error(`Failed to load enquiries: ${fallback.error.message}`);
+      if (fallback.error) {
+        // eslint-disable-next-line no-console
+        console.warn('[account] enquiries fallback failed:', fallback.error.message);
+        return [];
+      }
       return ((fallback.data || []) as unknown) as DashboardEnquiry[];
     }
-    throw new Error(`Failed to load enquiries: ${error.message}`);
+    // eslint-disable-next-line no-console
+    console.warn('[account] enquiries query failed:', msg);
+    return [];
   }
   return ((data || []) as unknown) as DashboardEnquiry[];
 }
@@ -240,33 +303,36 @@ export async function updateProfileAndSyncToCrm(
     throw new Error(`Failed to update profile: ${error?.message || 'unknown error'}`);
   }
 
-  let crmResult: Awaited<ReturnType<typeof syncProfileToCrm>> = null;
-  try {
-    const u = updated as {
-      full_name?: string | null;
-      phone?: string | null;
-      avatar_url?: string | null;
-      email?: string | null;
-      crm_customer_id?: number | null;
-    };
-    crmResult = await syncProfileToCrm(
-      {
-        ...ctx,
-        fullName: u.full_name ?? null,
-        phone: u.phone ?? null,
-        avatarUrl: u.avatar_url ?? null,
-        crmCustomerId: u.crm_customer_id ?? null,
-      },
-      {
-        full_name: u.full_name,
-        phone: u.phone,
-        avatar_url: u.avatar_url,
-        email: u.email ?? ctx.email,
-      }
-    );
-  } catch (err) {
+  const u = updated as {
+    full_name?: string | null;
+    phone?: string | null;
+    avatar_url?: string | null;
+    email?: string | null;
+    crm_customer_id?: number | null;
+  };
+  const snapshotCtx: AuthContext = {
+    ...ctx,
+    fullName: u.full_name ?? null,
+    phone: u.phone ?? null,
+    avatarUrl: u.avatar_url ?? null,
+    crmCustomerId: u.crm_customer_id ?? null,
+  };
+  const snapshot: ProfileCrmSnapshot = {
+    full_name: u.full_name,
+    phone: u.phone,
+    avatar_url: u.avatar_url,
+    email: u.email ?? ctx.email,
+  };
+
+  // Never block the HTTP response on CRM — sync can hang if CRM_URL/DNS is wrong.
+  void syncProfileToCrm(snapshotCtx, snapshot).catch((err) => {
     // eslint-disable-next-line no-console
-    console.warn('[account] CRM profile sync failed (kept local update):', err);
-  }
-  return { profile: updated, crm: crmResult };
+    console.warn('[account] background CRM profile sync failed:', err);
+  });
+
+  return {
+    profile: updated,
+    crm: null,
+    crm_sync_started: true as const,
+  };
 }
