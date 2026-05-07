@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { type Request } from 'express';
 import cors from 'cors';
 import { apiRouter } from './routes';
 import { errorMiddleware } from './middlewares/error.middleware';
@@ -14,8 +14,29 @@ const parseAllowedOrigins = (): string[] | null => {
     .filter(Boolean);
 };
 
+/**
+ * Read-only public endpoints (catalog data). These are safe to expose to any
+ * browser origin — no auth, no side effects — so we always send
+ * `Access-Control-Allow-Origin: *` for GET on these paths.
+ */
+const PUBLIC_GET_PATHS = [
+  '/api/v1/tours',
+  '/api/v1/tours-listing',
+  '/api/v1/destinations',
+  '/api/v1/search-options',
+  '/api/v1/destination-showcase',
+];
+
+const isPublicGet = (req: Request): boolean => {
+  if (req.method !== 'GET' && req.method !== 'OPTIONS') return false;
+  const path = req.path || '';
+  return PUBLIC_GET_PATHS.some(
+    (prefix) => path === prefix || path.startsWith(`${prefix}/`)
+  );
+};
+
 const allowedOrigins = parseAllowedOrigins();
-const corsOptions: cors.CorsOptions =
+const strictCorsOptions: cors.CorsOptions =
   allowedOrigins && allowedOrigins.length > 0
     ? {
         origin: (reqOrigin, callback) => {
@@ -34,9 +55,18 @@ const corsOptions: cors.CorsOptions =
       }
     : {};
 
+const publicCors = cors({
+  origin: '*',
+  methods: ['GET', 'OPTIONS'],
+});
+const strictCors = cors(strictCorsOptions);
+
 const app = express();
 
-app.use(cors(corsOptions));
+app.use((req, res, next) => {
+  if (isPublicGet(req)) return publicCors(req, res, next);
+  return strictCors(req, res, next);
+});
 app.use(express.json());
 app.use(loggerMiddleware);
 
