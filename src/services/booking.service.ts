@@ -82,6 +82,7 @@ export type VerifyBookingPaymentInput = {
   razorpay_order_id: string;
   razorpay_payment_id: string;
   razorpay_signature: string;
+  purpose?: 'advance' | 'balance';
 };
 
 export type UpdateBookingPaymentStatusInput = {
@@ -409,6 +410,30 @@ async function createBookingTransaction(input: {
     return;
   }
   throw new Error(`Failed to create booking transaction: ${error.message}`);
+}
+
+async function getSuccessfulBookingTransactionTotal(bookingId: number): Promise<number | null> {
+  const { data, error } = await supabase
+    .from('booking_transactions')
+    .select('amount,payment_status')
+    .eq('booking_id', bookingId);
+  if (error) {
+    if (/relation .* does not exist/i.test(String(error.message || ''))) return null;
+    // eslint-disable-next-line no-console
+    console.warn('[booking-transaction] total lookup failed:', error.message);
+    return null;
+  }
+  return (data || []).reduce((sum, row) => {
+    const status = String((row as { payment_status?: string | null }).payment_status || '').toLowerCase();
+    if (!['success', 'paid', 'captured'].some((key) => status.includes(key))) return sum;
+    return sum + Number((row as { amount?: number | null }).amount || 0);
+  }, 0);
+}
+
+async function getPaidAmountForBooking(booking: { id: number; payment_amount?: number | null }) {
+  const bookingPaid = Number(booking.payment_amount || 0);
+  const transactionPaid = await getSuccessfulBookingTransactionTotal(booking.id);
+  return Math.max(bookingPaid, Number(transactionPaid || 0));
 }
 
 type DestinationRow = { id: number; name: string };
@@ -1193,6 +1218,74 @@ export async function createBookingPaymentOrder(input: CreateBookingPaymentOrder
   };
 }
 
+export async function getBookingPaymentSummary(input: CreateBookingPaymentOrderInput) {
+  if (!input.booking_id) throw new Error('booking_id is required.');
+  const context = await getBookingPaymentContext(input.booking_id);
+  const totalAmountInInr = Number((context.booking as { total_price?: number | null })?.total_price || 0);
+  const paidAmountInInr = await getPaidAmountForBooking(context.booking);
+  const remainingAmountInInr = Math.max(0, totalAmountInInr - paidAmountInInr);
+  return {
+    booking_id: context.booking.id,
+    mts_id: context.booking.mts_id ?? null,
+    payment_status: context.booking.payment_status ?? null,
+    total_amount: totalAmountInInr,
+    paid_amount: paidAmountInInr,
+    remaining_amount: remainingAmountInInr,
+    display_currency: context.displayCurrency,
+    display_fx_rate: context.displayFxRate,
+  };
+}
+
+export async function createBookingBalancePaymentOrder(input: CreateBookingPaymentOrderInput) {
+  if (!input.booking_id) throw new Error('booking_id is required.');
+  if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
+    throw new Error('Razorpay credentials are not configured.');
+  }
+
+  const context = await getBookingPaymentContext(input.booking_id);
+  const totalAmountInInr = Number((context.booking as { total_price?: number | null })?.total_price || 0);
+  const paidAmountInInr = await getPaidAmountForBooking(context.booking);
+  const remainingAmountInInr = Math.max(0, Math.round(totalAmountInInr - paidAmountInInr));
+  if (remainingAmountInInr <= 0) {
+    throw new Error('No balance amount is due for this booking.');
+  }
+
+  const order = await razorpayClient.orders.create({
+    amount: remainingAmountInInr * 100,
+    currency: 'INR',
+    receipt: `booking_balance_${context.booking.id}_${Date.now()}`,
+    notes: {
+      booking_id: String(context.booking.id),
+      purpose: 'balance',
+      destination: context.destination || 'N/A',
+      tour_title: context.tourTitle || 'N/A',
+    },
+  });
+
+  try {
+    await upsertBookingPaymentFields(context.booking.id, {
+      payment_status: 'balance_pending',
+      payment_order_id: order.id,
+      payment_currency: 'INR',
+      payment_notes: `Balance payment initiated via Razorpay order ${order.id}`,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[balance-payment-order] booking payment field update failed:', err);
+  }
+
+  return {
+    booking: context.booking,
+    razorpay_key_id: env.RAZORPAY_KEY_ID,
+    razorpay_order_id: order.id,
+    amount: remainingAmountInInr * 100,
+    currency: 'INR',
+    paid_amount: paidAmountInInr,
+    remaining_amount: remainingAmountInInr,
+    description: `Balance payment for ${context.booking.mts_id || context.tourTitle || context.destination || 'your tour'}`,
+  };
+}
+
 export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
   if (!input.booking_id || !input.razorpay_order_id || !input.razorpay_payment_id || !input.razorpay_signature) {
     throw new Error('booking_id, razorpay_order_id, razorpay_payment_id and razorpay_signature are required.');
@@ -1219,11 +1312,13 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
       lead_id: context.booking.crm_lead_id ?? null,
     };
   }
-  let paidAmountInInr = Number((context.booking as { payment_amount?: number | null })?.payment_amount || 0);
+  const paidBeforeInInr = await getPaidAmountForBooking(context.booking);
+  let currentPaymentAmountInInr = Number((context.booking as { payment_amount?: number | null })?.payment_amount || 0);
   let paymentCurrency = 'INR';
   let paidAtIso = new Date().toISOString();
   let razorpayBankRrn = '';
   let razorpayDescription = '';
+  let paymentPurpose: 'advance' | 'balance' = input.purpose || 'advance';
   try {
     const payment = (await razorpayClient.payments.fetch(input.razorpay_payment_id)) as {
       amount?: number;
@@ -1233,7 +1328,7 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
       description?: string;
     };
     if (Number.isFinite(Number(payment?.amount || 0)) && Number(payment?.amount || 0) > 0) {
-      paidAmountInInr = Number(payment.amount) / 100;
+      currentPaymentAmountInInr = Number(payment.amount) / 100;
     }
     paymentCurrency = String(payment?.currency || 'INR').toUpperCase();
     if (Number.isFinite(Number(payment?.created_at || 0)) && Number(payment?.created_at || 0) > 0) {
@@ -1245,22 +1340,44 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
     // eslint-disable-next-line no-console
     console.warn('[payment-verify] unable to fetch Razorpay payment details, using booking fallback:', err);
   }
+  if (!input.purpose) {
+    try {
+      const order = (await razorpayClient.orders.fetch(input.razorpay_order_id)) as {
+        notes?: { purpose?: string };
+      };
+      if (String(order?.notes?.purpose || '').toLowerCase() === 'balance') {
+        paymentPurpose = 'balance';
+      }
+    } catch {
+      // Order notes are best-effort; default advance behavior remains.
+    }
+  }
   const fullAmountInInr = Number((context.booking as { total_price?: number | null })?.total_price || 0);
-  const remainingAmountInInr = Math.max(0, fullAmountInInr - paidAmountInInr);
-  const advanceSlabInInr = Number((context.booking as { payment_amount?: number | null })?.payment_amount || 0);
+  const cumulativePaidAmountInInr =
+    paymentPurpose === 'balance'
+      ? Math.min(fullAmountInInr, paidBeforeInInr + currentPaymentAmountInInr)
+      : currentPaymentAmountInInr;
+  const remainingAmountInInr = Math.max(0, fullAmountInInr - cumulativePaidAmountInInr);
+  const nextPaymentStatus = remainingAmountInInr <= 0 ? 'paid' : 'partial_paid';
+  const advanceSlabInInr =
+    paymentPurpose === 'balance'
+      ? Number(paidBeforeInInr || 0)
+      : Number((context.booking as { payment_amount?: number | null })?.payment_amount || currentPaymentAmountInInr || 0);
   const customerCurrencyLine = context.displayCurrency
     ? `\nCustomer Display Currency: ${context.displayCurrency}${context.displayFxRate ? ` (1 INR ≈ ${(1 / context.displayFxRate).toFixed(6)} ${context.displayCurrency} | 1 ${context.displayCurrency} ≈ INR ${context.displayFxRate})` : ''}`
     : '';
   const paymentCurrencyAmount =
     paymentCurrency && paymentCurrency !== 'INR'
-      ? `${paymentCurrency} ${Number(paidAmountInInr || 0).toLocaleString('en-IN')}`
-      : context.formatInr(paidAmountInInr);
+      ? `${paymentCurrency} ${Number(currentPaymentAmountInInr || 0).toLocaleString('en-IN')}`
+      : context.formatInr(currentPaymentAmountInInr);
   const detailsNote =
     `Payment Status: SUCCESS\n` +
+    `Payment Purpose: ${paymentPurpose === 'balance' ? 'BALANCE' : 'ADVANCE'}\n` +
     `Booking ID: ${context.booking.id}\n` +
     `Razorpay Order ID: ${input.razorpay_order_id}\n` +
     `Razorpay Payment ID: ${input.razorpay_payment_id}\n` +
     `Amount Paid: ${paymentCurrencyAmount}\n` +
+    `Cumulative Paid: ${context.formatInr(cumulativePaidAmountInInr)}\n` +
     `Full Package Amount: ${context.formatInr(fullAmountInInr)}\n` +
     `Remaining Amount: ${context.formatInr(remainingAmountInInr)}\n` +
     `Advance Slab: ${context.formatInr(advanceSlabInInr)}\n` +
@@ -1279,10 +1396,10 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
   try {
     await upsertBookingPaymentFields(context.booking.id, {
       status: 'confirmed',
-      payment_status: 'paid',
+      payment_status: nextPaymentStatus,
       payment_order_id: input.razorpay_order_id,
       payment_id: input.razorpay_payment_id,
-      payment_amount: paidAmountInInr,
+      payment_amount: cumulativePaidAmountInInr,
       payment_currency: paymentCurrency,
       payment_verified_at: new Date().toISOString(),
       payment_notes: detailsNote,
@@ -1296,7 +1413,7 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
     await createBookingTransaction({
       booking_id: context.booking.id,
       payment_status: 'success',
-      amount: Number(paidAmountInInr || 0),
+      amount: Number(currentPaymentAmountInInr || 0),
       currency: paymentCurrency || 'INR',
       payment_order_id: input.razorpay_order_id,
       payment_id: input.razorpay_payment_id,
@@ -1312,7 +1429,7 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
     crmSyncResult = await syncBookingPaymentToCrm({
       booking_id: context.booking.id,
       payment_status: 'success',
-      amount: Number(paidAmountInInr || 0),
+      amount: Number(currentPaymentAmountInInr || 0),
       amount_slab: advanceSlabInInr,
       full_amount: fullAmountInInr,
       remaining_amount: remainingAmountInInr,
@@ -1360,7 +1477,9 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
   return {
     booking_id: context.booking.id,
     status: 'confirmed',
-    payment_status: 'paid',
+    payment_status: nextPaymentStatus,
+    paid_amount: cumulativePaidAmountInInr,
+    remaining_amount: remainingAmountInInr,
     mts_id: crmSyncResult?.mts_id ?? null,
     lead_id: crmSyncResult?.lead_id ?? null,
   };

@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import {
   createBooking,
+  createBookingBalancePaymentOrder,
   createBookingPaymentOrder,
   createEnquiry,
   createWebsiteLead,
+  getBookingPaymentSummary,
   handleRazorpayWebhook,
   updateBookingPaymentStatus,
   verifyBookingPayment
@@ -40,6 +42,32 @@ bookingsRouter.post('/bookings/:bookingId/payment-order', async (req, res, next)
   }
 });
 
+bookingsRouter.get('/bookings/:bookingId/payment-summary', async (req, res, next) => {
+  try {
+    const bookingId = Number(req.params.bookingId || 0);
+    const result = await getBookingPaymentSummary({ booking_id: bookingId });
+    return res.status(200).json({
+      message: 'Payment summary loaded.',
+      data: result,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+bookingsRouter.post('/bookings/:bookingId/balance-payment-order', async (req, res, next) => {
+  try {
+    const bookingId = Number(req.params.bookingId || req.body.booking_id || 0);
+    const result = await createBookingBalancePaymentOrder({ booking_id: bookingId });
+    return res.status(201).json({
+      message: 'Balance payment order created successfully.',
+      data: result,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 bookingsRouter.post('/bookings/:bookingId/payment-verify', async (req, res, next) => {
   try {
     const bookingId = Number(req.params.bookingId || req.body.booking_id || 0);
@@ -48,6 +76,7 @@ bookingsRouter.post('/bookings/:bookingId/payment-verify', async (req, res, next
       razorpay_order_id: String(req.body.razorpay_order_id || ''),
       razorpay_payment_id: String(req.body.razorpay_payment_id || ''),
       razorpay_signature: String(req.body.razorpay_signature || ''),
+      purpose: req.body.purpose === 'balance' ? 'balance' : undefined,
     });
     return res.status(200).json({
       message: 'Payment verified successfully.',
