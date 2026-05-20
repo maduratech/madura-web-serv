@@ -3,6 +3,7 @@ import { enqueueCrmBookingSync } from '../jobs/crm.job';
 import { env } from '../config/env';
 import crypto from 'node:crypto';
 import Razorpay from 'razorpay';
+import {resolveIso2FromCountryHint} from '../lib/country-name-to-iso2';
 
 export type TravellerInput = {
   type: 'adult' | 'child' | 'infant';
@@ -436,7 +437,28 @@ async function getPaidAmountForBooking(booking: { id: number; payment_amount?: n
   return Math.max(bookingPaid, Number(transactionPaid || 0));
 }
 
-type DestinationRow = { id: number; name: string };
+export type DestinationListItem = {
+  id: number;
+  name: string;
+  /** Display line: "City, Country" or country/region name only */
+  label: string;
+  /** ISO 3166-1 alpha-2 fallback when no `flag_image_url` */
+  flag_iso: string | null;
+  /** Optional absolute URL for flag art in Supabase (PNG/JPEG/GIF…) */
+  flag_image_url?: string | null;
+};
+
+type DestinationListRawRow = {
+  id: number;
+  name: string;
+  destination_type?: string | null;
+  parent_id?: number | null;
+  country_region?: string | null;
+  /** Explicit ISO 3166-1 alpha-2 on website destinations (preferred for flags). */
+  flag_iso?: string | null;
+  /** Direct flag asset URL stored in Website Supabase */
+  flag_image_url?: string | null;
+};
 type DepartureCityRow = { name: string };
 type DestinationShowcaseRow = {
   id: number;
@@ -445,7 +467,10 @@ type DestinationShowcaseRow = {
   destination_type?: string | null;
   parent_id?: number | null;
   continent?: string | null;
+  /** Website Supabase often uses this */
   image_url?: string | null;
+  /** CRM-style column when present */
+  cover_image_url?: string | null;
 };
 type TourRow = {
   id: number;
@@ -475,7 +500,12 @@ type ListingTourRow = {
   single_sharing_price?: number | null;
   child_with_bed_price?: number | null;
   child_without_bed_price?: number | null;
-  destination_ref?: { name?: string | null; slug?: string | null; image_url?: string | null } | null;
+  destination_ref?: {
+    name?: string | null;
+    slug?: string | null;
+    image_url?: string | null;
+    cover_image_url?: string | null;
+  } | null;
   departures?: Array<{
     price?: number | null;
     start_date?: string | null;
@@ -485,17 +515,179 @@ type ListingTourRow = {
   }> | null;
 };
 
-export async function getDestinations() {
-  const { data, error } = await supabase
-    .from('destinations')
-    .select('id,name')
-    .order('name', { ascending: true });
+function destinationKind(row: DestinationListRawRow): 'city' | 'country' | 'continent' | 'other' {
+  const raw = row.destination_type;
+  if (raw == null || String(raw).trim() === '') {
+    return 'other';
+  }
+  const t = String(raw).toLowerCase().trim();
+  if (t === 'city') return 'city';
+  if (t === 'country') return 'country';
+  if (t === 'continent') return 'continent';
+  return 'other';
+}
 
-  if (error) {
-    throw new Error(`Failed to fetch destinations: ${error.message}`);
+/** Broad regions (not individual countries) — hidden from searchable "where to go". */
+function isExcludedMacroRegion(name: string): boolean {
+  const key = String(name || '').trim().toLowerCase();
+  if (!key) return false;
+  const exclusions = new Set([
+    'africa',
+    'asia',
+    'europe',
+    'antarctica',
+    'oceania',
+    'north america',
+    'south america',
+    'latin america',
+    'middle east',
+    'arab world',
+    'caribbean',
+    'central america',
+    'scandinavia',
+    'balkans',
+    'south east asia',
+    'southeast asia',
+  ]);
+  return exclusions.has(key);
+}
+
+function resolveParentCountryRow(
+  row: DestinationListRawRow,
+  byId: Map<number, DestinationListRawRow>,
+): DestinationListRawRow | null {
+  let current: DestinationListRawRow | undefined = row;
+  const seen = new Set<number>();
+  while (current?.parent_id != null && !seen.has(Number(current.id))) {
+    seen.add(Number(current.id));
+    const parent = byId.get(Number(current.parent_id));
+    if (!parent) {
+      return null;
+    }
+    if (destinationKind(parent) === 'country') {
+      return parent;
+    }
+    current = parent;
+  }
+  return null;
+}
+
+function normalizeFlagIsoStored(value: unknown): string | null {
+  const t = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (t.length === 2 && /^[a-z]{2}$/.test(t)) return t;
+  return null;
+}
+
+function normalizeHttpImageUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const t = value.trim();
+  if (!t) return null;
+  try {
+    const u = new URL(t);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    return t;
+  } catch {
+    return null;
+  }
+}
+
+function buildDestinationListItems(rows: DestinationListRawRow[]): DestinationListItem[] {
+  const byId = new Map<number, DestinationListRawRow>();
+  for (const r of rows) {
+    byId.set(Number(r.id), r);
   }
 
-  return (data || []) as DestinationRow[];
+  const items: DestinationListItem[] = [];
+  for (const r of rows) {
+    const kind = destinationKind(r);
+    if (kind === 'continent') {
+      continue;
+    }
+
+    let label = String(r.name || '').trim();
+    if (isExcludedMacroRegion(label)) {
+      continue;
+    }
+
+    let flagHint = r.country_region ? String(r.country_region).trim() : '';
+
+    /** City + untyped rows: attach country when known ("City, Country"). Countries stay single-line. */
+    if (kind === 'city' || kind === 'other') {
+      const parentCountry = resolveParentCountryRow(r, byId);
+      const countryLabel = parentCountry?.name?.trim()
+        ? parentCountry.name.trim()
+        : r.country_region
+          ? String(r.country_region).trim()
+          : '';
+      if (countryLabel && countryLabel.toLowerCase() !== label.toLowerCase()) {
+        label = `${label}, ${countryLabel}`;
+      }
+      flagHint = parentCountry?.name?.trim()
+        ? parentCountry.name.trim()
+        : flagHint || countryLabel || (label.includes(',') ? label.split(',').pop()!.trim() : label);
+    } else if (kind === 'country') {
+      flagHint = flagHint || label;
+    }
+
+    const countryPartComma = label.includes(',') ? label.slice(label.lastIndexOf(',') + 1).trim() : '';
+
+    const flag_iso =
+      normalizeFlagIsoStored(r.flag_iso) ||
+      resolveIso2FromCountryHint(flagHint) ||
+      resolveIso2FromCountryHint(r.country_region ? String(r.country_region) : null) ||
+      resolveIso2FromCountryHint(countryPartComma) ||
+      resolveIso2FromCountryHint(label);
+
+    items.push({
+      id: Number(r.id),
+      name: String(r.name || '').trim(),
+      label,
+      flag_iso,
+      flag_image_url: normalizeHttpImageUrl(r.flag_image_url),
+    });
+  }
+
+  items.sort((a, b) => a.label.localeCompare(b.label));
+  return items;
+}
+
+export async function getDestinations(): Promise<DestinationListItem[]> {
+  const fullAttempts = [
+    'id,name,destination_type,parent_id,country_region,flag_iso,flag_image_url',
+    'id,name,destination_type,parent_id,country_region,flag_iso',
+    'id,name,destination_type,parent_id,country_region',
+    'id,name,flag_iso,flag_image_url',
+    'id,name,flag_iso',
+    'id,name,flag_image_url',
+    'id,name',
+  ];
+
+  let lastErr = '';
+  for (const cols of fullAttempts) {
+    const full = await supabase.from('destinations').select(cols).order('name', { ascending: true });
+    if (!full.error && full.data) {
+      const rows = (full.data || []) as unknown as DestinationListRawRow[];
+      if (cols.includes('destination_type')) {
+        return buildDestinationListItems(rows);
+      }
+      return rows.map((row) => {
+        const name = String(row.name || '').trim();
+        const flagImg = normalizeHttpImageUrl(row.flag_image_url);
+        return {
+          id: Number(row.id),
+          name,
+          label: name,
+          flag_iso:
+            normalizeFlagIsoStored(row.flag_iso) ||
+            resolveIso2FromCountryHint(name),
+          flag_image_url: flagImg,
+        };
+      });
+    }
+    lastErr = String(full.error?.message || '');
+  }
+
+  throw new Error(`Failed to fetch destinations: ${lastErr}`);
 }
 
 export async function getDepartureCities() {
@@ -535,20 +727,36 @@ export async function getHeroSearchOptions() {
   };
 }
 
-export async function getDestinationShowcase() {
-  const [{ data: destinations, error: destinationsError }, { data: tours, error: toursError }, { data: departures, error: departuresError }] =
-    await Promise.all([
-      supabase
-        .from('destinations')
-        .select('id,name,slug,destination_type,parent_id,continent,image_url')
-        .order('name', { ascending: true }),
-      supabase.from('tours').select('id,destination_id,destination,title'),
-      supabase.from('departures').select('tour_id,price'),
-    ]);
-
-  if (destinationsError) {
-    throw new Error(`Failed to fetch destination showcase: ${destinationsError.message}`);
+async function fetchDestinationRowsForShowcase(): Promise<DestinationShowcaseRow[]> {
+  const tries = [
+    'id,name,slug,destination_type,parent_id,continent,image_url,cover_image_url',
+    'id,name,slug,destination_type,parent_id,continent,image_url',
+    'id,name,slug,destination_type,parent_id,continent,cover_image_url',
+    'id,name,slug,destination_type,parent_id,continent',
+    'id,name,slug,image_url',
+    'id,name,slug',
+  ];
+  let lastError = '';
+  for (const cols of tries) {
+    const { data, error } = await supabase.from('destinations').select(cols).order('name', { ascending: true });
+    if (!error) {
+      return ((data || []) as unknown) as DestinationShowcaseRow[];
+    }
+    lastError = String(error.message || '');
   }
+  throw new Error(`Failed to fetch destinations for showcase: ${lastError}`);
+}
+
+export async function getDestinationShowcase() {
+  const [allDestinations, toursRes, departuresRes] = await Promise.all([
+    fetchDestinationRowsForShowcase(),
+    supabase.from('tours').select('id,destination_id,destination,title'),
+    supabase.from('departures').select('tour_id,price'),
+  ]);
+
+  const toursError = toursRes.error;
+  const departuresError = departuresRes.error;
+
   if (toursError) {
     throw new Error(`Failed to fetch tours for showcase: ${toursError.message}`);
   }
@@ -556,7 +764,13 @@ export async function getDestinationShowcase() {
     throw new Error(`Failed to fetch departures for showcase: ${departuresError.message}`);
   }
 
-  const allDestinations = (destinations || []) as DestinationShowcaseRow[];
+  const tours = (toursRes.data || []) as Array<{
+    id: number;
+    destination_id?: number | null;
+    destination?: string | null;
+  }>;
+  const departures = (departuresRes.data || []) as Array<{ tour_id: number; price: number }>;
+
   const destinationById = new Map<number, DestinationShowcaseRow>();
   const destinationByName = new Map<string, DestinationShowcaseRow>();
   for (const d of allDestinations) {
@@ -605,6 +819,7 @@ export async function getDestinationShowcase() {
         continent,
         image_url:
           d.image_url ||
+          d.cover_image_url ||
           'https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=900&q=80',
         starting_from: minPriceByDestinationId.get(Number(d.id)) ?? null,
       };
@@ -668,26 +883,28 @@ export async function getToursListing() {
   let data: ListingTourRow[] | null = null;
   let error: { message: string } | null = null;
 
-  const withDedicatedPricing = await supabase
-    .from('tours')
-    .select(
-      'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price,destination_ref:destinations(name,slug,image_url),departures(price,start_date,end_date,city,departure_city:departure_cities(name))'
-    )
-    .order('title', { ascending: true });
+  const base =
+    'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price';
+  const departuresPart = 'departures(price,start_date,end_date,city,departure_city:departure_cities(name))';
+  const destinationEmbedTries = [
+    'destination_ref:destinations(name,slug,image_url,cover_image_url)',
+    'destination_ref:destinations(name,slug,image_url)',
+    'destination_ref:destinations(name,slug,cover_image_url)',
+    'destination_ref:destinations(name,slug)',
+  ];
 
-  data = (withDedicatedPricing.data || []) as ListingTourRow[];
-  error = withDedicatedPricing.error;
-
-  // Backward compatible fallback until dedicated columns exist in all environments.
-  if (error && /column .* does not exist/i.test(String(error.message || ''))) {
-    const fallback = await supabase
-      .from('tours')
-      .select(
-        'id,title,flow_type,destination,tour_includes,destination_ref:destinations(name,slug,image_url),departures(price,start_date,end_date,city,departure_city:departure_cities(name))'
-      )
-      .order('title', { ascending: true });
-    data = (fallback.data || []) as ListingTourRow[];
-    error = fallback.error;
+  for (const embed of destinationEmbedTries) {
+    const sel = `${base},${embed},${departuresPart}`;
+    const attempt = await supabase.from('tours').select(sel).order('title', { ascending: true });
+    if (!attempt.error) {
+      data = ((attempt.data || []) as unknown) as ListingTourRow[];
+      error = null;
+      break;
+    }
+    error = attempt.error;
+    if (!/column .* does not exist/i.test(String(attempt.error.message || ''))) {
+      break;
+    }
   }
 
   if (error) {
@@ -734,6 +951,7 @@ export async function getToursListing() {
       destination_slug: row.destination_ref?.slug || toSlug(destination),
       image_url:
         row.destination_ref?.image_url ||
+        row.destination_ref?.cover_image_url ||
         'https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=900&q=80',
       duration_nights: durationNights,
       tour_category: inferCategory(row.title),
