@@ -500,9 +500,12 @@ type DepartureRow = {
 type ListingTourRow = {
   id: number;
   title: string;
+  slug?: string | null;
   flow_type: 'enquiry' | 'booking' | 'both';
   destination?: string | null;
   tour_includes?: string[] | null;
+  hero_image_url?: string | null;
+  duration_days?: number | null;
   twin_sharing_price?: number | null;
   triple_sharing_price?: number | null;
   single_sharing_price?: number | null;
@@ -891,27 +894,29 @@ export async function getToursListing() {
   let data: ListingTourRow[] | null = null;
   let error: { message: string } | null = null;
 
-  const base =
-    'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price';
+  const baseTries = [
+    'id,title,slug,flow_type,destination,tour_includes,hero_image_url,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price',
+    'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price',
+  ];
   const departuresPart = 'departures(price,start_date,end_date,city,departure_city:departure_cities(name))';
   const destinationEmbedTries = [
-    'destination_ref:destinations(name,slug,image_url,cover_image_url)',
     'destination_ref:destinations(name,slug,image_url)',
-    'destination_ref:destinations(name,slug,cover_image_url)',
     'destination_ref:destinations(name,slug)',
   ];
 
-  for (const embed of destinationEmbedTries) {
-    const sel = `${base},${embed},${departuresPart}`;
-    const attempt = await supabase.from('tours').select(sel).order('title', { ascending: true });
-    if (!attempt.error) {
-      data = ((attempt.data || []) as unknown) as ListingTourRow[];
-      error = null;
-      break;
-    }
-    error = attempt.error;
-    if (!/column .* does not exist/i.test(String(attempt.error.message || ''))) {
-      break;
+  outer: for (const base of baseTries) {
+    for (const embed of destinationEmbedTries) {
+      const sel = `${base},${embed},${departuresPart}`;
+      const attempt = await supabase.from('tours').select(sel).order('title', { ascending: true });
+      if (!attempt.error) {
+        data = ((attempt.data || []) as unknown) as ListingTourRow[];
+        error = null;
+        break outer;
+      }
+      error = attempt.error;
+      if (!/column .* does not exist/i.test(String(attempt.error.message || ''))) {
+        break outer;
+      }
     }
   }
 
@@ -932,6 +937,8 @@ export async function getToursListing() {
       const end = new Date(startEndPair.end_date);
       const diffMs = end.getTime() - start.getTime();
       durationNights = Math.max(1, Math.round(diffMs / (1000 * 60 * 60 * 24)));
+    } else if (row.duration_days && row.duration_days > 0) {
+      durationNights = Math.max(1, row.duration_days - 1);
     } else {
       durationNights = 3 + (row.id % 5);
     }
@@ -943,6 +950,7 @@ export async function getToursListing() {
     const startingChildWithBed = row.child_with_bed_price ?? null;
     const startingChildWithoutBed = row.child_without_bed_price ?? null;
     const destination = row.destination_ref?.name || row.destination || 'Unknown';
+    const heroImage = String(row.hero_image_url || '').trim();
     const departureCities = Array.from(
       new Set(
         departures
@@ -954,12 +962,13 @@ export async function getToursListing() {
     return {
       id: row.id,
       title: row.title,
+      slug: row.slug || null,
       flow_type: row.flow_type,
       destination,
       destination_slug: row.destination_ref?.slug || toSlug(destination),
       image_url:
+        heroImage ||
         row.destination_ref?.image_url ||
-        row.destination_ref?.cover_image_url ||
         'https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=900&q=80',
       duration_nights: durationNights,
       tour_category: inferCategory(row.title),
@@ -1016,11 +1025,14 @@ export type TourDetail = {
 
 export async function getTourById(tourId: number): Promise<TourDetail | null> {
   const departuresPart = 'departures(price,start_date,end_date,city,departure_city:departure_cities(name))';
-  const destinationEmbed = 'destination_ref:destinations(name,slug,image_url,cover_image_url)';
-  const extendedBase =
-    'id,title,slug,flow_type,destination,destination_id,tour_region,tour_includes,tour_exclusions,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price,sales_price,discounted_price,duration_days,max_travellers,min_age,starting_city,hero_image_url,gallery_image_urls,overview,itinerary_days';
-  const legacyBase =
-    'id,title,flow_type,destination,destination_id,tour_region,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price';
+  const destinationEmbedTries = [
+    'destination_ref:destinations(name,slug,image_url)',
+    'destination_ref:destinations(name,slug)',
+  ];
+  const baseTries = [
+    'id,title,slug,flow_type,destination,destination_id,tour_region,tour_includes,tour_exclusions,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price,sales_price,discounted_price,duration_days,max_travellers,min_age,starting_city,hero_image_url,gallery_image_urls,overview,itinerary_days',
+    'id,title,flow_type,destination,destination_id,tour_region,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price',
+  ];
 
   type DetailRow = ListingTourRow & {
     slug?: string | null;
@@ -1038,15 +1050,20 @@ export async function getTourById(tourId: number): Promise<TourDetail | null> {
   };
 
   let row: DetailRow | null = null;
-  for (const base of [extendedBase, legacyBase]) {
-    const sel = `${base},${destinationEmbed},${departuresPart}`;
-    const attempt = await supabase.from('tours').select(sel).eq('id', tourId).maybeSingle();
-    if (!attempt.error && attempt.data) {
-      row = attempt.data as unknown as DetailRow;
-      break;
-    }
-    if (attempt.error && !/column .* does not exist/i.test(String(attempt.error.message || ''))) {
-      throw new Error(`Failed to fetch tour: ${attempt.error.message}`);
+  let lastError: { message: string } | null = null;
+
+  outer: for (const base of baseTries) {
+    for (const embed of destinationEmbedTries) {
+      const sel = `${base},${embed},${departuresPart}`;
+      const attempt = await supabase.from('tours').select(sel).eq('id', tourId).maybeSingle();
+      if (!attempt.error && attempt.data) {
+        row = attempt.data as unknown as DetailRow;
+        break outer;
+      }
+      lastError = attempt.error;
+      if (attempt.error && !/column .* does not exist/i.test(String(attempt.error.message || ''))) {
+        throw new Error(`Failed to fetch tour: ${attempt.error.message}`);
+      }
     }
   }
 
