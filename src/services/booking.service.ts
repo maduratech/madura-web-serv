@@ -1078,9 +1078,9 @@ export async function getTourById(tourId: number): Promise<TourDetail | null> {
     : [];
   const fallbackImage =
     heroImage ||
-    gallery[0] ||
     row.destination_ref?.image_url ||
     row.destination_ref?.cover_image_url ||
+    gallery.find((url) => /\.(jpe?g|png|webp|avif)(\?|$)/i.test(url)) ||
     'https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=900&q=80';
 
   const itineraryDays = Array.isArray(row.itinerary_days)
@@ -1102,7 +1102,7 @@ export async function getTourById(tourId: number): Promise<TourDetail | null> {
     flow_type: row.flow_type,
     image_url: fallbackImage,
     hero_image_url: heroImage,
-    gallery_image_urls: gallery.length ? gallery : heroImage ? [heroImage] : [],
+    gallery_image_urls: gallery,
     duration_nights: durationNights,
     duration_days: row.duration_days ?? durationNights + 1,
     tour_category: inferCategory(row.title),
