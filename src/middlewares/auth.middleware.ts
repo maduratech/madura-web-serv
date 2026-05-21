@@ -46,7 +46,7 @@ export async function attachAuthIfPresent(req: Request, _res: Response, next: Ne
   next();
 }
 
-async function loadAuthFromHeader(req: Request): Promise<AuthContext | null> {
+export async function loadAuthFromHeader(req: Request): Promise<AuthContext | null> {
   const header = String(req.headers.authorization || '').trim();
   const token = header.toLowerCase().startsWith('bearer ')
     ? header.slice(7).trim()
