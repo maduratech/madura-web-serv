@@ -6,8 +6,10 @@ const errorMiddleware = (
   res: Response,
   _next: NextFunction
 ) => {
+  const message = err instanceof Error ? err.message : 'Internal Server Error';
   res.status(500).json({
-    error: err instanceof Error ? err.message : 'Internal Server Error',
+    error: message,
+    message,
   });
 };
 
