@@ -1,5 +1,13 @@
 import { Router } from 'express';
-import { getDestinationShowcase, getDestinations, getHeroSearchOptions, getTourDepartures, getTours, getToursListing } from '../../services/booking.service';
+import {
+  getDestinationShowcase,
+  getDestinations,
+  getHeroSearchOptions,
+  getTourById,
+  getTourDepartures,
+  getTours,
+  getToursListing,
+} from '../../services/booking.service';
 
 const toursRouter = Router();
 
@@ -45,6 +53,24 @@ toursRouter.get('/destination-showcase', async (_req, res, next) => {
     const showcase = await getDestinationShowcase();
     res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
     return res.json({ data: showcase });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+toursRouter.get('/tours/:id', async (req, res, next) => {
+  try {
+    const tourId = Number(req.params.id);
+    if (!Number.isFinite(tourId) || tourId <= 0) {
+      return res.status(400).json({ message: 'Invalid tour id.' });
+    }
+
+    const tour = await getTourById(tourId);
+    if (!tour) {
+      return res.status(404).json({ message: 'Tour not found.' });
+    }
+
+    return res.json({ data: tour });
   } catch (error) {
     return next(error);
   }

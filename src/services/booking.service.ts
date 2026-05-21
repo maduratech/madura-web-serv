@@ -111,6 +111,8 @@ export type CreateEnquiryInput = {
   room_details?: Array<{ adults: number; children: number; child_ages?: number[] }>;
   tour_title?: string;
   page_url?: string;
+  enquiry_type?: string | null;
+  nationality?: string | null;
   ip_address?: string;
   user_agent?: string;
   /** Optional: auth.users id when the enquiry is filed by a signed-in customer (P2). */
@@ -122,6 +124,12 @@ export type CreateWebsiteLeadInput = {
   phone: string;
   destination: string;
   tour_id?: number;
+  email?: string | null;
+  travel_date?: string | null;
+  nationality?: string | null;
+  enquiry_type?: string | null;
+  page_url?: string | null;
+  market?: string | null;
   ip_address?: string;
   user_agent?: string;
 };
@@ -966,6 +974,158 @@ export async function getToursListing() {
       tour_includes: Array.isArray(row.tour_includes) ? row.tour_includes : [],
     };
   });
+}
+
+export type TourItineraryDay = {
+  day: string;
+  title: string;
+  details: string;
+};
+
+export type TourDetail = {
+  id: number;
+  title: string;
+  slug: string | null;
+  destination: string;
+  destination_slug: string;
+  flow_type: 'enquiry' | 'booking' | 'both';
+  image_url: string;
+  hero_image_url: string | null;
+  gallery_image_urls: string[];
+  duration_nights: number;
+  duration_days: number | null;
+  tour_category: 'Family' | 'Honeymoon' | 'Friends' | 'Group Tour';
+  theme: 'Adventure' | 'Culture';
+  tour_type: 'Customizable' | 'Group Package';
+  starting_from_twin: number | null;
+  starting_from_triple: number | null;
+  starting_from_single: number | null;
+  starting_from_child_with_bed: number | null;
+  starting_from_child_without_bed: number | null;
+  sales_price: number | null;
+  discounted_price: number | null;
+  departure_cities: string[];
+  tour_includes: string[];
+  tour_exclusions: string[];
+  overview: string | null;
+  itinerary_days: TourItineraryDay[];
+  max_travellers: number | null;
+  min_age: number | null;
+  starting_city: string | null;
+};
+
+export async function getTourById(tourId: number): Promise<TourDetail | null> {
+  const departuresPart = 'departures(price,start_date,end_date,city,departure_city:departure_cities(name))';
+  const destinationEmbed = 'destination_ref:destinations(name,slug,image_url,cover_image_url)';
+  const extendedBase =
+    'id,title,slug,flow_type,destination,destination_id,tour_region,tour_includes,tour_exclusions,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price,sales_price,discounted_price,duration_days,max_travellers,min_age,starting_city,hero_image_url,gallery_image_urls,overview,itinerary_days';
+  const legacyBase =
+    'id,title,flow_type,destination,destination_id,tour_region,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price';
+
+  type DetailRow = ListingTourRow & {
+    slug?: string | null;
+    tour_exclusions?: string[] | null;
+    sales_price?: number | null;
+    discounted_price?: number | null;
+    duration_days?: number | null;
+    max_travellers?: number | null;
+    min_age?: number | null;
+    starting_city?: string | null;
+    hero_image_url?: string | null;
+    gallery_image_urls?: string[] | null;
+    overview?: string | null;
+    itinerary_days?: TourItineraryDay[] | null;
+  };
+
+  let row: DetailRow | null = null;
+  for (const base of [extendedBase, legacyBase]) {
+    const sel = `${base},${destinationEmbed},${departuresPart}`;
+    const attempt = await supabase.from('tours').select(sel).eq('id', tourId).maybeSingle();
+    if (!attempt.error && attempt.data) {
+      row = attempt.data as unknown as DetailRow;
+      break;
+    }
+    if (attempt.error && !/column .* does not exist/i.test(String(attempt.error.message || ''))) {
+      throw new Error(`Failed to fetch tour: ${attempt.error.message}`);
+    }
+  }
+
+  if (!row) return null;
+
+  const departures = Array.isArray(row.departures) ? row.departures : [];
+  const prices = departures
+    .map((d) => Number(d.price))
+    .filter((price) => Number.isFinite(price) && price > 0);
+  const startEndPair = departures.find((d) => d.start_date && d.end_date);
+  let durationNights = 0;
+  if (startEndPair?.start_date && startEndPair?.end_date) {
+    const start = new Date(startEndPair.start_date);
+    const end = new Date(startEndPair.end_date);
+    const diffMs = end.getTime() - start.getTime();
+    durationNights = Math.max(1, Math.round(diffMs / (1000 * 60 * 60 * 24)));
+  } else if (row.duration_days && row.duration_days > 0) {
+    durationNights = Math.max(1, row.duration_days - 1);
+  } else {
+    durationNights = 8;
+  }
+
+  const derivedTwin = prices.length ? Math.min(...prices) : null;
+  const startingTwin = row.twin_sharing_price ?? row.discounted_price ?? derivedTwin;
+  const destination = row.destination_ref?.name || row.destination || 'Unknown';
+  const heroImage = String(row.hero_image_url || '').trim() || null;
+  const gallery = Array.isArray(row.gallery_image_urls)
+    ? row.gallery_image_urls.map((u) => String(u || '').trim()).filter(Boolean)
+    : [];
+  const fallbackImage =
+    heroImage ||
+    gallery[0] ||
+    row.destination_ref?.image_url ||
+    row.destination_ref?.cover_image_url ||
+    'https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=900&q=80';
+
+  const itineraryDays = Array.isArray(row.itinerary_days)
+    ? row.itinerary_days
+        .map((entry) => ({
+          day: String(entry?.day || '').trim(),
+          title: String(entry?.title || '').trim(),
+          details: String(entry?.details || '').trim(),
+        }))
+        .filter((entry) => entry.day && entry.title)
+    : [];
+
+  return {
+    id: row.id,
+    title: row.title,
+    slug: row.slug || null,
+    destination,
+    destination_slug: row.destination_ref?.slug || toSlug(destination),
+    flow_type: row.flow_type,
+    image_url: fallbackImage,
+    hero_image_url: heroImage,
+    gallery_image_urls: gallery.length ? gallery : heroImage ? [heroImage] : [],
+    duration_nights: durationNights,
+    duration_days: row.duration_days ?? durationNights + 1,
+    tour_category: inferCategory(row.title),
+    theme: inferTheme(row.title),
+    tour_type: row.flow_type === 'booking' ? 'Group Package' : 'Customizable',
+    starting_from_twin: startingTwin,
+    starting_from_triple: row.triple_sharing_price ?? (startingTwin ? Math.round(startingTwin * 0.9) : null),
+    starting_from_single: row.single_sharing_price ?? null,
+    starting_from_child_with_bed: row.child_with_bed_price ?? null,
+    starting_from_child_without_bed: row.child_without_bed_price ?? null,
+    sales_price: row.sales_price ?? null,
+    discounted_price: row.discounted_price ?? startingTwin,
+    departure_cities: Array.from(
+      new Set(departures.map((d) => String(d.departure_city?.name || d.city || '').trim()).filter(Boolean))
+    ),
+    tour_includes: Array.isArray(row.tour_includes) ? row.tour_includes : [],
+    tour_exclusions: Array.isArray(row.tour_exclusions) ? row.tour_exclusions : [],
+    overview: row.overview || null,
+    itinerary_days: itineraryDays,
+    max_travellers: row.max_travellers ?? null,
+    min_age: row.min_age ?? null,
+    starting_city: row.starting_city || 'Sydney',
+  };
 }
 
 export async function getTourDepartures(tourId: number) {
@@ -1947,9 +2107,12 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
           },
         ];
   const normalizedChildAges = normalizedRoomDetails.flatMap((room) => room.child_ages || []);
+  const enquiryLabel = String(input.enquiry_type || '').trim() || 'Tour Package';
   const noteContent = hasTourTitle
     ? `Customer needs assistance for the tour booking - "${String(input.tour_title || '').trim()}". Link: ${String(input.page_url || '').trim() || 'Not provided'}`
-    : `Customer needs assistance for the ${input.destination || 'selected'} tour booking.`;
+    : `Customer needs assistance via ${input.destination || 'website contact'}${
+        input.nationality ? ` | Nationality: ${input.nationality}` : ''
+      }${input.page_url ? ` | ${input.page_url}` : ''}`;
   const basePayload = {
     name: input.name,
     phone: input.phone,
@@ -1959,8 +2122,8 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
     date_of_travel: input.travel_date,
     date: input.travel_date,
     travel_date: input.travel_date,
-    enquiry: 'Tour Package',
-    services: ['Tour Package'],
+    enquiry: enquiryLabel,
+    services: [enquiryLabel],
     starting_point: input.departure_city,
     summary: `Website enquiry for ${input.destination || 'tour'} | ${input.duration || 'duration not specified'} | ${input.adults}A/${input.children}C | Rooms: ${input.rooms}`,
     source: 'website',
@@ -2297,15 +2460,18 @@ export async function createWebsiteLead(input: CreateWebsiteLeadInput) {
       departure_id: null,
       name: String(input.name || '').trim(),
       phone: normalizedPhone,
-      email: null,
-      departure_city: 'Website',
-      travel_date: today,
+      email: String(input.email || '').trim() || null,
+      departure_city: String(input.market || 'Website').trim() || 'Website',
+      travel_date: String(input.travel_date || '').trim() || today,
       destination: String(input.destination || '').trim(),
       duration: '',
       adults: 1,
       children: 0,
       infants: 0,
       rooms: 1,
+      page_url: String(input.page_url || '').trim() || undefined,
+      enquiry_type: String(input.enquiry_type || '').trim() || null,
+      nationality: String(input.nationality || '').trim() || null,
       ip_address: input.ip_address,
       user_agent: input.user_agent,
     });
