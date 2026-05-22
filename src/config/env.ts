@@ -8,4 +8,6 @@ export const env = {
   RAZORPAY_KEY_SECRET: process.env.RAZORPAY_KEY_SECRET || '',
   RAZORPAY_WEBHOOK_SECRET: process.env.RAZORPAY_WEBHOOK_SECRET || '',
   CORS_ORIGINS: process.env.CORS_ORIGINS || '',
+  PEXELS_API_KEY: process.env.PEXELS_API_KEY || '',
+  CMS_MEDIA_BUCKET: process.env.CMS_MEDIA_BUCKET || 'cms-media',
 };

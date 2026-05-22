@@ -233,17 +233,39 @@ export async function deleteDestination(id: number): Promise<void> {
   if (error) throw new Error(error.message);
 }
 
+export type CmsTourItineraryDay = {
+  day: string;
+  title: string;
+  details: string;
+};
+
 export type CmsTour = {
   id: number;
   title: string;
   slug: string | null;
   destination_id: number | null;
   duration_days: number | null;
+  flow_type: 'enquiry' | 'booking' | 'both' | null;
+  tour_region: string | null;
+  starting_city: string | null;
   price_from: number | null;
+  twin_sharing_price: number | null;
+  triple_sharing_price: number | null;
+  single_sharing_price: number | null;
+  child_with_bed_price: number | null;
+  child_without_bed_price: number | null;
+  sales_price: number | null;
+  discounted_price: number | null;
   currency: string | null;
+  max_travellers: number | null;
+  min_age: number | null;
   is_active: boolean | null;
   hero_image_url: string | null;
+  gallery_image_urls: string[];
   overview: string | null;
+  tour_includes: string[];
+  tour_exclusions: string[];
+  itinerary_days: CmsTourItineraryDay[];
   trip_code: string | null;
   created_at?: string;
   destinations?: { name: string; slug: string | null } | null;
@@ -255,12 +277,26 @@ type TourRaw = {
   slug?: string | null;
   destination_id?: number | null;
   destination?: string | null;
+  flow_type?: 'enquiry' | 'booking' | 'both' | null;
+  tour_region?: string | null;
+  starting_city?: string | null;
   duration_days?: number | null;
   twin_sharing_price?: number | null;
+  triple_sharing_price?: number | null;
+  single_sharing_price?: number | null;
+  child_with_bed_price?: number | null;
+  child_without_bed_price?: number | null;
   sales_price?: number | null;
   discounted_price?: number | null;
+  max_travellers?: number | null;
+  min_age?: number | null;
+  is_active?: boolean | null;
   hero_image_url?: string | null;
+  gallery_image_urls?: string[] | null;
   overview?: string | null;
+  tour_includes?: string[] | null;
+  tour_exclusions?: string[] | null;
+  itinerary_days?: CmsTourItineraryDay[] | null;
   created_at?: string | null;
   destination_ref?: { name?: string | null; slug?: string | null } | { name?: string | null; slug?: string | null }[] | null;
   destinations?: { name?: string | null; slug?: string | null } | { name?: string | null; slug?: string | null }[] | null;
@@ -274,25 +310,97 @@ function pickEmbed(row: TourRaw): { name: string; slug: string | null } | null {
   return { name: String(first.name || '').trim(), slug: first.slug != null ? String(first.slug) : null };
 }
 
+function parseStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((v) => String(v || '').trim()).filter(Boolean);
+}
+
+function parseItineraryDays(value: unknown): CmsTourItineraryDay[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      const row = entry as { day?: string; title?: string; details?: string };
+      return {
+        day: String(row?.day || '').trim(),
+        title: String(row?.title || '').trim(),
+        details: String(row?.details || '').trim(),
+      };
+    })
+    .filter((entry) => entry.day && entry.title);
+}
+
 function mapTourRow(row: TourRaw): CmsTour {
   const embed = pickEmbed(row);
-  const price =
-    row.twin_sharing_price ?? row.discounted_price ?? row.sales_price ?? null;
+  const twin = row.twin_sharing_price ?? null;
+  const price = twin ?? row.discounted_price ?? row.sales_price ?? null;
+  const slug = row.slug != null ? String(row.slug).trim() || null : null;
   return {
     id: Number(row.id),
     title: String(row.title || '').trim(),
-    slug: row.slug != null ? String(row.slug).trim() || null : null,
+    slug,
     destination_id: row.destination_id ?? null,
     duration_days: row.duration_days ?? null,
+    flow_type: row.flow_type ?? null,
+    tour_region: row.tour_region ?? null,
+    starting_city: row.starting_city ?? null,
     price_from: price != null ? Number(price) : null,
+    twin_sharing_price: twin != null ? Number(twin) : null,
+    triple_sharing_price: row.triple_sharing_price ?? null,
+    single_sharing_price: row.single_sharing_price ?? null,
+    child_with_bed_price: row.child_with_bed_price ?? null,
+    child_without_bed_price: row.child_without_bed_price ?? null,
+    sales_price: row.sales_price ?? null,
+    discounted_price: row.discounted_price ?? null,
     currency: 'INR',
-    is_active: true,
+    max_travellers: row.max_travellers ?? null,
+    min_age: row.min_age ?? null,
+    is_active: row.is_active ?? true,
     hero_image_url: row.hero_image_url ?? null,
+    gallery_image_urls: parseStringList(row.gallery_image_urls),
     overview: row.overview ?? null,
-    trip_code: row.slug ? String(row.slug) : null,
+    tour_includes: parseStringList(row.tour_includes),
+    tour_exclusions: parseStringList(row.tour_exclusions),
+    itinerary_days: parseItineraryDays(row.itinerary_days),
+    trip_code: slug,
     created_at: row.created_at ?? undefined,
     destinations: embed,
   };
+}
+
+function tourInputToDb(input: Partial<CmsTour>): Record<string, unknown> {
+  const slug = input.slug?.trim() || null;
+  const priceFrom = input.price_from ?? input.twin_sharing_price ?? null;
+  return {
+    title: input.title != null ? String(input.title).trim() : undefined,
+    slug,
+    destination_id: input.destination_id,
+    duration_days: input.duration_days,
+    flow_type: input.flow_type,
+    tour_region: input.tour_region?.trim() || null,
+    starting_city: input.starting_city?.trim() || null,
+    twin_sharing_price: priceFrom,
+    triple_sharing_price: input.triple_sharing_price,
+    single_sharing_price: input.single_sharing_price,
+    child_with_bed_price: input.child_with_bed_price,
+    child_without_bed_price: input.child_without_bed_price,
+    sales_price: input.sales_price,
+    discounted_price: input.discounted_price,
+    max_travellers: input.max_travellers,
+    min_age: input.min_age,
+    is_active: input.is_active,
+    hero_image_url: input.hero_image_url?.trim() || null,
+    gallery_image_urls: input.gallery_image_urls,
+    overview: input.overview?.trim() || null,
+    tour_includes: input.tour_includes,
+    tour_exclusions: input.tour_exclusions,
+    itinerary_days: input.itinerary_days,
+  };
+}
+
+function cleanPayload(row: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(row).filter(([, v]) => v !== undefined && v !== '' && v !== null)
+  );
 }
 
 const TOUR_EMBEDS = [
@@ -301,9 +409,11 @@ const TOUR_EMBEDS = [
 ] as const;
 
 const TOUR_LIST_BASE = [
-  'id,title,slug,destination_id,destination,duration_days,twin_sharing_price,sales_price,discounted_price,hero_image_url,overview,created_at',
+  'id,title,slug,flow_type,destination_id,destination,tour_region,starting_city,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price,sales_price,discounted_price,max_travellers,min_age,is_active,hero_image_url,gallery_image_urls,overview,tour_includes,tour_exclusions,itinerary_days,created_at',
+  'id,title,slug,flow_type,destination_id,destination,tour_region,starting_city,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price,sales_price,discounted_price,hero_image_url,gallery_image_urls,overview,tour_includes,tour_exclusions,itinerary_days,created_at',
+  'id,title,slug,destination_id,destination,duration_days,twin_sharing_price,sales_price,discounted_price,hero_image_url,gallery_image_urls,overview,tour_includes,tour_exclusions,itinerary_days,created_at',
+  'id,title,slug,destination_id,destination,duration_days,twin_sharing_price,hero_image_url,overview,tour_includes,tour_exclusions,created_at',
   'id,title,slug,destination_id,destination,duration_days,twin_sharing_price,hero_image_url,overview',
-  'id,title,slug,destination_id,destination,duration_days,hero_image_url,overview',
   'id,title,slug,destination_id,destination,duration_days,hero_image_url',
   'id,title,slug,destination,duration_days',
   'id,title,destination',
@@ -369,36 +479,23 @@ export async function getTour(id: number): Promise<CmsTour | null> {
 }
 
 async function insertTourWithFallback(payload: Record<string, unknown>): Promise<CmsTour> {
-  const insertTries: Record<string, unknown>[] = [
-    {
-      title: payload.title,
-      slug: payload.slug,
-      destination_id: payload.destination_id,
-      duration_days: payload.duration_days,
-      twin_sharing_price: payload.price_from,
-      hero_image_url: payload.hero_image_url,
-      overview: payload.overview,
-    },
-    {
-      title: payload.title,
-      slug: payload.slug,
-      destination_id: payload.destination_id,
-      duration_days: payload.duration_days,
-      hero_image_url: payload.hero_image_url,
-      overview: payload.overview,
-    },
-    {
-      title: payload.title,
-      destination_id: payload.destination_id,
-      duration_days: payload.duration_days,
-    },
-    { title: payload.title },
-  ];
+  const keys = Object.keys(payload);
+  const insertTries: Record<string, unknown>[] = [];
+  for (let i = 0; i <= keys.length; i += 1) {
+    const slice = keys.slice(0, Math.max(1, keys.length - i));
+    const row: Record<string, unknown> = {};
+    for (const key of slice) {
+      if (payload[key] !== undefined) row[key] = payload[key];
+    }
+    if (row.title) insertTries.push(row);
+  }
+  if (!insertTries.some((r) => r.title)) {
+    insertTries.push({ title: payload.title });
+  }
+
   let lastErr = '';
   for (const row of insertTries) {
-    const cleaned = Object.fromEntries(
-      Object.entries(row).filter(([, v]) => v !== undefined && v !== null && v !== '')
-    );
+    const cleaned = cleanPayload(row);
     const { data, error } = await supabase.from('tours').insert(cleaned).select('id').single();
     if (!error && data?.id) {
       const tour = await getTour(Number(data.id));
@@ -415,45 +512,31 @@ export async function createTour(input: Partial<CmsTour>): Promise<CmsTour> {
   if (!title) throw new Error('Tour title is required.');
   const slug =
     (input.slug || title.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-')).trim() || null;
-  return insertTourWithFallback({
-    title,
-    slug,
-    destination_id: input.destination_id ?? null,
-    duration_days: input.duration_days ?? null,
-    price_from: input.price_from ?? null,
-    hero_image_url: input.hero_image_url?.trim() || null,
-    overview: input.overview?.trim() || null,
-  });
+  const db = tourInputToDb({ ...input, title, slug });
+  return insertTourWithFallback(db);
 }
 
 export async function updateTour(id: number, input: Partial<CmsTour>): Promise<CmsTour> {
-  const patchVariants: Record<string, unknown>[] = [
-    {
-      ...(input.title !== undefined ? { title: String(input.title).trim() } : {}),
-      ...(input.slug !== undefined ? { slug: input.slug?.trim() || null } : {}),
-      ...(input.destination_id !== undefined ? { destination_id: input.destination_id } : {}),
-      ...(input.duration_days !== undefined ? { duration_days: input.duration_days } : {}),
-      ...(input.price_from !== undefined ? { twin_sharing_price: input.price_from } : {}),
-      ...(input.hero_image_url !== undefined ? { hero_image_url: input.hero_image_url?.trim() || null } : {}),
-      ...(input.overview !== undefined ? { overview: input.overview?.trim() || null } : {}),
-    },
-    {
-      ...(input.title !== undefined ? { title: String(input.title).trim() } : {}),
-      ...(input.slug !== undefined ? { slug: input.slug?.trim() || null } : {}),
-      ...(input.destination_id !== undefined ? { destination_id: input.destination_id } : {}),
-      ...(input.duration_days !== undefined ? { duration_days: input.duration_days } : {}),
-      ...(input.hero_image_url !== undefined ? { hero_image_url: input.hero_image_url?.trim() || null } : {}),
-      ...(input.overview !== undefined ? { overview: input.overview?.trim() || null } : {}),
-    },
-  ];
-  let lastErr = '';
-  for (const patch of patchVariants) {
-    const cleaned = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
-    if (!Object.keys(cleaned).length) {
-      const existing = await getTour(id);
-      if (!existing) throw new Error('Tour not found.');
-      return existing;
+  const db = tourInputToDb(input);
+  const keys = Object.keys(db);
+  const patchTries: Record<string, unknown>[] = [];
+  for (let i = 0; i <= keys.length; i += 1) {
+    const slice = keys.slice(0, Math.max(0, keys.length - i));
+    const row: Record<string, unknown> = {};
+    for (const key of slice) {
+      if (db[key] !== undefined) row[key] = db[key];
     }
+    if (Object.keys(row).length) patchTries.push(row);
+  }
+  if (!patchTries.length) {
+    const existing = await getTour(id);
+    if (!existing) throw new Error('Tour not found.');
+    return existing;
+  }
+
+  let lastErr = '';
+  for (const patch of patchTries) {
+    const cleaned = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
     const { error } = await supabase.from('tours').update(cleaned).eq('id', id);
     if (!error) {
       const updated = await getTour(id);

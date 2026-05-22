@@ -18,6 +18,7 @@ import {
   updateTour,
   upsertCmsStaff,
 } from '../../services/cms.service';
+import { searchStockImages, uploadCmsMedia } from '../../services/cms-media.service';
 
 export const cmsRouter = Router();
 
@@ -144,6 +145,31 @@ cmsRouter.delete('/tours/:id', async (req, res, next) => {
     const id = Number(req.params.id);
     await deleteTour(id);
     res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.post('/media/upload', async (req, res, next) => {
+  try {
+    const { file_base64, mime_type, filename } = req.body || {};
+    const result = await uploadCmsMedia({
+      base64: file_base64,
+      mime_type,
+      filename,
+    });
+    res.status(201).json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.get('/stock-images', async (req, res, next) => {
+  try {
+    const query = String(req.query.q || req.query.query || '').trim();
+    const page = Math.max(1, Number(req.query.page || 1));
+    const result = await searchStockImages(query, page);
+    res.json(result);
   } catch (err) {
     next(err);
   }

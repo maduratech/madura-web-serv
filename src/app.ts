@@ -67,7 +67,7 @@ app.use((req, res, next) => {
   if (isPublicGet(req)) return publicCors(req, res, next);
   return strictCors(req, res, next);
 });
-app.use(express.json());
+app.use(express.json({ limit: '12mb' }));
 app.use(loggerMiddleware);
 
 app.use('/api/v1', apiRouter);
