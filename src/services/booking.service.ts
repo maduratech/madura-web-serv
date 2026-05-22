@@ -730,6 +730,25 @@ function parseDestinationPageMeta(description: string | null | undefined): {
   }
 }
 
+type DestinationSlugRow = {
+  id: number;
+  name?: string | null;
+  slug?: string | null;
+  description?: string | null;
+  image_url?: string | null;
+  cover_image_url?: string | null;
+  flag_image_url?: string | null;
+};
+
+function isDestinationSlugRow(data: unknown): data is DestinationSlugRow {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'id' in data &&
+    typeof (data as { id: unknown }).id === 'number'
+  );
+}
+
 export async function getDestinationBySlug(slug: string) {
   const normalized = slug.toLowerCase().trim();
   const tries = [
@@ -743,16 +762,8 @@ export async function getDestinationBySlug(slug: string) {
   let lastErr = '';
   for (const cols of tries) {
     const { data, error } = await supabase.from('destinations').select(cols).eq('slug', normalized).maybeSingle();
-    if (!error && data) {
-      const row = data as {
-        id: number;
-        name?: string;
-        slug?: string;
-        description?: string | null;
-        image_url?: string | null;
-        cover_image_url?: string | null;
-        flag_image_url?: string | null;
-      };
+    if (!error && isDestinationSlugRow(data)) {
+      const row = data;
       const pageMeta = parseDestinationPageMeta(row.description);
       return {
         id: Number(row.id),
