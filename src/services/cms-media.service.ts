@@ -78,12 +78,28 @@ export async function searchStockImages(query: string, page = 1): Promise<{
   url.searchParams.set('per_page', '15');
   url.searchParams.set('page', String(Math.max(1, page)));
 
-  const res = await fetch(url.toString(), {
-    headers: { Authorization: key },
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12_000);
+  let res: Response;
+  try {
+    res = await fetch(url.toString(), {
+      headers: { Authorization: key },
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('Pexels search timed out. Try again.');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(text || `Pexels search failed (${res.status})`);
+    if (res.status === 401) {
+      throw new Error('Invalid PEXELS_API_KEY on the API server.');
+    }
+    throw new Error(text.slice(0, 200) || `Pexels search failed (${res.status})`);
   }
 
   const body = (await res.json()) as {
