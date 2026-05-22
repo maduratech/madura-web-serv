@@ -726,7 +726,7 @@ export async function getDestinations(): Promise<DestinationListItem[]> {
   for (const cols of fullAttempts) {
     const full = await supabase.from('destinations').select(cols).order('name', { ascending: true });
     if (!full.error && full.data) {
-      const rows = (full.data || []) as unknown as DestinationListRawRow[];
+      const rows = full.data as unknown as DestinationListRawRow[];
       if (cols.includes('destination_type')) {
         return buildDestinationListItems(rows);
       }
@@ -1383,15 +1383,40 @@ function validateCreateBookingPayload(input: CreateBookingInput): void {
 export async function createBooking(input: CreateBookingInput) {
   validateCreateBookingPayload(input);
 
-  const depSelect =
+  type BookingDepartureRow = {
+    id: number;
+    tour_id: number;
+    price?: number | null;
+    twin_sharing_price?: number | null;
+    triple_sharing_price?: number | null;
+    single_sharing_price?: number | null;
+    child_with_bed_price?: number | null;
+    child_without_bed_price?: number | null;
+    infant_price?: number | null;
+  };
+
+  const depSelectTries = [
     'id,tour_id,price,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price,infant_price',
-    'id,tour_id,price,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price';
-  let { data: departure, error: departureError } = await supabase
-    .from('departures')
-    .select(depSelect)
-    .eq('id', input.departure_id)
-    .eq('tour_id', input.tour_id)
-    .single();
+    'id,tour_id,price,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price',
+    'id,tour_id,price',
+  ];
+  let departure: BookingDepartureRow | null = null;
+  let departureError: { message?: string } | null = null;
+  for (const sel of depSelectTries) {
+    const res = await supabase
+      .from('departures')
+      .select(sel)
+      .eq('id', input.departure_id)
+      .eq('tour_id', input.tour_id)
+      .single();
+    if (!res.error && res.data) {
+      departure = res.data as unknown as BookingDepartureRow;
+      departureError = null;
+      break;
+    }
+    departureError = res.error;
+    if (!/column .* does not exist/i.test(String(res.error?.message || ''))) break;
+  }
 
   if (departureError || !departure) {
     const fallback = await supabase
@@ -1402,7 +1427,7 @@ export async function createBooking(input: CreateBookingInput) {
     if (fallback.error || !fallback.data) {
       throw new Error('Invalid departure selected for this tour.');
     }
-    departure = fallback.data as typeof departure;
+    departure = fallback.data as unknown as BookingDepartureRow;
     // eslint-disable-next-line no-console
     console.warn('[createBooking] departure tour mismatch, using departure.tour_id', {
       requestedTourId: input.tour_id,

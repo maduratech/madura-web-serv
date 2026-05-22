@@ -61,6 +61,10 @@ export type StockImageResult = {
   source_url: string;
 };
 
+type StockCacheEntry = { data: { items: StockImageResult[]; page: number; has_more: boolean }; at: number };
+const stockSearchCache = new Map<string, StockCacheEntry>();
+const STOCK_CACHE_TTL_MS = 15 * 60 * 1000;
+
 export async function searchStockImages(query: string, page = 1): Promise<{
   items: StockImageResult[];
   page: number;
@@ -72,6 +76,12 @@ export async function searchStockImages(query: string, page = 1): Promise<{
   }
   const q = String(query || '').trim();
   if (!q) return { items: [], page: 1, has_more: false };
+
+  const cacheKey = `${q}|${page}`;
+  const cached = stockSearchCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < STOCK_CACHE_TTL_MS) {
+    return cached.data;
+  }
 
   const url = new URL('https://api.pexels.com/v1/search');
   url.searchParams.set('query', q);
@@ -125,9 +135,11 @@ export async function searchStockImages(query: string, page = 1): Promise<{
     source_url: photo.url,
   }));
 
-  return {
+  const result = {
     items: items.filter((i) => i.preview_url && i.full_url),
     page: Math.max(1, page),
     has_more: Boolean(body.next_page),
   };
+  stockSearchCache.set(cacheKey, { data: result, at: Date.now() });
+  return result;
 }

@@ -201,35 +201,70 @@ export async function createDestination(input: Partial<CmsDestination>): Promise
 }
 
 export async function updateDestination(id: number, input: Partial<CmsDestination>): Promise<CmsDestination> {
+  if (!Number.isFinite(id) || id <= 0) {
+    throw new Error('Invalid destination id.');
+  }
+
+  const basePatch: Record<string, unknown> = {};
+  if (input.name !== undefined) basePatch.name = String(input.name).trim();
+  if (input.slug !== undefined) {
+    basePatch.slug = String(input.slug).trim() || slugify(String(input.name || ''));
+  }
+  if (input.country !== undefined) basePatch.country_region = input.country?.trim() || null;
+  if (input.flag_image_url !== undefined) basePatch.flag_image_url = input.flag_image_url?.trim() || null;
+  if (input.description !== undefined) basePatch.description = input.description?.trim() || null;
+  if (input.is_active !== undefined) basePatch.is_active = Boolean(input.is_active);
+
   const patchVariants: Record<string, unknown>[] = [
-    {
-      ...(input.name !== undefined ? { name: String(input.name).trim() } : {}),
-      ...(input.slug !== undefined ? { slug: String(input.slug).trim() || slugify(String(input.name || '')) } : {}),
-      ...(input.country !== undefined ? { country_region: input.country?.trim() || null } : {}),
-      ...(input.flag_image_url !== undefined ? { flag_image_url: input.flag_image_url?.trim() || null } : {}),
-      ...(input.description !== undefined ? { description: input.description?.trim() || null } : {}),
-    },
-    {
-      ...(input.name !== undefined ? { name: String(input.name).trim() } : {}),
-      ...(input.slug !== undefined ? { slug: String(input.slug).trim() || slugify(String(input.name || '')) } : {}),
-      ...(input.flag_image_url !== undefined ? { flag_image_url: input.flag_image_url?.trim() || null } : {}),
-      ...(input.description !== undefined ? { description: input.description?.trim() || null } : {}),
-    },
-    {
-      ...(input.name !== undefined ? { name: String(input.name).trim() } : {}),
-      ...(input.slug !== undefined ? { slug: String(input.slug).trim() || slugify(String(input.name || '')) } : {}),
-    },
+    basePatch,
+    Object.fromEntries(
+      Object.entries(basePatch).filter(([key]) => key !== 'country_region' && key !== 'is_active')
+    ),
+    Object.fromEntries(
+      Object.entries(basePatch).filter(([key]) => key !== 'description' && key !== 'is_active')
+    ),
+    Object.fromEntries(
+      Object.entries(basePatch).filter(
+        ([key]) => !['country_region', 'description', 'flag_image_url', 'is_active'].includes(key)
+      )
+    ),
   ];
+
+  const selectTries = [
+    'id,name,slug,country_region,flag_image_url,description,is_active,created_at',
+    'id,name,slug,country_region,flag_image_url,description,created_at',
+    'id,name,slug,flag_image_url,description,created_at',
+    'id,name,slug,flag_image_url,created_at',
+    'id,name,slug,created_at',
+    'id,name,slug',
+  ];
+
   let lastErr = '';
   for (const patch of patchVariants) {
     const cleaned = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
-    if (!Object.keys(cleaned).length) return getDestination(id) as Promise<CmsDestination>;
-    const { error } = await supabase.from('destinations').update(cleaned).eq('id', id);
-    if (!error) return getDestination(id) as Promise<CmsDestination>;
-    lastErr = String(error?.message || '');
+    if (!Object.keys(cleaned).length) {
+      const existing = await getDestination(id);
+      if (existing) return existing;
+      throw new Error('Destination not found.');
+    }
+
+    for (const sel of selectTries) {
+      const { data, error } = await supabase
+        .from('destinations')
+        .update(cleaned)
+        .eq('id', id)
+        .select(sel)
+        .maybeSingle();
+      if (!error && data) return mapDestinationRow(data as unknown as DestinationRaw);
+      lastErr = String(error?.message || '');
+      if (!/column .* does not exist/i.test(lastErr)) break;
+    }
     if (!/column .* does not exist/i.test(lastErr)) break;
   }
-  throw new Error(`Failed to update destination: ${lastErr}`);
+
+  const fallback = await getDestination(id);
+  if (fallback) return fallback;
+  throw new Error(`Failed to update destination: ${lastErr || 'Unknown error'}`);
 }
 
 export async function deleteDestination(id: number): Promise<void> {
