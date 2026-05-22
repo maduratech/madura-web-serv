@@ -1,4 +1,12 @@
 import { supabase } from '../lib/supabase';
+import { parseTourCmsMeta } from '../lib/tour-meta';
+import {
+  computeBookingTotalInr,
+  inferDiscountPercent,
+  lowestPerPersonDisplay,
+  resolveChildBedAgeMin,
+  type TourPriceSheet,
+} from '../lib/tour-pricing';
 import { enqueueCrmBookingSync } from '../jobs/crm.job';
 import { env } from '../config/env';
 import crypto from 'node:crypto';
@@ -494,8 +502,46 @@ type DepartureRow = {
   start_date: string;
   end_date: string;
   price: number;
+  twin_sharing_price?: number | null;
+  triple_sharing_price?: number | null;
+  single_sharing_price?: number | null;
+  child_with_bed_price?: number | null;
+  child_without_bed_price?: number | null;
+  max_travellers?: number | null;
   departure_city?: { name?: string | null } | null;
 };
+
+function mapDepartureApiRow(row: DepartureRow) {
+  const legacy = Number(row.price) || 0;
+  const twin = Number(row.twin_sharing_price) || legacy || 0;
+  return {
+    id: row.id,
+    tour_id: row.tour_id,
+    city: row.departure_city?.name || row.city || 'Unknown',
+    start_date: row.start_date,
+    end_date: row.end_date,
+    price: twin,
+    twin_sharing_price: twin,
+    triple_sharing_price: row.triple_sharing_price ?? null,
+    single_sharing_price: row.single_sharing_price ?? null,
+    child_with_bed_price: row.child_with_bed_price ?? null,
+    child_without_bed_price: row.child_without_bed_price ?? null,
+    max_travellers: row.max_travellers ?? null,
+  };
+}
+
+function mergePriceSheet(departure: TourPriceSheet, tour: TourPriceSheet): TourPriceSheet {
+  const d = departure;
+  const t = tour;
+  return {
+    twin_sharing_price: d.twin_sharing_price || d.price || t.twin_sharing_price,
+    triple_sharing_price: d.triple_sharing_price ?? t.triple_sharing_price,
+    single_sharing_price: d.single_sharing_price ?? t.single_sharing_price,
+    child_with_bed_price: d.child_with_bed_price ?? t.child_with_bed_price,
+    child_without_bed_price: d.child_without_bed_price ?? t.child_without_bed_price,
+    price: d.price || d.twin_sharing_price || t.twin_sharing_price,
+  };
+}
 
 type ListingTourRow = {
   id: number;
@@ -980,7 +1026,8 @@ export async function getToursListing() {
   let error: { message: string } | null = null;
 
   const baseTries = [
-    'id,title,slug,flow_type,destination,tour_includes,hero_image_url,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price',
+    'id,title,slug,flow_type,destination,tour_includes,hero_image_url,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price,discounted_price,overview',
+    'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price,overview',
     'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price',
   ];
   const departuresPart = 'departures(price,start_date,end_date,city,departure_city:departure_cities(name))';
@@ -1029,7 +1076,24 @@ export async function getToursListing() {
     }
 
     const derivedTwin = prices.length ? Math.min(...prices) : null;
-    const startingTwin = row.twin_sharing_price ?? derivedTwin;
+    const cmsMeta = parseTourCmsMeta((row as { overview?: string | null }).overview);
+    const discountPercent = inferDiscountPercent(
+      row.twin_sharing_price,
+      (row as { discounted_price?: number | null }).discounted_price,
+      cmsMeta.discount_percent
+    );
+    const listingSheet: TourPriceSheet = {
+      twin_sharing_price: row.twin_sharing_price ?? derivedTwin,
+      triple_sharing_price: row.triple_sharing_price,
+      single_sharing_price: row.single_sharing_price,
+      child_with_bed_price: row.child_with_bed_price,
+      child_without_bed_price: row.child_without_bed_price,
+      price: derivedTwin,
+    };
+    const startingTwin =
+      lowestPerPersonDisplay(listingSheet, discountPercent) ||
+      row.twin_sharing_price ||
+      derivedTwin;
     const startingTriple = row.triple_sharing_price ?? (startingTwin ? Math.round(startingTwin * 0.9) : null);
     const startingSingle = row.single_sharing_price ?? null;
     const startingChildWithBed = row.child_with_bed_price ?? null;
@@ -1098,6 +1162,7 @@ export type TourDetail = {
   starting_from_child_without_bed: number | null;
   sales_price: number | null;
   discounted_price: number | null;
+  discount_percent: number | null;
   departure_cities: string[];
   tour_includes: string[];
   tour_exclusions: string[];
@@ -1172,7 +1237,25 @@ export async function getTourById(tourId: number): Promise<TourDetail | null> {
   }
 
   const derivedTwin = prices.length ? Math.min(...prices) : null;
-  const startingTwin = row.twin_sharing_price ?? row.discounted_price ?? derivedTwin;
+  const cmsMeta = parseTourCmsMeta(row.overview);
+  const discountPercent = inferDiscountPercent(
+    row.twin_sharing_price,
+    row.discounted_price,
+    cmsMeta.discount_percent
+  );
+  const detailSheet: TourPriceSheet = {
+    twin_sharing_price: row.twin_sharing_price ?? derivedTwin,
+    triple_sharing_price: row.triple_sharing_price,
+    single_sharing_price: row.single_sharing_price,
+    child_with_bed_price: row.child_with_bed_price,
+    child_without_bed_price: row.child_without_bed_price,
+    price: derivedTwin,
+  };
+  const startingTwin =
+    lowestPerPersonDisplay(detailSheet, discountPercent) ||
+    row.twin_sharing_price ||
+    row.discounted_price ||
+    derivedTwin;
   const destination = row.destination_ref?.name || row.destination || 'Unknown';
   const heroImage = String(row.hero_image_url || '').trim() || null;
   const gallery = Array.isArray(row.gallery_image_urls)
@@ -1217,6 +1300,7 @@ export async function getTourById(tourId: number): Promise<TourDetail | null> {
     starting_from_child_without_bed: row.child_without_bed_price ?? null,
     sales_price: row.sales_price ?? null,
     discounted_price: row.discounted_price ?? startingTwin,
+    discount_percent: discountPercent,
     departure_cities: Array.from(
       new Set(departures.map((d) => String(d.departure_city?.name || d.city || '').trim()).filter(Boolean))
     ),
@@ -1231,24 +1315,26 @@ export async function getTourById(tourId: number): Promise<TourDetail | null> {
 }
 
 export async function getTourDepartures(tourId: number) {
-  const { data, error } = await supabase
-    .from('departures')
-    .select('id,tour_id,city,start_date,end_date,price,departure_city:departure_cities(name)')
-    .eq('tour_id', tourId)
-    .order('start_date', { ascending: true });
-
-  if (error && !String(error.message || '').includes('departure_cities')) {
-    throw new Error(`Failed to fetch departures: ${error.message}`);
+  const selectTries = [
+    'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price,max_travellers,departure_city:departure_cities(name)',
+    'id,tour_id,city,start_date,end_date,price,departure_city:departure_cities(name)',
+  ];
+  let lastErr = '';
+  for (const sel of selectTries) {
+    const { data, error } = await supabase
+      .from('departures')
+      .select(sel)
+      .eq('tour_id', tourId)
+      .order('start_date', { ascending: true });
+    if (!error) {
+      return ((data || []) as unknown as DepartureRow[]).map((row) => mapDepartureApiRow(row));
+    }
+    lastErr = String(error.message || '');
+    if (!/column .* does not exist/i.test(lastErr) && !lastErr.includes('departure_cities')) {
+      throw new Error(`Failed to fetch departures: ${lastErr}`);
+    }
   }
-
-  return ((data || []) as DepartureRow[]).map((row) => ({
-    id: row.id,
-    tour_id: row.tour_id,
-    city: row.departure_city?.name || row.city || 'Unknown',
-    start_date: row.start_date,
-    end_date: row.end_date,
-    price: row.price,
-  }));
+  throw new Error(`Failed to fetch departures: ${lastErr}`);
 }
 
 function validateCreateBookingPayload(input: CreateBookingInput): void {
@@ -1285,9 +1371,11 @@ function validateCreateBookingPayload(input: CreateBookingInput): void {
 export async function createBooking(input: CreateBookingInput) {
   validateCreateBookingPayload(input);
 
+  const depSelect =
+    'id,tour_id,price,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price';
   let { data: departure, error: departureError } = await supabase
     .from('departures')
-    .select('id,tour_id,price')
+    .select(depSelect)
     .eq('id', input.departure_id)
     .eq('tour_id', input.tour_id)
     .single();
@@ -1301,13 +1389,16 @@ export async function createBooking(input: CreateBookingInput) {
     if (fallback.error || !fallback.data) {
       throw new Error('Invalid departure selected for this tour.');
     }
-    departure = fallback.data;
+    departure = fallback.data as typeof departure;
     // eslint-disable-next-line no-console
     console.warn('[createBooking] departure tour mismatch, using departure.tour_id', {
       requestedTourId: input.tour_id,
       departureId: input.departure_id,
-      resolvedTourId: departure.tour_id,
+      resolvedTourId: departure?.tour_id,
     });
+  }
+  if (!departure) {
+    throw new Error('Invalid departure selected for this tour.');
   }
   const effectiveTourId = Number(departure.tour_id || input.tour_id);
 
@@ -1315,9 +1406,44 @@ export async function createBooking(input: CreateBookingInput) {
   const children = Number(input.children || 0);
   const infants = Number(input.infants || 0);
 
-  // Minimal price calculation for MVP
-  const perPaxPrice = Number(departure.price || 0);
-  const totalPrice = perPaxPrice * (adults + children + infants);
+  const { data: tourRow } = await supabase
+    .from('tours')
+    .select(
+      'twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price,discounted_price,overview'
+    )
+    .eq('id', effectiveTourId)
+    .maybeSingle();
+
+  const cmsMeta = parseTourCmsMeta((tourRow as { overview?: string | null } | null)?.overview);
+  const discountPercent = inferDiscountPercent(
+    (tourRow as { twin_sharing_price?: number | null } | null)?.twin_sharing_price,
+    (tourRow as { discounted_price?: number | null } | null)?.discounted_price,
+    cmsMeta.discount_percent
+  );
+  const tourSheet: TourPriceSheet = {
+    twin_sharing_price: (tourRow as { twin_sharing_price?: number | null } | null)?.twin_sharing_price,
+    triple_sharing_price: (tourRow as { triple_sharing_price?: number | null } | null)?.triple_sharing_price,
+    single_sharing_price: (tourRow as { single_sharing_price?: number | null } | null)?.single_sharing_price,
+    child_with_bed_price: (tourRow as { child_with_bed_price?: number | null } | null)?.child_with_bed_price,
+    child_without_bed_price: (tourRow as { child_without_bed_price?: number | null } | null)?.child_without_bed_price,
+  };
+  const depSheet = mergePriceSheet(departure as TourPriceSheet, tourSheet);
+  const childAges = (input.travellers || [])
+    .filter((t) => t.type === 'child')
+    .map((t) => Number((t as TravellerInput & { child_age?: string }).child_age))
+    .filter((a) => Number.isFinite(a));
+
+  const totalPrice = computeBookingTotalInr({
+    sheet: depSheet,
+    discountPercent,
+    childBedAgeMin: resolveChildBedAgeMin(cmsMeta.child_bed_age_min),
+    room_details: input.room_details,
+    adults,
+    children: children + infants,
+    child_ages: childAges.length
+      ? childAges
+      : input.room_details?.flatMap((r) => r.child_ages || []) || [],
+  });
 
   const bookingBaseInsert = {
     tour_id: effectiveTourId,
