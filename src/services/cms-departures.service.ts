@@ -65,11 +65,13 @@ export async function replaceTourDepartures(tourId: number, rows: CmsDeparture[]
   const cleaned = rows
     .map((r) => {
       const twin = Number(r.twin_sharing_price ?? r.price) || 0;
+      const start = String(r.start_date || '').slice(0, 10);
+      const endRaw = String(r.end_date || '').slice(0, 10);
       return {
         tour_id: tourId,
         city: r.city.trim(),
-        start_date: r.start_date,
-        end_date: r.end_date,
+        start_date: start,
+        end_date: endRaw || start,
         price: twin,
         twin_sharing_price: twin,
         triple_sharing_price: Number(r.triple_sharing_price) || null,
@@ -79,7 +81,7 @@ export async function replaceTourDepartures(tourId: number, rows: CmsDeparture[]
         max_travellers: r.max_travellers != null ? Number(r.max_travellers) : null,
       };
     })
-    .filter((r) => r.city && r.start_date && r.end_date && r.price > 0);
+    .filter((r) => r.city && r.start_date && r.price > 0);
 
   if (!cleaned.length) return [];
 

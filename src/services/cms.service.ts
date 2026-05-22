@@ -455,6 +455,19 @@ async function selectToursList(): Promise<CmsTour[]> {
   throw new Error(`Failed to list tours: ${lastErr}`);
 }
 
+/** Fast path after writes — avoids nested embed retries that slow CMS saves. */
+async function selectTourByIdQuick(id: number): Promise<TourRaw | null> {
+  let lastErr = '';
+  for (const base of TOUR_LIST_BASE) {
+    const { data, error } = await supabase.from('tours').select(base).eq('id', id).maybeSingle();
+    if (!error && data) return data as unknown as TourRaw;
+    lastErr = String(error?.message || '');
+    if (!/column .* does not exist/i.test(lastErr)) break;
+  }
+  if (lastErr.includes('0 rows') || lastErr.includes('JSON object requested')) return null;
+  return null;
+}
+
 async function selectTourById(id: number): Promise<TourRaw | null> {
   let lastErr = '';
   for (const base of TOUR_LIST_BASE) {
@@ -466,12 +479,8 @@ async function selectTourById(id: number): Promise<TourRaw | null> {
       if (!/column .* does not exist|relationship|schema cache/i.test(lastErr)) break;
     }
   }
-  for (const base of TOUR_LIST_BASE) {
-    const { data, error } = await supabase.from('tours').select(base).eq('id', id).maybeSingle();
-    if (!error && data) return data as unknown as TourRaw;
-    lastErr = String(error?.message || '');
-    if (!/column .* does not exist/i.test(lastErr)) break;
-  }
+  const quick = await selectTourByIdQuick(id);
+  if (quick) return quick;
   if (lastErr.includes('0 rows') || lastErr.includes('JSON object requested')) return null;
   throw new Error(`Failed to fetch tour: ${lastErr}`);
 }
@@ -546,9 +555,9 @@ export async function updateTour(id: number, input: Partial<CmsTour>): Promise<C
     const cleaned = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
     const { error } = await supabase.from('tours').update(cleaned).eq('id', id);
     if (!error) {
-      const updated = await getTour(id);
-      if (!updated) throw new Error('Tour not found after update.');
-      return updated;
+      const row = await selectTourByIdQuick(id);
+      if (!row) throw new Error('Tour not found after update.');
+      return mapTourRow(row);
     }
     lastErr = String(error?.message || '');
     if (!/column .* does not exist/i.test(lastErr)) break;
