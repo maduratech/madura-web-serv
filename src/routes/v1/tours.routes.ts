@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   getDestinationShowcase,
+  getDestinationBySlug,
   getDestinations,
   getHeroSearchOptions,
   getTourById,
@@ -33,6 +34,16 @@ toursRouter.get('/destinations', async (_req, res, next) => {
   try {
     const destinations = await getDestinations();
     return res.json({ data: destinations });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+toursRouter.get('/destinations/:slug', async (req, res, next) => {
+  try {
+    const row = await getDestinationBySlug(String(req.params.slug || ''));
+    if (!row) return res.status(404).json({ message: 'Destination not found.' });
+    return res.json({ data: row });
   } catch (error) {
     return next(error);
   }

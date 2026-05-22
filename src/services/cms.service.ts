@@ -117,6 +117,8 @@ async function selectDestinations(cols: string) {
 
 export async function listDestinations(): Promise<CmsDestination[]> {
   const tries = [
+    'id,name,slug,country_region,flag_image_url,description,created_at',
+    'id,name,slug,flag_image_url,description,created_at',
     'id,name,slug,country_region,flag_image_url,created_at',
     'id,name,slug,flag_image_url,created_at',
     'id,name,slug,country_region,flag_iso,created_at',
@@ -138,6 +140,8 @@ export async function listDestinations(): Promise<CmsDestination[]> {
 
 export async function getDestination(id: number): Promise<CmsDestination | null> {
   const tries = [
+    'id,name,slug,country_region,flag_image_url,description,created_at',
+    'id,name,slug,flag_image_url,description,created_at',
     'id,name,slug,country_region,flag_image_url,created_at',
     'id,name,slug,flag_image_url,created_at',
     'id,name,slug,created_at',
@@ -166,8 +170,9 @@ function slugify(name: string): string {
 
 async function insertDestinationWithFallback(payload: Record<string, unknown>): Promise<CmsDestination> {
   const insertTries = [
-    { name: payload.name, slug: payload.slug, country_region: payload.country, flag_image_url: payload.flag_image_url },
-    { name: payload.name, slug: payload.slug, flag_image_url: payload.flag_image_url },
+    { name: payload.name, slug: payload.slug, country_region: payload.country, flag_image_url: payload.flag_image_url, description: payload.description },
+    { name: payload.name, slug: payload.slug, flag_image_url: payload.flag_image_url, description: payload.description },
+    { name: payload.name, slug: payload.slug, description: payload.description },
     { name: payload.name, slug: payload.slug },
     { name: payload.name },
   ];
@@ -191,6 +196,7 @@ export async function createDestination(input: Partial<CmsDestination>): Promise
     slug,
     country: input.country?.trim() || null,
     flag_image_url: input.flag_image_url?.trim() || null,
+    description: input.description?.trim() || null,
   });
 }
 
@@ -201,11 +207,13 @@ export async function updateDestination(id: number, input: Partial<CmsDestinatio
       ...(input.slug !== undefined ? { slug: String(input.slug).trim() || slugify(String(input.name || '')) } : {}),
       ...(input.country !== undefined ? { country_region: input.country?.trim() || null } : {}),
       ...(input.flag_image_url !== undefined ? { flag_image_url: input.flag_image_url?.trim() || null } : {}),
+      ...(input.description !== undefined ? { description: input.description?.trim() || null } : {}),
     },
     {
       ...(input.name !== undefined ? { name: String(input.name).trim() } : {}),
       ...(input.slug !== undefined ? { slug: String(input.slug).trim() || slugify(String(input.name || '')) } : {}),
       ...(input.flag_image_url !== undefined ? { flag_image_url: input.flag_image_url?.trim() || null } : {}),
+      ...(input.description !== undefined ? { description: input.description?.trim() || null } : {}),
     },
     {
       ...(input.name !== undefined ? { name: String(input.name).trim() } : {}),
@@ -354,7 +362,7 @@ function mapTourRow(row: TourRaw): CmsTour {
     currency: 'INR',
     max_travellers: row.max_travellers ?? null,
     min_age: row.min_age ?? null,
-    is_active: row.is_active ?? true,
+    is_active: true,
     hero_image_url: row.hero_image_url ?? null,
     gallery_image_urls: parseStringList(row.gallery_image_urls),
     overview: row.overview ?? null,
@@ -387,7 +395,6 @@ function tourInputToDb(input: Partial<CmsTour>): Record<string, unknown> {
     discounted_price: input.discounted_price,
     max_travellers: input.max_travellers,
     min_age: input.min_age,
-    is_active: input.is_active,
     hero_image_url: input.hero_image_url?.trim() || null,
     gallery_image_urls: input.gallery_image_urls,
     overview: input.overview?.trim() || null,
@@ -409,7 +416,7 @@ const TOUR_EMBEDS = [
 ] as const;
 
 const TOUR_LIST_BASE = [
-  'id,title,slug,flow_type,destination_id,destination,tour_region,starting_city,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price,sales_price,discounted_price,max_travellers,min_age,is_active,hero_image_url,gallery_image_urls,overview,tour_includes,tour_exclusions,itinerary_days,created_at',
+  'id,title,slug,flow_type,destination_id,destination,tour_region,starting_city,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price,sales_price,discounted_price,max_travellers,min_age,hero_image_url,gallery_image_urls,overview,tour_includes,tour_exclusions,itinerary_days,created_at',
   'id,title,slug,flow_type,destination_id,destination,tour_region,starting_city,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price,sales_price,discounted_price,hero_image_url,gallery_image_urls,overview,tour_includes,tour_exclusions,itinerary_days,created_at',
   'id,title,slug,destination_id,destination,duration_days,twin_sharing_price,sales_price,discounted_price,hero_image_url,gallery_image_urls,overview,tour_includes,tour_exclusions,itinerary_days,created_at',
   'id,title,slug,destination_id,destination,duration_days,twin_sharing_price,hero_image_url,overview,tour_includes,tour_exclusions,created_at',

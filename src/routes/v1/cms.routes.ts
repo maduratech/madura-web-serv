@@ -19,6 +19,7 @@ import {
   upsertCmsStaff,
 } from '../../services/cms.service';
 import { searchStockImages, uploadCmsMedia } from '../../services/cms-media.service';
+import { listTourDepartures, replaceTourDepartures } from '../../services/cms-departures.service';
 
 export const cmsRouter = Router();
 
@@ -145,6 +146,25 @@ cmsRouter.delete('/tours/:id', async (req, res, next) => {
     const id = Number(req.params.id);
     await deleteTour(id);
     res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.get('/tours/:id/departures', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    res.json({ items: await listTourDepartures(id) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.put('/tours/:id/departures', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    res.json({ items: await replaceTourDepartures(id, items) });
   } catch (err) {
     next(err);
   }

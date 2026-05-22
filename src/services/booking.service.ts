@@ -701,6 +701,80 @@ export async function getDestinations(): Promise<DestinationListItem[]> {
   throw new Error(`Failed to fetch destinations: ${lastErr}`);
 }
 
+function parseDestinationPageMeta(description: string | null | undefined): {
+  tagline: string | null;
+  banner_image_url: string | null;
+  default_view_mode: 'list' | 'grid';
+  body: string;
+} {
+  const text = String(description || '').trim();
+  const re = /^<!--dest-meta:([\s\S]*?)-->\s*/;
+  const match = text.match(re);
+  if (!match) {
+    return { tagline: null, banner_image_url: null, default_view_mode: 'grid', body: text };
+  }
+  try {
+    const meta = JSON.parse(match[1]) as {
+      tagline?: string;
+      banner_image_url?: string;
+      default_view_mode?: 'list' | 'grid';
+    };
+    return {
+      tagline: meta.tagline?.trim() || null,
+      banner_image_url: meta.banner_image_url?.trim() || null,
+      default_view_mode: meta.default_view_mode === 'list' ? 'list' : 'grid',
+      body: text.slice(match[0].length).trim(),
+    };
+  } catch {
+    return { tagline: null, banner_image_url: null, default_view_mode: 'grid', body: text };
+  }
+}
+
+export async function getDestinationBySlug(slug: string) {
+  const normalized = slug.toLowerCase().trim();
+  const tries = [
+    'id,name,slug,description,image_url,cover_image_url,flag_image_url',
+    'id,name,slug,description,cover_image_url,flag_image_url',
+    'id,name,slug,description,image_url,cover_image_url',
+    'id,name,slug,description',
+    'id,name,slug,cover_image_url,image_url',
+    'id,name,slug',
+  ];
+  let lastErr = '';
+  for (const cols of tries) {
+    const { data, error } = await supabase.from('destinations').select(cols).eq('slug', normalized).maybeSingle();
+    if (!error && data) {
+      const row = data as {
+        id: number;
+        name?: string;
+        slug?: string;
+        description?: string | null;
+        image_url?: string | null;
+        cover_image_url?: string | null;
+        flag_image_url?: string | null;
+      };
+      const pageMeta = parseDestinationPageMeta(row.description);
+      return {
+        id: Number(row.id),
+        name: String(row.name || '').trim(),
+        slug: String(row.slug || normalized),
+        tagline: pageMeta.tagline,
+        banner_image_url:
+          pageMeta.banner_image_url ||
+          row.cover_image_url ||
+          row.image_url ||
+          row.flag_image_url ||
+          null,
+        default_view_mode: pageMeta.default_view_mode,
+        description: pageMeta.body,
+      };
+    }
+    lastErr = String(error?.message || '');
+    if (!/column .* does not exist/i.test(lastErr)) break;
+  }
+  return null;
+}
+
 export async function getDepartureCities() {
   const { data, error } = await supabase
     .from('departure_cities')
