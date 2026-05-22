@@ -260,6 +260,16 @@ async function syncBookingPaymentToCrm(input: {
   customer_phone?: string;
   customer_email?: string;
   customer_name?: string;
+  travellers?: Array<{
+    traveller_type?: string | null;
+    salutation?: string | null;
+    first_name?: string | null;
+    last_name?: string | null;
+    phone?: string | null;
+    email?: string | null;
+    child_age?: number | null;
+  }>;
+  room_details?: Array<{ adults?: number; children?: number; child_ages?: number[] }> | null;
 }): Promise<CrmPaymentEventResult | null> {
   const base = String(env.CRM_API_URL || '').replace(/\/$/, '');
   if (!base) return null;
@@ -310,6 +320,8 @@ async function syncBookingPaymentToCrm(input: {
         customer_phone: input.customer_phone,
         customer_email: input.customer_email,
         customer_name: input.customer_name,
+        travellers: input.travellers,
+        room_details: input.room_details,
         note: input.details_note,
       }),
     });
@@ -1794,6 +1806,8 @@ async function getBookingPaymentContext(bookingId: number) {
   const displayFxRate = Number(bookingRow.display_fx_rate) > 0 ? Number(bookingRow.display_fx_rate) : null;
   const formatInr = (amount: number) => formatInrDual(amount, displayCurrency, displayFxRate);
 
+  const travellersForCrm = attachChildAgesToTravellers(travellerRowsLoaded, roomDetailsStored);
+
   return {
     booking: bookingRow,
     destination,
@@ -1806,11 +1820,30 @@ async function getBookingPaymentContext(bookingId: number) {
     durationLabel,
     durationDaysLabel,
     primaryTraveller,
+    roomDetailsStored,
+    travellersForCrm,
     travellersRoomsNote,
     displayCurrency,
     displayFxRate,
     formatInr,
   };
+}
+
+function attachChildAgesToTravellers(
+  travellers: TravellerRowForNote[],
+  roomDetails: Array<{ child_ages?: number[] }> | null | undefined
+): Array<TravellerRowForNote & { child_age?: number | null }> {
+  const childAges = (roomDetails || []).flatMap((r) =>
+    Array.isArray(r.child_ages) ? r.child_ages.filter((n) => Number.isFinite(n)) : []
+  );
+  let ageIdx = 0;
+  return travellers.map((t) => {
+    const type = String(t.traveller_type || 'adult').toLowerCase();
+    const needsAge = type === 'child' || type === 'infant';
+    const child_age =
+      needsAge && ageIdx < childAges.length ? Number(childAges[ageIdx++]) : needsAge ? null : null;
+    return { ...t, child_age };
+  });
 }
 
 export async function createBookingPaymentOrder(input: CreateBookingPaymentOrderInput) {
@@ -2093,6 +2126,8 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
       customer_phone: context.primaryTraveller?.phone ?? undefined,
       customer_email: context.primaryTraveller?.email ?? undefined,
       customer_name: `${context.primaryTraveller?.first_name || ''} ${context.primaryTraveller?.last_name || ''}`.trim(),
+      travellers: context.travellersForCrm,
+      room_details: context.roomDetailsStored,
       details_note: detailsNote,
     });
   } catch (err) {
@@ -2196,6 +2231,8 @@ export async function updateBookingPaymentStatus(input: UpdateBookingPaymentStat
       customer_phone: context.primaryTraveller?.phone ?? undefined,
       customer_email: context.primaryTraveller?.email ?? undefined,
       customer_name: `${context.primaryTraveller?.first_name || ''} ${context.primaryTraveller?.last_name || ''}`.trim(),
+      travellers: context.travellersForCrm,
+      room_details: context.roomDetailsStored,
       details_note: detailsNote,
     });
   } catch (err) {
