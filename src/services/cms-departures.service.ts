@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { childPricesFromDb, childPricesToDb } from '../lib/tour-price-db';
 
 export type CmsDeparture = {
   id?: number;
@@ -9,16 +10,16 @@ export type CmsDeparture = {
   twin_sharing_price?: number | null;
   triple_sharing_price?: number | null;
   single_sharing_price?: number | null;
-  child_with_bed_price?: number | null;
-  child_without_bed_price?: number | null;
   infant_price?: number | null;
+  child_price?: number | null;
+  youth_price?: number | null;
   max_travellers?: number | null;
 };
 
 const DEPARTURE_SELECT_TRIES = [
-  'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price,infant_price,max_travellers',
-  'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price,infant_price',
-  'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price',
+  'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,max_travellers',
+  'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price',
+  'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,child_price,youth_price',
   'id,tour_id,city,start_date,end_date,price',
 ];
 
@@ -34,9 +35,7 @@ function mapDepartureRow(row: Record<string, unknown>): CmsDeparture {
     twin_sharing_price: twin || null,
     triple_sharing_price: Number(row.triple_sharing_price) || null,
     single_sharing_price: Number(row.single_sharing_price) || null,
-    child_with_bed_price: Number(row.child_with_bed_price) || null,
-    child_without_bed_price: Number(row.child_without_bed_price) || null,
-    infant_price: Number(row.infant_price) || null,
+    ...childPricesFromDb(row as Parameters<typeof childPricesFromDb>[0]),
     max_travellers: row.max_travellers != null ? Number(row.max_travellers) : null,
   };
 }
@@ -79,9 +78,11 @@ export async function replaceTourDepartures(tourId: number, rows: CmsDeparture[]
         twin_sharing_price: twin,
         triple_sharing_price: Number(r.triple_sharing_price) || null,
         single_sharing_price: Number(r.single_sharing_price) || null,
-        child_with_bed_price: Number(r.child_with_bed_price) || null,
-        child_without_bed_price: Number(r.child_without_bed_price) || null,
-        infant_price: Number(r.infant_price) || null,
+        ...childPricesToDb({
+          infant_price: r.infant_price,
+          child_price: r.child_price,
+          youth_price: r.youth_price,
+        }),
         max_travellers: r.max_travellers != null ? Number(r.max_travellers) : null,
       };
     })
@@ -90,8 +91,9 @@ export async function replaceTourDepartures(tourId: number, rows: CmsDeparture[]
   if (!cleaned.length) return [];
 
   const insertTries = [
-    'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price,max_travellers',
-    'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,child_with_bed_price,child_without_bed_price',
+    'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,max_travellers',
+    'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price',
+    'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,child_price,youth_price',
     'id,tour_id,city,start_date,end_date,price',
   ];
 
@@ -99,16 +101,17 @@ export async function replaceTourDepartures(tourId: number, rows: CmsDeparture[]
   for (const returning of insertTries) {
     const payload = cleaned.map((row) => {
       if (returning.includes('twin_sharing_price')) return row;
+      const legacy = row as Record<string, unknown>;
       const {
-        twin_sharing_price,
-        triple_sharing_price,
-        single_sharing_price,
-        child_with_bed_price,
-        child_without_bed_price,
-        infant_price,
-        max_travellers,
+        twin_sharing_price: _twin,
+        triple_sharing_price: _triple,
+        single_sharing_price: _single,
+        youth_price: _youth,
+        child_price: _child,
+        infant_price: _infant,
+        max_travellers: _max,
         ...rest
-      } = row;
+      } = legacy;
       return rest;
     });
     const { data, error } = await supabase.from('departures').insert(payload).select(returning);
