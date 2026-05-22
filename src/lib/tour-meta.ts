@@ -9,6 +9,8 @@ export type TourCmsMeta = {
   /** Checkout / display discount (0–100). */
   discount_percent?: number | null;
   child_bed_age_min?: number | null;
+  flight_cost_inr?: number | null;
+  flights?: Array<{ cost_inr?: number | null }>;
 };
 
 const META_RE = /^<!--cms-meta:([\s\S]*?)-->\s*/;

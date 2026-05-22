@@ -1,5 +1,10 @@
 import { supabase } from '../lib/supabase';
 import { parseTourCmsMeta } from '../lib/tour-meta';
+import {
+  bookingTotalWithFlightOption,
+  countPayingTravellers,
+  tourFlightCostPerPerson,
+} from '../lib/tour-flights';
 import { childPricesFromDb, childPricesToDb } from '../lib/tour-price-db';
 import {
   computeBookingTotalInr,
@@ -46,6 +51,8 @@ export type CreateBookingInput = {
     triple: { per_adult: number; adults: number; children: Array<{ age: number; price: number }> };
     quad: { per_adult: number; adults: number; children: Array<{ age: number; price: number }> };
   } | null;
+  /** When false, per-person flight supplement is deducted from total (tour meta `flight_cost_inr`). */
+  include_flight?: boolean;
 };
 
 /** Server-side fallback INR → market rates (used when client didn't snapshot a rate). Keep in sync with `madura-web/src/config/market.ts`. */
@@ -1481,7 +1488,7 @@ export async function createBooking(input: CreateBookingInput) {
     .map((t) => Number((t as TravellerInput & { child_age?: string }).child_age))
     .filter((a) => Number.isFinite(a));
 
-  const totalPrice = computeBookingTotalInr({
+  let totalPrice = computeBookingTotalInr({
     sheet: depSheet,
     discountPercent,
     room_details: input.room_details,
@@ -1491,6 +1498,17 @@ export async function createBooking(input: CreateBookingInput) {
       ? childAges
       : input.room_details?.flatMap((r) => r.child_ages || []) || [],
   });
+
+  const flightCostPerPerson = tourFlightCostPerPerson(cmsMeta.flights, cmsMeta.flight_cost_inr);
+  const includeFlight = input.include_flight !== false;
+  if (!includeFlight && flightCostPerPerson > 0) {
+    const rooms =
+      input.room_details?.length
+        ? input.room_details
+        : [{ adults, children: children + infants }];
+    const paying = countPayingTravellers(rooms);
+    totalPrice = bookingTotalWithFlightOption(totalPrice, flightCostPerPerson, false, paying);
+  }
 
   const bookingBaseInsert = {
     tour_id: effectiveTourId,
