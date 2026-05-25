@@ -572,7 +572,6 @@ export async function publishItineraryToTour(
     twin_sharing_price: sharingPrices.twin_sharing_price,
     triple_sharing_price: sharingPrices.triple_sharing_price,
     single_sharing_price: sharingPrices.single_sharing_price,
-    quad_sharing_price: sharingPrices.quad_sharing_price,
     sales_price: sharingPrices.sales_price,
   };
 
