@@ -3,6 +3,17 @@ import { childPricesFromDb, childPricesToDb } from '../lib/tour-price-db';
 import { normalizeDestinationSlug } from '../lib/destination-slug';
 import { parseTourVisibility, type TourVisibilityStatus } from '../lib/tour-visibility';
 
+/** PostgREST / Supabase wording when a column or embed is missing on this project. */
+function isSchemaColumnMismatch(errMsg: string): boolean {
+  const m = String(errMsg || '').toLowerCase();
+  return (
+    m.includes('does not exist') ||
+    m.includes('could not find') ||
+    m.includes('schema cache') ||
+    m.includes('unknown column')
+  );
+}
+
 export type CmsStaffRow = {
   id: string;
   email: string;
@@ -414,20 +425,34 @@ function slugify(name: string): string {
 }
 
 async function insertDestinationWithFallback(payload: Record<string, unknown>): Promise<CmsDestination> {
-  const insertTries = [
-    { name: payload.name, slug: payload.slug, country_region: payload.country, flag_image_url: payload.flag_image_url, description: payload.description },
-    { name: payload.name, slug: payload.slug, flag_image_url: payload.flag_image_url, description: payload.description },
-    { name: payload.name, slug: payload.slug, description: payload.description },
+  const insertTries: Record<string, unknown>[] = [
     { name: payload.name, slug: payload.slug },
+    { name: payload.name, slug: payload.slug, description: payload.description },
+    {
+      name: payload.name,
+      slug: payload.slug,
+      flag_image_url: payload.flag_image_url,
+      description: payload.description,
+    },
+    {
+      name: payload.name,
+      slug: payload.slug,
+      country_region: payload.country,
+      flag_image_url: payload.flag_image_url,
+      description: payload.description,
+    },
     { name: payload.name },
   ];
   let lastErr = '';
   for (const row of insertTries) {
-    const cleaned = Object.fromEntries(Object.entries(row).filter(([, v]) => v !== undefined));
+    const cleaned = Object.fromEntries(
+      Object.entries(row).filter(([, v]) => v !== undefined && v !== null && v !== '')
+    );
+    if (!cleaned.name) continue;
     const { data, error } = await supabase.from('destinations').insert(cleaned).select('id').single();
     if (!error && data?.id) return getDestination(Number(data.id)) as Promise<CmsDestination>;
     lastErr = String(error?.message || '');
-    if (!/column .* does not exist/i.test(lastErr)) break;
+    if (!isSchemaColumnMismatch(lastErr)) break;
   }
   throw new Error(`Failed to create destination: ${lastErr}`);
 }
