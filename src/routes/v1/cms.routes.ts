@@ -10,6 +10,7 @@ import {
   getDestination,
   getTour,
   listCmsStaff,
+  listWebsiteUsers,
   listDestinations,
   listTours,
   removeCmsStaff,
@@ -198,6 +199,14 @@ cmsRouter.get('/stock-images', async (req, res, next) => {
 cmsRouter.get('/staff', requireSuperAdmin, async (_req, res, next) => {
   try {
     res.json({ items: await listCmsStaff() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.get('/users', requireSuperAdmin, async (_req, res, next) => {
+  try {
+    res.json({ items: await listWebsiteUsers() });
   } catch (err) {
     next(err);
   }

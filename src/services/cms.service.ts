@@ -30,6 +30,116 @@ export async function listCmsStaff(): Promise<CmsStaffRow[]> {
   return (data || []) as CmsStaffRow[];
 }
 
+export type CmsWebsiteUserRow = {
+  id: string;
+  email: string;
+  full_name: string | null;
+  phone: string | null;
+  account_type: 'traveler' | 'staff' | 'super_admin';
+  cms_role: 'staff' | 'super_admin' | null;
+  is_cms_active: boolean;
+  signed_up_at: string | null;
+};
+
+type ProfileListRow = {
+  id: string;
+  email?: string | null;
+  full_name?: string | null;
+  phone?: string | null;
+  created_at?: string | null;
+};
+
+/** All website accounts (travelers + CMS staff), merged from profiles and cms_staff. */
+export async function listWebsiteUsers(): Promise<CmsWebsiteUserRow[]> {
+  const staffRows = await listCmsStaff();
+  const staffById = new Map(staffRows.map((s) => [s.id, s]));
+
+  let profiles: ProfileListRow[] = [];
+  const wide = await supabase
+    .from('profiles')
+    .select('id,email,full_name,phone,created_at')
+    .order('created_at', { ascending: false });
+  if (!wide.error) {
+    profiles = (wide.data || []) as ProfileListRow[];
+  } else {
+    const narrow = await supabase
+      .from('profiles')
+      .select('id,email,full_name,phone')
+      .order('email', { ascending: true });
+    if (narrow.error) throw new Error(narrow.error.message);
+    profiles = (narrow.data || []) as ProfileListRow[];
+  }
+
+  const rows: CmsWebsiteUserRow[] = [];
+  const seen = new Set<string>();
+
+  const pushRow = (
+    id: string,
+    email: string,
+    full_name: string | null,
+    phone: string | null,
+    signed_up_at: string | null
+  ) => {
+    const cms = staffById.get(id);
+    const cmsRole = cms?.role ?? null;
+    const account_type: CmsWebsiteUserRow['account_type'] =
+      cmsRole === 'super_admin' ? 'super_admin' : cmsRole === 'staff' ? 'staff' : 'traveler';
+    rows.push({
+      id,
+      email: email.trim(),
+      full_name,
+      phone,
+      account_type,
+      cms_role: cmsRole,
+      is_cms_active: cms?.is_active ?? false,
+      signed_up_at: signed_up_at ?? cms?.created_at ?? null,
+    });
+  };
+
+  for (const p of profiles) {
+    const id = String(p.id);
+    seen.add(id);
+    const cms = staffById.get(id);
+    pushRow(
+      id,
+      String(p.email || cms?.email || '').trim(),
+      (p.full_name ?? cms?.full_name ?? null) as string | null,
+      (p.phone ?? null) as string | null,
+      (p.created_at ?? cms?.created_at ?? null) as string | null
+    );
+  }
+
+  const { data: authList, error: authErr } = await supabase.auth.admin.listUsers({ perPage: 1000 });
+  if (!authErr && authList?.users) {
+    for (const u of authList.users) {
+      if (seen.has(u.id)) continue;
+      seen.add(u.id);
+      const cms = staffById.get(u.id);
+      const meta = (u.user_metadata || {}) as Record<string, unknown>;
+      pushRow(
+        u.id,
+        String(u.email || cms?.email || '').trim(),
+        (cms?.full_name ?? (typeof meta.full_name === 'string' ? meta.full_name : null)) as
+          | string
+          | null,
+        (typeof meta.phone === 'string' ? meta.phone : null) as string | null,
+        u.created_at ?? cms?.created_at ?? null
+      );
+    }
+  }
+
+  for (const s of staffRows) {
+    if (seen.has(s.id)) continue;
+    pushRow(s.id, s.email, s.full_name, null, s.created_at);
+  }
+
+  return rows.sort((a, b) => {
+    const ta = a.signed_up_at ? Date.parse(a.signed_up_at) : 0;
+    const tb = b.signed_up_at ? Date.parse(b.signed_up_at) : 0;
+    return tb - ta;
+  });
+}
+
 export async function upsertCmsStaff(input: {
   email: string;
   full_name?: string | null;
