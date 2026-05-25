@@ -4,6 +4,7 @@ import {
   getPublishedTourLink,
   publishItineraryToTour,
 } from '../../services/itinerary-publish.service';
+import { searchStockImages } from '../../services/cms-media.service';
 
 export const integrationRouter = Router();
 
@@ -37,9 +38,26 @@ integrationRouter.post('/itinerary/publish', async (req, res, next) => {
         overview: body.overview,
         inclusions: body.inclusions,
         exclusions: body.exclusions,
+        detailed_hotels: body.detailed_hotels,
+        detailed_flights: body.detailed_flights,
       },
       webPublicBase
     );
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+integrationRouter.get('/stock-images', async (req, res, next) => {
+  try {
+    const query = String(req.query.q || req.query.query || '').trim();
+    if (!query) {
+      res.status(400).json({ message: 'Query q is required.' });
+      return;
+    }
+    const page = Math.max(1, Number(req.query.page || 1));
+    const result = await searchStockImages(query, page);
     res.json(result);
   } catch (err) {
     next(err);
