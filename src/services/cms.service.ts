@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabase';
 import { childPricesFromDb, childPricesToDb } from '../lib/tour-price-db';
+import { parseTourVisibility, type TourVisibilityStatus } from '../lib/tour-visibility';
 
 export type CmsStaffRow = {
   id: string;
@@ -551,7 +552,7 @@ export type CmsTour = {
   currency: string | null;
   max_travellers: number | null;
   min_age: number | null;
-  is_active: boolean | null;
+  visibility_status: TourVisibilityStatus;
   hero_image_url: string | null;
   gallery_image_urls: string[];
   overview: string | null;
@@ -583,6 +584,7 @@ type TourRaw = {
   discounted_price?: number | null;
   max_travellers?: number | null;
   min_age?: number | null;
+  visibility_status?: string | null;
   is_active?: boolean | null;
   hero_image_url?: string | null;
   gallery_image_urls?: string[] | null;
@@ -649,7 +651,7 @@ function mapTourRow(row: TourRaw): CmsTour {
     currency: 'INR',
     max_travellers: row.max_travellers ?? null,
     min_age: row.min_age ?? null,
-    is_active: true,
+    visibility_status: parseTourVisibility(row),
     hero_image_url: row.hero_image_url ?? null,
     gallery_image_urls: parseStringList(row.gallery_image_urls),
     overview: row.overview ?? null,
@@ -685,6 +687,7 @@ function tourInputToDb(input: Partial<CmsTour>): Record<string, unknown> {
     discounted_price: input.discounted_price,
     max_travellers: input.max_travellers,
     min_age: input.min_age,
+    visibility_status: input.visibility_status,
     hero_image_url: input.hero_image_url?.trim() || null,
     gallery_image_urls: input.gallery_image_urls,
     overview: input.overview?.trim() || null,
@@ -706,6 +709,7 @@ const TOUR_EMBEDS = [
 ] as const;
 
 const TOUR_LIST_BASE = [
+  'id,title,slug,flow_type,visibility_status,destination_id,destination,tour_region,starting_city,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,sales_price,discounted_price,max_travellers,min_age,hero_image_url,gallery_image_urls,overview,tour_includes,tour_exclusions,itinerary_days,created_at',
   'id,title,slug,flow_type,destination_id,destination,tour_region,starting_city,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,sales_price,discounted_price,max_travellers,min_age,hero_image_url,gallery_image_urls,overview,tour_includes,tour_exclusions,itinerary_days,created_at',
   'id,title,slug,flow_type,destination_id,destination,tour_region,starting_city,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,sales_price,discounted_price,hero_image_url,gallery_image_urls,overview,tour_includes,tour_exclusions,itinerary_days,created_at',
   'id,title,slug,flow_type,destination_id,destination,tour_region,starting_city,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,child_price,youth_price,sales_price,discounted_price,hero_image_url,gallery_image_urls,overview,tour_includes,tour_exclusions,itinerary_days,created_at',

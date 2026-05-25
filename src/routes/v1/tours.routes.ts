@@ -4,7 +4,7 @@ import {
   getDestinationBySlug,
   getDestinations,
   getHeroSearchOptions,
-  getTourById,
+  getTourByKey,
   getTourDepartures,
   getTours,
   getToursListing,
@@ -69,14 +69,14 @@ toursRouter.get('/destination-showcase', async (_req, res, next) => {
   }
 });
 
-toursRouter.get('/tours/:id', async (req, res, next) => {
+toursRouter.get('/tours/:idOrSlug', async (req, res, next) => {
   try {
-    const tourId = Number(req.params.id);
-    if (!Number.isFinite(tourId) || tourId <= 0) {
-      return res.status(400).json({ message: 'Invalid tour id.' });
+    const key = String(req.params.idOrSlug || '').trim();
+    if (!key) {
+      return res.status(400).json({ message: 'Invalid tour reference.' });
     }
 
-    const tour = await getTourById(tourId);
+    const tour = await getTourByKey(key);
     if (!tour) {
       return res.status(404).json({ message: 'Tour not found.' });
     }
@@ -95,6 +95,9 @@ toursRouter.get('/tours/:id/departures', async (req, res, next) => {
     }
 
     const departures = await getTourDepartures(tourId);
+    if (departures === null) {
+      return res.status(404).json({ message: 'Tour not found.' });
+    }
     return res.json({ data: departures });
   } catch (error) {
     return next(error);

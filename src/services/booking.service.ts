@@ -17,6 +17,11 @@ import { env } from '../config/env';
 import crypto from 'node:crypto';
 import Razorpay from 'razorpay';
 import {resolveIso2FromCountryHint} from '../lib/country-name-to-iso2';
+import {
+  isTourListedPublicly,
+  parseTourVisibility,
+  type TourVisibilityStatus,
+} from '../lib/tour-visibility';
 
 export type TravellerInput = {
   type: 'adult' | 'child' | 'infant';
@@ -569,6 +574,8 @@ type ListingTourRow = {
   id: number;
   title: string;
   slug?: string | null;
+  visibility_status?: string | null;
+  is_active?: boolean | null;
   flow_type: 'enquiry' | 'booking' | 'both';
   destination?: string | null;
   tour_includes?: string[] | null;
@@ -912,28 +919,40 @@ async function fetchDestinationRowsForShowcase(): Promise<DestinationShowcaseRow
   throw new Error(`Failed to fetch destinations for showcase: ${lastError}`);
 }
 
+async function fetchShowcaseTourRows() {
+  const tries = [
+    'id,destination_id,destination,title,visibility_status',
+    'id,destination_id,destination,title',
+  ];
+  let lastErr = '';
+  for (const cols of tries) {
+    const attempt = await supabase.from('tours').select(cols);
+    if (!attempt.error) return attempt.data || [];
+    lastErr = String(attempt.error.message || '');
+    if (!/column .* does not exist/i.test(lastErr)) break;
+  }
+  throw new Error(`Failed to fetch tours for showcase: ${lastErr || 'Unknown error'}`);
+}
+
 export async function getDestinationShowcase() {
-  const [allDestinations, toursRes, departuresRes] = await Promise.all([
+  const [allDestinations, toursRaw, departuresRes] = await Promise.all([
     fetchDestinationRowsForShowcase(),
-    supabase.from('tours').select('id,destination_id,destination,title'),
+    fetchShowcaseTourRows(),
     supabase.from('departures').select('tour_id,price'),
   ]);
 
-  const toursError = toursRes.error;
   const departuresError = departuresRes.error;
-
-  if (toursError) {
-    throw new Error(`Failed to fetch tours for showcase: ${toursError.message}`);
-  }
   if (departuresError) {
     throw new Error(`Failed to fetch departures for showcase: ${departuresError.message}`);
   }
 
-  const tours = (toursRes.data || []) as Array<{
+  const tours = (toursRaw as unknown as Array<{
     id: number;
     destination_id?: number | null;
     destination?: string | null;
-  }>;
+    visibility_status?: string | null;
+    is_active?: boolean | null;
+  }>).filter((t) => isTourListedPublicly(parseTourVisibility(t)));
   const departures = (departuresRes.data || []) as Array<{ tour_id: number; price: number }>;
 
   const destinationById = new Map<number, DestinationShowcaseRow>();
@@ -1006,21 +1025,35 @@ export async function getDestinationShowcase() {
 }
 
 export async function getTours() {
-  const { data, error } = await supabase
-    .from('tours')
-    .select('id,title,flow_type,destination,destination_ref:destinations(name)')
-    .order('title', { ascending: true });
+  const selectTries = [
+    'id,title,flow_type,visibility_status,destination,destination_ref:destinations(name)',
+    'id,title,flow_type,destination,destination_ref:destinations(name)',
+  ];
+  let data: TourRow[] | null = null;
+  let error: { message: string } | null = null;
+  for (const sel of selectTries) {
+    const attempt = await supabase.from('tours').select(sel).order('title', { ascending: true });
+    if (!attempt.error) {
+      data = (attempt.data || []) as unknown as TourRow[];
+      error = null;
+      break;
+    }
+    error = attempt.error;
+    if (!/column .* does not exist/i.test(String(attempt.error.message || ''))) break;
+  }
 
   if (error && !String(error.message || '').includes('destinations')) {
     throw new Error(`Failed to fetch tours: ${error.message}`);
   }
 
-  const rows = ((data || []) as TourRow[]).map((row) => ({
-    id: row.id,
-    title: row.title,
-    flow_type: row.flow_type,
-    destination: row.destination_ref?.name || row.destination || 'Unknown',
-  }));
+  const rows = ((data || []) as (TourRow & { visibility_status?: string | null; is_active?: boolean | null })[])
+    .filter((row) => isTourListedPublicly(parseTourVisibility(row)))
+    .map((row) => ({
+      id: row.id,
+      title: row.title,
+      flow_type: row.flow_type,
+      destination: row.destination_ref?.name || row.destination || 'Unknown',
+    }));
 
   rows.sort((a, b) => a.destination.localeCompare(b.destination) || a.title.localeCompare(b.title));
   return rows;
@@ -1049,6 +1082,7 @@ export async function getToursListing() {
   let error: { message: string } | null = null;
 
   const baseTries = [
+    'id,title,slug,flow_type,visibility_status,destination,tour_includes,hero_image_url,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
     'id,title,slug,flow_type,destination,tour_includes,hero_image_url,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
     'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,overview',
     'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price',
@@ -1080,7 +1114,9 @@ export async function getToursListing() {
     throw new Error(`Failed to fetch tours listing: ${error.message}`);
   }
 
-  const rows = (data || []) as ListingTourRow[];
+  const rows = ((data || []) as ListingTourRow[]).filter((row) =>
+    isTourListedPublicly(parseTourVisibility(row))
+  );
   return rows.map((row) => {
     const departures = Array.isArray(row.departures) ? row.departures : [];
     const prices = departures
@@ -1198,7 +1234,37 @@ export type TourDetail = {
   max_travellers: number | null;
   min_age: number | null;
   starting_city: string | null;
+  visibility_status: TourVisibilityStatus;
 };
+
+export async function getTourBySlug(slug: string): Promise<TourDetail | null> {
+  const normalized = slug.trim().toLowerCase();
+  if (!normalized) return null;
+
+  const idTries = ['id,slug', 'id'];
+  let tourId: number | null = null;
+  for (const cols of idTries) {
+    const attempt = await supabase.from('tours').select(cols).eq('slug', normalized).maybeSingle();
+    if (!attempt.error && attempt.data) {
+      tourId = Number((attempt.data as unknown as { id: number }).id);
+      if (Number.isFinite(tourId) && tourId > 0) break;
+    }
+    if (attempt.error && !/column .* does not exist/i.test(String(attempt.error.message || ''))) {
+      break;
+    }
+  }
+  if (!tourId) return null;
+  return getTourById(tourId);
+}
+
+export async function getTourByKey(key: string): Promise<TourDetail | null> {
+  const trimmed = decodeURIComponent(key).trim();
+  if (!trimmed) return null;
+  if (/^\d+$/.test(trimmed)) {
+    return getTourById(Number(trimmed));
+  }
+  return getTourBySlug(trimmed);
+}
 
 export async function getTourById(tourId: number): Promise<TourDetail | null> {
   const departuresPart = 'departures(price,start_date,end_date,city,departure_city:departure_cities(name))';
@@ -1207,6 +1273,7 @@ export async function getTourById(tourId: number): Promise<TourDetail | null> {
     'destination_ref:destinations(name,slug)',
   ];
   const baseTries = [
+    'id,title,slug,flow_type,visibility_status,destination,destination_id,tour_region,tour_includes,tour_exclusions,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,sales_price,discounted_price,duration_days,max_travellers,min_age,starting_city,hero_image_url,gallery_image_urls,overview,itinerary_days',
     'id,title,slug,flow_type,destination,destination_id,tour_region,tour_includes,tour_exclusions,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,sales_price,discounted_price,duration_days,max_travellers,min_age,starting_city,hero_image_url,gallery_image_urls,overview,itinerary_days',
     'id,title,flow_type,destination,destination_id,tour_region,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price',
     'id,title,flow_type,destination,destination_id,tour_region,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,child_price,youth_price',
@@ -1246,6 +1313,9 @@ export async function getTourById(tourId: number): Promise<TourDetail | null> {
   }
 
   if (!row) return null;
+
+  const visibility = parseTourVisibility(row as ListingTourRow);
+  if (visibility === 'inactive') return null;
 
   const departures = Array.isArray(row.departures) ? row.departures : [];
   const prices = departures
@@ -1340,10 +1410,13 @@ export async function getTourById(tourId: number): Promise<TourDetail | null> {
     max_travellers: row.max_travellers ?? null,
     min_age: row.min_age ?? null,
     starting_city: row.starting_city || 'Sydney',
+    visibility_status: visibility,
   };
 }
 
 export async function getTourDepartures(tourId: number) {
+  const tour = await getTourById(tourId);
+  if (!tour) return null;
   const selectTries = [
     'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,max_travellers,departure_city:departure_cities(name)',
     'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,child_price,youth_price,max_travellers,departure_city:departure_cities(name)',
