@@ -220,7 +220,10 @@ cmsRouter.get('/users', requireSuperAdmin, async (_req, res, next) => {
 cmsRouter.post('/staff', requireSuperAdmin, async (req, res, next) => {
   try {
     const { email, full_name, role, password, account_type } = req.body || {};
-    if (!email) {
+    const emailNorm = String(email || '')
+      .trim()
+      .toLowerCase();
+    if (!emailNorm) {
       res.status(400).json({ message: 'email is required.' });
       return;
     }
@@ -243,7 +246,7 @@ cmsRouter.post('/staff', requireSuperAdmin, async (req, res, next) => {
 
     if (resolvedType === 'traveler') {
       const row = await createManagedUser({
-        email,
+        email: emailNorm,
         full_name,
         password,
         account_type: 'traveler',
@@ -254,7 +257,7 @@ cmsRouter.post('/staff', requireSuperAdmin, async (req, res, next) => {
 
     const cmsRole = resolvedType === 'super_admin' ? 'super_admin' : 'staff';
     const row = await upsertCmsStaff({
-      email,
+      email: emailNorm,
       full_name,
       role: cmsRole,
       password,
