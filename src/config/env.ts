@@ -10,4 +10,8 @@ export const env = {
   CORS_ORIGINS: process.env.CORS_ORIGINS || '',
   PEXELS_API_KEY: process.env.PEXELS_API_KEY || '',
   CMS_MEDIA_BUCKET: process.env.CMS_MEDIA_BUCKET || 'cms-media',
+  MADURA_WEB_PUBLIC_URL:
+    process.env.MADURA_WEB_PUBLIC_URL ||
+    process.env.WEB_PUBLIC_BASE_URL ||
+    'https://web.maduratravel.com',
 };
