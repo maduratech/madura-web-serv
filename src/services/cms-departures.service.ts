@@ -10,6 +10,7 @@ export type CmsDeparture = {
   twin_sharing_price?: number | null;
   triple_sharing_price?: number | null;
   single_sharing_price?: number | null;
+  quad_sharing_price?: number | null;
   infant_price?: number | null;
   child_price?: number | null;
   youth_price?: number | null;
@@ -17,6 +18,7 @@ export type CmsDeparture = {
 };
 
 const DEPARTURE_SELECT_TRIES = [
+  'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,max_travellers',
   'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,max_travellers',
   'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price',
   'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,child_price,youth_price',
@@ -35,6 +37,7 @@ function mapDepartureRow(row: Record<string, unknown>): CmsDeparture {
     twin_sharing_price: twin || null,
     triple_sharing_price: Number(row.triple_sharing_price) || null,
     single_sharing_price: Number(row.single_sharing_price) || null,
+    quad_sharing_price: Number(row.quad_sharing_price) || null,
     ...childPricesFromDb(row as Parameters<typeof childPricesFromDb>[0]),
     max_travellers: row.max_travellers != null ? Number(row.max_travellers) : null,
   };
@@ -78,6 +81,7 @@ export async function replaceTourDepartures(tourId: number, rows: CmsDeparture[]
         twin_sharing_price: twin,
         triple_sharing_price: Number(r.triple_sharing_price) || null,
         single_sharing_price: Number(r.single_sharing_price) || null,
+        quad_sharing_price: Number(r.quad_sharing_price) || null,
         ...childPricesToDb({
           infant_price: r.infant_price,
           child_price: r.child_price,
@@ -91,6 +95,7 @@ export async function replaceTourDepartures(tourId: number, rows: CmsDeparture[]
   if (!cleaned.length) return [];
 
   const insertTries = [
+    'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,max_travellers',
     'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,max_travellers',
     'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price',
     'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,child_price,youth_price',

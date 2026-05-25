@@ -6,6 +6,7 @@ export type TourPriceSheet = {
   twin_sharing_price?: number | null;
   triple_sharing_price?: number | null;
   single_sharing_price?: number | null;
+  quad_sharing_price?: number | null;
   infant_price?: number | null;
   /** Child (2–6 yrs). */
   child_price?: number | null;
@@ -18,6 +19,7 @@ export function normalizePriceSheet(sheet: TourPriceSheet): {
   twin_sharing_price: number;
   triple_sharing_price: number;
   single_sharing_price: number;
+  quad_sharing_price: number;
   infant_price: number;
   child_price: number;
   youth_price: number;
@@ -26,6 +28,7 @@ export function normalizePriceSheet(sheet: TourPriceSheet): {
   const twin = Number(sheet.twin_sharing_price) || legacyTwin || 0;
   const triple = Number(sheet.triple_sharing_price) || 0;
   const single = Number(sheet.single_sharing_price) || 0;
+  const quad = Number(sheet.quad_sharing_price) || 0;
   const bands = childPricesFromDb(sheet);
   const youth = Number(bands.youth_price) || 0;
   const child = Number(bands.child_price) || 0;
@@ -34,6 +37,7 @@ export function normalizePriceSheet(sheet: TourPriceSheet): {
     twin_sharing_price: twin,
     triple_sharing_price: triple,
     single_sharing_price: single,
+    quad_sharing_price: quad,
     infant_price: infant,
     child_price: child,
     youth_price: youth,
@@ -53,7 +57,12 @@ export function lowestAdultSharingDisplay(
   discountPercent: number | null | undefined
 ): number {
   const s = normalizePriceSheet(sheet);
-  const candidates = [s.twin_sharing_price, s.triple_sharing_price, s.single_sharing_price].filter((n) => n > 0);
+  const candidates = [
+    s.twin_sharing_price,
+    s.triple_sharing_price,
+    s.single_sharing_price,
+    s.quad_sharing_price,
+  ].filter((n) => n > 0);
   if (!candidates.length) return 0;
   return Math.min(...candidates.map((n) => applyDiscountPercent(n, discountPercent)));
 }
@@ -82,6 +91,7 @@ export function adultPerPersonRate(adults: number, sheet: TourPriceSheet): numbe
   if (n === 1) return s.single_sharing_price || s.twin_sharing_price || 0;
   if (n === 2) return s.twin_sharing_price || 0;
   if (n === 3) return s.triple_sharing_price || s.twin_sharing_price || 0;
+  if (n >= 4) return s.quad_sharing_price || s.triple_sharing_price || s.twin_sharing_price || 0;
   return s.triple_sharing_price || s.twin_sharing_price || 0;
 }
 
@@ -128,6 +138,8 @@ export function rateForSharingType(type: RoomSharingType, sheet: TourPriceSheet)
       return s.twin_sharing_price || 0;
     case 'triple':
       return s.triple_sharing_price || s.twin_sharing_price || 0;
+    case 'quad':
+      return s.quad_sharing_price || s.triple_sharing_price || s.twin_sharing_price || 0;
     default:
       return s.twin_sharing_price || 0;
   }
@@ -138,7 +150,8 @@ function inferSharingTypeForAdults(adults: number, sheet: TourPriceSheet): RoomS
   const s = normalizePriceSheet(sheet);
   if (n === 1) return s.single_sharing_price > 0 ? 'single' : 'twin';
   if (n === 2) return 'twin';
-  if (n >= 3) return s.triple_sharing_price > 0 ? 'triple' : 'twin';
+  if (n === 3) return s.triple_sharing_price > 0 ? 'triple' : 'twin';
+  if (n >= 4) return s.quad_sharing_price > 0 ? 'quad' : s.triple_sharing_price > 0 ? 'triple' : 'twin';
   return 'twin';
 }
 

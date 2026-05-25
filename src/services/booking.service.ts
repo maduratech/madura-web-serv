@@ -46,7 +46,7 @@ export type CreateBookingInput = {
     adults: number;
     children: number;
     child_ages?: number[];
-    sharing_type?: 'single' | 'twin' | 'triple';
+    sharing_type?: 'single' | 'twin' | 'triple' | 'quad';
     stranger_slots?: number;
     billing_units?: number;
     selected_seat_ids?: string[];
@@ -142,7 +142,7 @@ export type CreateEnquiryInput = {
     adults: number;
     children: number;
     child_ages?: number[];
-    sharing_type?: 'single' | 'twin' | 'triple';
+    sharing_type?: 'single' | 'twin' | 'triple' | 'quad';
     stranger_slots?: number;
     billing_units?: number;
     selected_seat_ids?: string[];
@@ -548,6 +548,7 @@ type DepartureRow = {
   twin_sharing_price?: number | null;
   triple_sharing_price?: number | null;
   single_sharing_price?: number | null;
+  quad_sharing_price?: number | null;
   infant_price?: number | null;
   child_price?: number | null;
   youth_price?: number | null;
@@ -568,6 +569,7 @@ function mapDepartureApiRow(row: DepartureRow) {
     twin_sharing_price: twin,
     triple_sharing_price: row.triple_sharing_price ?? null,
     single_sharing_price: row.single_sharing_price ?? null,
+    quad_sharing_price: row.quad_sharing_price ?? null,
     ...childPricesFromDb(row),
     max_travellers: row.max_travellers ?? null,
   };
@@ -580,6 +582,7 @@ function mergePriceSheet(departure: TourPriceSheet, tour: TourPriceSheet): TourP
     twin_sharing_price: d.twin_sharing_price || d.price || t.twin_sharing_price,
     triple_sharing_price: d.triple_sharing_price ?? t.triple_sharing_price,
     single_sharing_price: d.single_sharing_price ?? t.single_sharing_price,
+    quad_sharing_price: d.quad_sharing_price ?? t.quad_sharing_price,
     ...childPricesFromDb({
       infant_price: d.infant_price ?? t.infant_price,
       child_price: d.child_price ?? t.child_price,
@@ -1449,6 +1452,7 @@ export async function getTourDepartures(tourId: number) {
   const tour = await getTourById(tourId);
   if (!tour) return null;
   const selectTries = [
+    'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,max_travellers,departure_city:departure_cities(name)',
     'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,max_travellers,departure_city:departure_cities(name)',
     'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,child_price,youth_price,max_travellers,departure_city:departure_cities(name)',
     'id,tour_id,city,start_date,end_date,price,departure_city:departure_cities(name)',
@@ -1512,12 +1516,14 @@ export async function createBooking(input: CreateBookingInput) {
     twin_sharing_price?: number | null;
     triple_sharing_price?: number | null;
     single_sharing_price?: number | null;
+    quad_sharing_price?: number | null;
     infant_price?: number | null;
     child_price?: number | null;
     youth_price?: number | null;
   };
 
   const depSelectTries = [
+    'id,tour_id,price,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price',
     'id,tour_id,price,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price',
     'id,tour_id,price,twin_sharing_price,triple_sharing_price,single_sharing_price,child_price,youth_price',
     'id,tour_id,price',
