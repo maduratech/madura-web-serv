@@ -25,7 +25,113 @@ export type PublishItineraryPayload = {
   exclusions?: string | null;
   detailed_hotels?: unknown[] | null;
   detailed_flights?: unknown[] | null;
+  costing_options?: unknown;
+  adults?: number | null;
+  children?: number | null;
+  infants?: number | null;
+  grand_total?: number | null;
 };
+
+type CrmSharingPrices = {
+  twin_sharing_price: number | null;
+  triple_sharing_price: number | null;
+  single_sharing_price: number | null;
+  quad_sharing_price: number | null;
+  sales_price: number | null;
+};
+
+function roundInr(n: number): number | null {
+  return n > 0 ? Math.round(n) : null;
+}
+
+/** Map CRM itinerary costing to web tour price columns (twin/single/triple/quad). */
+function deriveCrmSharingPrices(input: {
+  costing_options?: unknown;
+  adults?: number | null;
+  children?: number | null;
+  infants?: number | null;
+  grand_total?: number | null;
+}): CrmSharingPrices {
+  const adults = Math.max(1, Number(input.adults) || 2);
+  const children = Number(input.children) || 0;
+  const infants = Number(input.infants) || 0;
+  const opts = Array.isArray(input.costing_options) ? input.costing_options : [];
+  const opt = opts[0] as Record<string, unknown> | undefined;
+  const empty: CrmSharingPrices = {
+    twin_sharing_price: null,
+    triple_sharing_price: null,
+    single_sharing_price: null,
+    quad_sharing_price: null,
+    sales_price: null,
+  };
+
+  if (opt?.isManualCosting) {
+    const markup = Number(opt.markup) || 0;
+    const markupMultiplier = markup > 0 ? 1 + markup / 100 : 1;
+    const twinRaw = Number(opt.manualPerAdultTwin || opt.manualPerAdult || 0);
+    const singleRaw = Number(opt.manualPerAdultSingle || 0);
+    const tripleRaw = Number(opt.manualPerAdultTriple || 0);
+    const quadRaw = Number(opt.manualPerAdultQuad || 0);
+
+    if (twinRaw || singleRaw || tripleRaw || quadRaw) {
+      const twin = twinRaw ? roundInr(twinRaw * markupMultiplier) : null;
+      const single = singleRaw ? roundInr(singleRaw * markupMultiplier) : null;
+      const triple = tripleRaw ? roundInr(tripleRaw * markupMultiplier) : null;
+      const quad = quadRaw ? roundInr(quadRaw * markupMultiplier) : null;
+      const sales = twin ?? single ?? triple ?? quad ?? null;
+      return {
+        twin_sharing_price: twin,
+        single_sharing_price: single,
+        triple_sharing_price: triple,
+        quad_sharing_price: quad,
+        sales_price: sales,
+      };
+    }
+
+    let subtotal = Number(opt.manualPackageCost || 0);
+    if (subtotal > 0) {
+      if (opt.isGstApplied) {
+        subtotal += subtotal * (Number(opt.gstPercentage) || 5) / 100;
+      }
+      if (opt.isTcsApplied) {
+        const gstPortion = opt.isGstApplied
+          ? Number(opt.manualPackageCost || 0) * (Number(opt.gstPercentage) || 5) / 100
+          : 0;
+        subtotal += (Number(opt.manualPackageCost || 0) + gstPortion) * (Number(opt.tcsPercentage) || 2) / 100;
+      }
+      const flightFee =
+        (Number(opt.manualFlightPerAdult) || 0) * adults +
+        (Number(opt.manualFlightPerChild) || 0) * children +
+        (Number(opt.manualFlightPerInfant) || 0) * infants;
+      const perPerson = roundInr((subtotal + flightFee) / adults);
+      if (perPerson) {
+        return {
+          twin_sharing_price: perPerson,
+          triple_sharing_price: perPerson,
+          single_sharing_price: null,
+          quad_sharing_price: null,
+          sales_price: perPerson,
+        };
+      }
+    }
+  }
+
+  const grand = Number(input.grand_total || 0);
+  if (grand > 0) {
+    const perPerson = roundInr(grand / adults);
+    if (perPerson) {
+      return {
+        twin_sharing_price: perPerson,
+        triple_sharing_price: perPerson,
+        single_sharing_price: null,
+        quad_sharing_price: null,
+        sales_price: perPerson,
+      };
+    }
+  }
+
+  return empty;
+}
 
 const BOOKED_LEAD_STATUSES = new Set([
   'Confirmed',
@@ -439,6 +545,14 @@ export async function publishItineraryToTour(
     ? input.gallery_image_urls.filter((u) => String(u || '').trim()).slice(0, 4)
     : [];
 
+  const sharingPrices = deriveCrmSharingPrices({
+    costing_options: input.costing_options,
+    adults: input.adults,
+    children: input.children,
+    infants: input.infants,
+    grand_total: input.grand_total,
+  });
+
   const payload: Record<string, unknown> = {
     title,
     slug,
@@ -455,6 +569,11 @@ export async function publishItineraryToTour(
     tour_includes: tourIncludes,
     tour_exclusions: splitBulletLines(String(input.exclusions || '')),
     itinerary_days: itineraryDays,
+    twin_sharing_price: sharingPrices.twin_sharing_price,
+    triple_sharing_price: sharingPrices.triple_sharing_price,
+    single_sharing_price: sharingPrices.single_sharing_price,
+    quad_sharing_price: sharingPrices.quad_sharing_price,
+    sales_price: sharingPrices.sales_price,
   };
 
   let tourId: number;
