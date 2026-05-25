@@ -111,6 +111,14 @@ export type RoomPricingInput = {
   stranger_slots?: number;
 };
 
+export function payingAdultUnitsForRoom(room: RoomPricingInput): number {
+  const adults = Math.max(0, Math.floor(Number(room.adults) || 0));
+  if (room.billing_units != null && room.billing_units > 0) {
+    return room.billing_units;
+  }
+  return adults;
+}
+
 export function rateForSharingType(type: RoomSharingType, sheet: TourPriceSheet): number {
   const s = normalizePriceSheet(sheet);
   switch (type) {
@@ -157,12 +165,9 @@ export function computeBookingTotalInr(input: {
   for (const room of rooms) {
     const sharing =
       room.sharing_type ?? inferSharingTypeForAdults(room.adults, input.sheet);
-    const capacity =
-      room.billing_units != null && room.billing_units > 0
-        ? room.billing_units
-        : sharingCapacity(sharing);
+    const payingUnits = payingAdultUnitsForRoom(room);
     const adultRate = applyDiscountPercent(rateForSharingType(sharing, input.sheet), discount);
-    total += adultRate * capacity;
+    total += adultRate * payingUnits;
     const ages = Array.isArray(room.child_ages) ? room.child_ages : [];
     for (let i = 0; i < room.children; i += 1) {
       const age = ages[i] ?? defaultChildAgeYears();
