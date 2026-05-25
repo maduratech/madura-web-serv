@@ -566,6 +566,7 @@ export type CmsTour = {
   twin_sharing_price: number | null;
   triple_sharing_price: number | null;
   single_sharing_price: number | null;
+  quad_sharing_price: number | null;
   infant_price: number | null;
   child_price: number | null;
   youth_price: number | null;
@@ -599,6 +600,7 @@ type TourRaw = {
   twin_sharing_price?: number | null;
   triple_sharing_price?: number | null;
   single_sharing_price?: number | null;
+  quad_sharing_price?: number | null;
   infant_price?: number | null;
   child_price?: number | null;
   youth_price?: number | null;
@@ -665,6 +667,7 @@ function mapTourRow(row: TourRaw): CmsTour {
     twin_sharing_price: twin != null ? Number(twin) : null,
     triple_sharing_price: row.triple_sharing_price ?? null,
     single_sharing_price: row.single_sharing_price ?? null,
+    quad_sharing_price: row.quad_sharing_price ?? null,
     infant_price: childBands.infant_price ?? null,
     child_price: childBands.child_price ?? null,
     youth_price: childBands.youth_price ?? null,
@@ -700,6 +703,7 @@ function tourInputToDb(input: Partial<CmsTour>): Record<string, unknown> {
     twin_sharing_price: priceFrom,
     triple_sharing_price: input.triple_sharing_price,
     single_sharing_price: input.single_sharing_price,
+    quad_sharing_price: input.quad_sharing_price,
     ...childPricesToDb({
       infant_price: input.infant_price,
       child_price: input.child_price,
@@ -731,9 +735,9 @@ const TOUR_EMBEDS = [
 ] as const;
 
 const TOUR_LIST_BASE = [
-  'id,title,slug,flow_type,visibility_status,destination_id,destination,tour_region,starting_city,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,sales_price,discounted_price,max_travellers,min_age,hero_image_url,gallery_image_urls,overview,tour_includes,tour_exclusions,itinerary_days,created_at',
-  'id,title,slug,flow_type,destination_id,destination,tour_region,starting_city,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,sales_price,discounted_price,max_travellers,min_age,hero_image_url,gallery_image_urls,overview,tour_includes,tour_exclusions,itinerary_days,created_at',
-  'id,title,slug,flow_type,destination_id,destination,tour_region,starting_city,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,sales_price,discounted_price,hero_image_url,gallery_image_urls,overview,tour_includes,tour_exclusions,itinerary_days,created_at',
+  'id,title,slug,flow_type,visibility_status,destination_id,destination,tour_region,starting_city,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,sales_price,discounted_price,max_travellers,min_age,hero_image_url,gallery_image_urls,overview,tour_includes,tour_exclusions,itinerary_days,created_at',
+  'id,title,slug,flow_type,destination_id,destination,tour_region,starting_city,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,sales_price,discounted_price,max_travellers,min_age,hero_image_url,gallery_image_urls,overview,tour_includes,tour_exclusions,itinerary_days,created_at',
+  'id,title,slug,flow_type,destination_id,destination,tour_region,starting_city,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,sales_price,discounted_price,hero_image_url,gallery_image_urls,overview,tour_includes,tour_exclusions,itinerary_days,created_at',
   'id,title,slug,flow_type,destination_id,destination,tour_region,starting_city,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,child_price,youth_price,sales_price,discounted_price,hero_image_url,gallery_image_urls,overview,tour_includes,tour_exclusions,itinerary_days,created_at',
   'id,title,slug,destination_id,destination,duration_days,twin_sharing_price,sales_price,discounted_price,hero_image_url,gallery_image_urls,overview,tour_includes,tour_exclusions,itinerary_days,created_at',
   'id,title,slug,destination_id,destination,duration_days,twin_sharing_price,hero_image_url,overview,tour_includes,tour_exclusions,created_at',
@@ -753,12 +757,12 @@ async function selectToursList(): Promise<CmsTour[]> {
         return (data as unknown as TourRaw[]).map(mapTourRow);
       }
       lastErr = String(error?.message || '');
-      if (!/column .* does not exist|relationship|schema cache/i.test(lastErr)) {
+      if (!isSchemaColumnMismatch(lastErr) && !/relationship/i.test(lastErr)) {
         break;
       }
     }
     for (const embed of TOUR_EMBEDS) {
-      if (!/column .* does not exist/i.test(lastErr)) break;
+      if (!isSchemaColumnMismatch(lastErr)) break;
     }
   }
   for (const base of TOUR_LIST_BASE) {
@@ -767,7 +771,7 @@ async function selectToursList(): Promise<CmsTour[]> {
       return (data as unknown as TourRaw[]).map(mapTourRow);
     }
     lastErr = String(error?.message || '');
-    if (!/column .* does not exist/i.test(lastErr)) break;
+    if (!isSchemaColumnMismatch(lastErr)) break;
   }
   throw new Error(`Failed to list tours: ${lastErr}`);
 }
@@ -779,7 +783,7 @@ async function selectTourByIdQuick(id: number): Promise<TourRaw | null> {
     const { data, error } = await supabase.from('tours').select(base).eq('id', id).maybeSingle();
     if (!error && data) return data as unknown as TourRaw;
     lastErr = String(error?.message || '');
-    if (!/column .* does not exist/i.test(lastErr)) break;
+    if (!isSchemaColumnMismatch(lastErr)) break;
   }
   if (lastErr.includes('0 rows') || lastErr.includes('JSON object requested')) return null;
   return null;
@@ -793,7 +797,7 @@ async function selectTourById(id: number): Promise<TourRaw | null> {
       const { data, error } = await supabase.from('tours').select(sel).eq('id', id).maybeSingle();
       if (!error && data) return data as unknown as TourRaw;
       lastErr = String(error?.message || '');
-      if (!/column .* does not exist|relationship|schema cache/i.test(lastErr)) break;
+      if (!isSchemaColumnMismatch(lastErr) && !/relationship/i.test(lastErr)) break;
     }
   }
   const quick = await selectTourByIdQuick(id);
@@ -835,7 +839,7 @@ async function insertTourWithFallback(payload: Record<string, unknown>): Promise
       if (tour) return tour;
     }
     lastErr = String(error?.message || '');
-    if (!/column .* does not exist/i.test(lastErr)) break;
+    if (!isSchemaColumnMismatch(lastErr)) break;
   }
   throw new Error(`Failed to create tour: ${lastErr}`);
 }
@@ -877,7 +881,7 @@ export async function updateTour(id: number, input: Partial<CmsTour>): Promise<C
       return mapTourRow(row);
     }
     lastErr = String(error?.message || '');
-    if (!/column .* does not exist/i.test(lastErr)) break;
+    if (!isSchemaColumnMismatch(lastErr)) break;
   }
   throw new Error(`Failed to update tour: ${lastErr}`);
 }

@@ -606,6 +606,7 @@ type ListingTourRow = {
   twin_sharing_price?: number | null;
   triple_sharing_price?: number | null;
   single_sharing_price?: number | null;
+  quad_sharing_price?: number | null;
   infant_price?: number | null;
   child_price?: number | null;
   youth_price?: number | null;
@@ -1116,9 +1117,9 @@ export async function getToursListing() {
   let error: { message: string } | null = null;
 
   const baseTries = [
-    'id,title,slug,flow_type,visibility_status,destination,tour_includes,hero_image_url,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
-    'id,title,slug,flow_type,destination,tour_includes,hero_image_url,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
-    'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,overview',
+    'id,title,slug,flow_type,visibility_status,destination,tour_includes,hero_image_url,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
+    'id,title,slug,flow_type,destination,tour_includes,hero_image_url,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
+    'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,overview',
     'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price',
     'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,child_price,youth_price',
   ];
@@ -1180,6 +1181,7 @@ export async function getToursListing() {
       twin_sharing_price: row.twin_sharing_price ?? derivedTwin,
       triple_sharing_price: row.triple_sharing_price,
       single_sharing_price: row.single_sharing_price,
+      quad_sharing_price: row.quad_sharing_price,
       ...childPricesFromDb(row),
       price: derivedTwin,
     };
@@ -1189,6 +1191,7 @@ export async function getToursListing() {
       derivedTwin;
     const startingTriple = row.triple_sharing_price ?? (startingTwin ? Math.round(startingTwin * 0.9) : null);
     const startingSingle = row.single_sharing_price ?? null;
+    const startingQuad = row.quad_sharing_price ?? null;
     const bandPrices = childPricesFromDb(row);
     const startingInfant = bandPrices.infant_price ?? null;
     const startingChild = bandPrices.child_price ?? null;
@@ -1221,6 +1224,7 @@ export async function getToursListing() {
       starting_from_twin: startingTwin,
       starting_from_triple: startingTriple,
       starting_from_single: startingSingle,
+      starting_from_quad: startingQuad,
       starting_from_infant: startingInfant,
       starting_from_child: startingChild,
       starting_from_youth: startingYouth,
@@ -1254,6 +1258,7 @@ export type TourDetail = {
   starting_from_twin: number | null;
   starting_from_triple: number | null;
   starting_from_single: number | null;
+  starting_from_quad: number | null;
   starting_from_infant: number | null;
   starting_from_child: number | null;
   starting_from_youth: number | null;
@@ -1307,9 +1312,9 @@ export async function getTourById(tourId: number): Promise<TourDetail | null> {
     'destination_ref:destinations(name,slug)',
   ];
   const baseTries = [
-    'id,title,slug,flow_type,visibility_status,destination,destination_id,tour_region,tour_includes,tour_exclusions,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,sales_price,discounted_price,duration_days,max_travellers,min_age,starting_city,hero_image_url,gallery_image_urls,overview,itinerary_days',
-    'id,title,slug,flow_type,destination,destination_id,tour_region,tour_includes,tour_exclusions,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,sales_price,discounted_price,duration_days,max_travellers,min_age,starting_city,hero_image_url,gallery_image_urls,overview,itinerary_days',
-    'id,title,flow_type,destination,destination_id,tour_region,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price',
+    'id,title,slug,flow_type,visibility_status,destination,destination_id,tour_region,tour_includes,tour_exclusions,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,sales_price,discounted_price,duration_days,max_travellers,min_age,starting_city,hero_image_url,gallery_image_urls,overview,itinerary_days',
+    'id,title,slug,flow_type,destination,destination_id,tour_region,tour_includes,tour_exclusions,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,sales_price,discounted_price,duration_days,max_travellers,min_age,starting_city,hero_image_url,gallery_image_urls,overview,itinerary_days',
+    'id,title,flow_type,destination,destination_id,tour_region,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price',
     'id,title,flow_type,destination,destination_id,tour_region,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,child_price,youth_price',
   ];
 
@@ -1379,6 +1384,7 @@ export async function getTourById(tourId: number): Promise<TourDetail | null> {
     twin_sharing_price: row.twin_sharing_price ?? derivedTwin,
     triple_sharing_price: row.triple_sharing_price,
     single_sharing_price: row.single_sharing_price,
+    quad_sharing_price: row.quad_sharing_price,
     ...childPricesFromDb(row),
     price: derivedTwin,
   };
@@ -1428,6 +1434,7 @@ export async function getTourById(tourId: number): Promise<TourDetail | null> {
     starting_from_twin: startingTwin,
     starting_from_triple: row.triple_sharing_price ?? (startingTwin ? Math.round(startingTwin * 0.9) : null),
     starting_from_single: row.single_sharing_price ?? null,
+    starting_from_quad: row.quad_sharing_price ?? null,
     starting_from_infant: detailBand.infant_price ?? null,
     starting_from_child: detailBand.child_price ?? null,
     starting_from_youth: detailBand.youth_price ?? null,

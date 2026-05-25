@@ -133,6 +133,45 @@ function deriveCrmSharingPrices(input: {
   return empty;
 }
 
+function isSchemaColumnMismatch(errMsg: string): boolean {
+  const m = String(errMsg || '').toLowerCase();
+  return (
+    m.includes('does not exist') ||
+    m.includes('could not find') ||
+    m.includes('schema cache') ||
+    m.includes('unknown column')
+  );
+}
+
+/** Insert or update tour; drops quad_sharing_price if column not migrated yet. */
+async function writeTourRow(
+  tourId: number | null,
+  payload: Record<string, unknown>,
+  mode: 'insert' | 'update'
+): Promise<number> {
+  const attempts: Record<string, unknown>[] = [payload];
+  if (payload.quad_sharing_price !== undefined) {
+    const { quad_sharing_price: _q, ...withoutQuad } = payload;
+    attempts.push(withoutQuad);
+  }
+
+  let lastErr = '';
+  for (const row of attempts) {
+    if (mode === 'update' && tourId != null) {
+      const { error } = await supabase.from('tours').update(row).eq('id', tourId);
+      if (!error) return tourId;
+      lastErr = String(error.message || '');
+      if (!isSchemaColumnMismatch(lastErr)) throw new Error(lastErr);
+      continue;
+    }
+    const { data, error } = await supabase.from('tours').insert(row).select('id').single();
+    if (!error && data?.id) return Number(data.id);
+    lastErr = String(error?.message || '');
+    if (!isSchemaColumnMismatch(lastErr)) throw new Error(lastErr);
+  }
+  throw new Error(lastErr || 'Failed to save tour.');
+}
+
 const BOOKED_LEAD_STATUSES = new Set([
   'Confirmed',
   'Partial / On-Credit',
@@ -572,6 +611,7 @@ export async function publishItineraryToTour(
     twin_sharing_price: sharingPrices.twin_sharing_price,
     triple_sharing_price: sharingPrices.triple_sharing_price,
     single_sharing_price: sharingPrices.single_sharing_price,
+    quad_sharing_price: sharingPrices.quad_sharing_price,
     sales_price: sharingPrices.sales_price,
   };
 
@@ -579,17 +619,10 @@ export async function publishItineraryToTour(
   let updated = false;
   if (existingTourId) {
     tourId = existingTourId;
-    const { error: upErr } = await supabase.from('tours').update(payload).eq('id', tourId);
-    if (upErr) throw new Error(upErr.message);
+    await writeTourRow(tourId, payload, 'update');
     updated = true;
   } else {
-    const { data: inserted, error: insErr } = await supabase
-      .from('tours')
-      .insert(payload)
-      .select('id')
-      .single();
-    if (insErr) throw new Error(insErr.message);
-    tourId = Number(inserted.id);
+    tourId = await writeTourRow(null, payload, 'insert');
   }
 
   const { data: tourRow } = await supabase
