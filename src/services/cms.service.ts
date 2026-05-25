@@ -37,6 +37,8 @@ export type CmsWebsiteUserRow = {
   phone: string | null;
   account_type: 'traveler' | 'staff' | 'super_admin';
   cms_role: 'staff' | 'super_admin' | null;
+  /** Account can sign in (not banned / disabled). */
+  is_active: boolean;
   is_cms_active: boolean;
   signed_up_at: string | null;
 };
@@ -47,17 +49,112 @@ type ProfileListRow = {
   full_name?: string | null;
   phone?: string | null;
   created_at?: string | null;
+  is_active?: boolean | null;
 };
+
+function isAuthUserBanned(bannedUntil: string | null | undefined): boolean {
+  if (!bannedUntil) return false;
+  return new Date(bannedUntil) > new Date();
+}
+
+async function listAllAuthUsers() {
+  const users: Array<{
+    id: string;
+    email?: string;
+    created_at?: string;
+    banned_until?: string | null;
+    user_metadata?: Record<string, unknown>;
+  }> = [];
+  let page = 1;
+  while (true) {
+    const { data, error } = await supabase.auth.admin.listUsers({ page, perPage: 1000 });
+    if (error) throw new Error(error.message);
+    users.push(...data.users);
+    if (data.users.length < 1000) break;
+    page += 1;
+  }
+  return users;
+}
+
+async function findAuthUserByEmail(email: string) {
+  const normalized = email.trim().toLowerCase();
+  const users = await listAllAuthUsers();
+  return users.find((u) => (u.email || '').toLowerCase() === normalized) ?? null;
+}
+
+async function ensureProfile(
+  userId: string,
+  email: string,
+  full_name?: string | null,
+  isActive = true
+): Promise<void> {
+  const base = {
+    id: userId,
+    email,
+    full_name: full_name?.trim() || null,
+  };
+  const withActive = { ...base, is_active: isActive };
+  let res = await supabase.from('profiles').upsert(withActive, { onConflict: 'id' });
+  if (res.error && /is_active|column/i.test(res.error.message)) {
+    res = await supabase.from('profiles').upsert(base, { onConflict: 'id' });
+  }
+  if (res.error) throw new Error(res.error.message);
+}
+
+async function findOrCreateAuthUser(input: {
+  email: string;
+  full_name?: string | null;
+  password?: string;
+}): Promise<{ id: string; email: string }> {
+  const email = input.email.trim().toLowerCase();
+  const existing = await findAuthUserByEmail(email);
+  if (existing) {
+    return { id: existing.id, email: existing.email || email };
+  }
+
+  const password = input.password?.trim();
+  if (!password || password.length < 8) {
+    throw new Error(
+      'No account exists for this email. Enter a temporary password (at least 8 characters) to create one.'
+    );
+  }
+
+  const { data: created, error } = await supabase.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true,
+    user_metadata: {
+      full_name: input.full_name?.trim() || null,
+    },
+  });
+  if (error) throw new Error(error.message);
+  if (!created.user?.id) throw new Error('Failed to create authentication user.');
+
+  return { id: created.user.id, email: created.user.email || email };
+}
 
 /** All website accounts (travelers + CMS staff), merged from profiles and cms_staff. */
 export async function listWebsiteUsers(): Promise<CmsWebsiteUserRow[]> {
   const staffRows = await listCmsStaff();
   const staffById = new Map(staffRows.map((s) => [s.id, s]));
 
+  const authUsers = await listAllAuthUsers();
+  const authById = new Map(
+    authUsers.map((u) => [
+      u.id,
+      {
+        email: u.email || '',
+        banned: isAuthUserBanned(u.banned_until),
+        created_at: u.created_at,
+        meta: (u.user_metadata || {}) as Record<string, unknown>,
+      },
+    ])
+  );
+
   let profiles: ProfileListRow[] = [];
   const wide = await supabase
     .from('profiles')
-    .select('id,email,full_name,phone,created_at')
+    .select('id,email,full_name,phone,created_at,is_active')
     .order('created_at', { ascending: false });
   if (!wide.error) {
     profiles = (wide.data || []) as ProfileListRow[];
@@ -70,67 +167,51 @@ export async function listWebsiteUsers(): Promise<CmsWebsiteUserRow[]> {
     profiles = (narrow.data || []) as ProfileListRow[];
   }
 
+  const profileById = new Map(profiles.map((p) => [String(p.id), p]));
   const rows: CmsWebsiteUserRow[] = [];
   const seen = new Set<string>();
 
-  const pushRow = (
-    id: string,
-    email: string,
-    full_name: string | null,
-    phone: string | null,
-    signed_up_at: string | null
-  ) => {
+  const pushRow = (id: string) => {
     const cms = staffById.get(id);
     const cmsRole = cms?.role ?? null;
     const account_type: CmsWebsiteUserRow['account_type'] =
       cmsRole === 'super_admin' ? 'super_admin' : cmsRole === 'staff' ? 'staff' : 'traveler';
+    const profile = profileById.get(id);
+    const auth = authById.get(id);
+    const profileActive = profile?.is_active !== false;
+    const is_active = profileActive && !(auth?.banned ?? false);
+    const cmsActive = Boolean(cms?.is_active) && is_active;
+
     rows.push({
       id,
-      email: email.trim(),
-      full_name,
-      phone,
+      email: String(profile?.email || cms?.email || auth?.email || '').trim(),
+      full_name: (profile?.full_name ?? cms?.full_name ?? null) as string | null,
+      phone: (profile?.phone ?? null) as string | null,
       account_type,
       cms_role: cmsRole,
-      is_cms_active: cms?.is_active ?? false,
-      signed_up_at: signed_up_at ?? cms?.created_at ?? null,
+      is_active,
+      is_cms_active: cmsActive,
+      signed_up_at:
+        (profile?.created_at ?? auth?.created_at ?? cms?.created_at ?? null) as string | null,
     });
   };
 
   for (const p of profiles) {
     const id = String(p.id);
     seen.add(id);
-    const cms = staffById.get(id);
-    pushRow(
-      id,
-      String(p.email || cms?.email || '').trim(),
-      (p.full_name ?? cms?.full_name ?? null) as string | null,
-      (p.phone ?? null) as string | null,
-      (p.created_at ?? cms?.created_at ?? null) as string | null
-    );
+    pushRow(id);
   }
 
-  const { data: authList, error: authErr } = await supabase.auth.admin.listUsers({ perPage: 1000 });
-  if (!authErr && authList?.users) {
-    for (const u of authList.users) {
-      if (seen.has(u.id)) continue;
-      seen.add(u.id);
-      const cms = staffById.get(u.id);
-      const meta = (u.user_metadata || {}) as Record<string, unknown>;
-      pushRow(
-        u.id,
-        String(u.email || cms?.email || '').trim(),
-        (cms?.full_name ?? (typeof meta.full_name === 'string' ? meta.full_name : null)) as
-          | string
-          | null,
-        (typeof meta.phone === 'string' ? meta.phone : null) as string | null,
-        u.created_at ?? cms?.created_at ?? null
-      );
-    }
+  for (const u of authUsers) {
+    if (seen.has(u.id)) continue;
+    seen.add(u.id);
+    pushRow(u.id);
   }
 
   for (const s of staffRows) {
     if (seen.has(s.id)) continue;
-    pushRow(s.id, s.email, s.full_name, null, s.created_at);
+    seen.add(s.id);
+    pushRow(s.id);
   }
 
   return rows.sort((a, b) => {
@@ -140,28 +221,50 @@ export async function listWebsiteUsers(): Promise<CmsWebsiteUserRow[]> {
   });
 }
 
-export async function upsertCmsStaff(input: {
+export type CreateManagedUserInput = {
   email: string;
   full_name?: string | null;
-  role: 'staff' | 'super_admin';
-}): Promise<CmsStaffRow> {
-  const email = input.email.trim().toLowerCase();
-  const { data: authList, error: authErr } = await supabase.auth.admin.listUsers({ perPage: 1000 });
-  if (authErr) throw new Error(authErr.message);
-  const authUser = authList.users.find((u) => (u.email || '').toLowerCase() === email);
-  if (!authUser) {
-    throw new Error(
-      `No website account for ${email}. Ask them to sign up on the site first, then add them here.`
+  password?: string;
+  account_type: 'traveler' | 'staff' | 'super_admin';
+};
+
+export async function createManagedUser(input: CreateManagedUserInput): Promise<CmsWebsiteUserRow> {
+  const authUser = await findOrCreateAuthUser({
+    email: input.email,
+    full_name: input.full_name,
+    password: input.password,
+  });
+  await ensureProfile(authUser.id, authUser.email, input.full_name, true);
+
+  if (input.account_type === 'staff' || input.account_type === 'super_admin') {
+    await upsertCmsStaffForUser(
+      authUser.id,
+      authUser.email,
+      input.full_name,
+      input.account_type === 'super_admin' ? 'super_admin' : 'staff'
     );
   }
+
+  const users = await listWebsiteUsers();
+  const row = users.find((u) => u.id === authUser.id);
+  if (!row) throw new Error('User saved but could not be loaded. Refresh the list.');
+  return row;
+}
+
+async function upsertCmsStaffForUser(
+  userId: string,
+  email: string,
+  full_name: string | null | undefined,
+  role: 'staff' | 'super_admin'
+): Promise<CmsStaffRow> {
   const { data, error } = await supabase
     .from('cms_staff')
     .upsert(
       {
-        id: authUser.id,
-        email: authUser.email || email,
-        full_name: input.full_name?.trim() || null,
-        role: input.role,
+        id: userId,
+        email,
+        full_name: full_name?.trim() || null,
+        role,
         is_active: true,
         updated_at: new Date().toISOString(),
       },
@@ -171,6 +274,40 @@ export async function upsertCmsStaff(input: {
     .single();
   if (error) throw new Error(error.message);
   return data as CmsStaffRow;
+}
+
+export async function upsertCmsStaff(input: {
+  email: string;
+  full_name?: string | null;
+  role: 'staff' | 'super_admin';
+  password?: string;
+}): Promise<CmsStaffRow> {
+  const authUser = await findOrCreateAuthUser({
+    email: input.email,
+    full_name: input.full_name,
+    password: input.password,
+  });
+  await ensureProfile(authUser.id, authUser.email, input.full_name, true);
+  return upsertCmsStaffForUser(authUser.id, authUser.email, input.full_name, input.role);
+}
+
+/** Disable or re-enable any website account (traveler ban + optional CMS staff flag). */
+export async function setWebsiteUserActive(userId: string, isActive: boolean): Promise<void> {
+  const staff = await getCmsStaffByUserId(userId);
+  if (staff) {
+    await setCmsStaffActive(userId, isActive);
+  }
+
+  const profilePatch: Record<string, unknown> = { is_active: isActive };
+  const { error: profErr } = await supabase.from('profiles').update(profilePatch).eq('id', userId);
+  if (profErr && !/is_active|column/i.test(profErr.message)) {
+    throw new Error(profErr.message);
+  }
+
+  const { error: banErr } = await supabase.auth.admin.updateUserById(userId, {
+    ban_duration: isActive ? 'none' : '876000h',
+  });
+  if (banErr) throw new Error(banErr.message);
 }
 
 export async function setCmsStaffActive(userId: string, isActive: boolean): Promise<void> {

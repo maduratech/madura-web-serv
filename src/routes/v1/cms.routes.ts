@@ -9,16 +9,21 @@ import {
   getCmsStaffByUserId,
   getDestination,
   getTour,
-  listCmsStaff,
+  createManagedUser,
   listWebsiteUsers,
   listDestinations,
   listTours,
   removeCmsStaff,
-  setCmsStaffActive,
+  setWebsiteUserActive,
   updateDestination,
   updateTour,
   upsertCmsStaff,
 } from '../../services/cms.service';
+
+function clientError(res: import('express').Response, err: unknown) {
+  const message = err instanceof Error ? err.message : 'Request failed.';
+  res.status(400).json({ message, error: message });
+}
 import { searchStockImages, uploadCmsMedia } from '../../services/cms-media.service';
 import { listTourDepartures, replaceTourDepartures } from '../../services/cms-departures.service';
 
@@ -198,7 +203,7 @@ cmsRouter.get('/stock-images', async (req, res, next) => {
 
 cmsRouter.get('/staff', requireSuperAdmin, async (_req, res, next) => {
   try {
-    res.json({ items: await listCmsStaff() });
+    res.json({ items: await listWebsiteUsers() });
   } catch (err) {
     next(err);
   }
@@ -214,19 +219,49 @@ cmsRouter.get('/users', requireSuperAdmin, async (_req, res, next) => {
 
 cmsRouter.post('/staff', requireSuperAdmin, async (req, res, next) => {
   try {
-    const { email, full_name, role } = req.body || {};
-    if (!email || !role) {
-      res.status(400).json({ message: 'email and role are required.' });
+    const { email, full_name, role, password, account_type } = req.body || {};
+    if (!email) {
+      res.status(400).json({ message: 'email is required.' });
       return;
     }
-    if (role !== 'staff' && role !== 'super_admin') {
-      res.status(400).json({ message: 'role must be staff or super_admin.' });
+
+    const resolvedType =
+      account_type === 'traveler' || account_type === 'staff' || account_type === 'super_admin'
+        ? account_type
+        : role === 'super_admin'
+          ? 'super_admin'
+          : role === 'staff'
+            ? 'staff'
+            : null;
+
+    if (!resolvedType) {
+      res.status(400).json({
+        message: 'account_type must be traveler, staff, or super_admin.',
+      });
       return;
     }
-    const row = await upsertCmsStaff({ email, full_name, role });
+
+    if (resolvedType === 'traveler') {
+      const row = await createManagedUser({
+        email,
+        full_name,
+        password,
+        account_type: 'traveler',
+      });
+      res.status(201).json(row);
+      return;
+    }
+
+    const cmsRole = resolvedType === 'super_admin' ? 'super_admin' : 'staff';
+    const row = await upsertCmsStaff({
+      email,
+      full_name,
+      role: cmsRole,
+      password,
+    });
     res.status(201).json(row);
   } catch (err) {
-    next(err);
+    clientError(res, err);
   }
 });
 
@@ -238,10 +273,14 @@ cmsRouter.patch('/staff/:id', requireSuperAdmin, async (req, res, next) => {
       res.status(400).json({ message: 'is_active (boolean) is required.' });
       return;
     }
-    await setCmsStaffActive(id, is_active);
+    if (id === req.cmsAuth?.userId && !is_active) {
+      res.status(400).json({ message: 'You cannot deactivate your own account.' });
+      return;
+    }
+    await setWebsiteUserActive(id, is_active);
     res.status(204).send();
   } catch (err) {
-    next(err);
+    clientError(res, err);
   }
 });
 

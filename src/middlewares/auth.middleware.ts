@@ -56,6 +56,9 @@ export async function loadAuthFromHeader(req: Request): Promise<AuthContext | nu
     const { data, error } = await supabase.auth.getUser(token);
     if (error || !data?.user) return null;
     const user = data.user;
+    if (user.banned_until && new Date(user.banned_until) > new Date()) {
+      return null;
+    }
     let fullName: string | null = null;
     let phone: string | null = null;
     let avatarUrl: string | null = null;
