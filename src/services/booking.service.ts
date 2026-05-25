@@ -17,6 +17,7 @@ import { env } from '../config/env';
 import crypto from 'node:crypto';
 import Razorpay from 'razorpay';
 import {resolveIso2FromCountryHint} from '../lib/country-name-to-iso2';
+import { destinationSlugVariants, normalizeDestinationSlug } from '../lib/destination-slug';
 import {
   isTourListedPublicly,
   parseTourVisibility,
@@ -814,6 +815,7 @@ type DestinationSlugRow = {
   image_url?: string | null;
   cover_image_url?: string | null;
   flag_image_url?: string | null;
+  is_active?: boolean | null;
 };
 
 function isDestinationSlugRow(data: unknown): data is DestinationSlugRow {
@@ -826,8 +828,12 @@ function isDestinationSlugRow(data: unknown): data is DestinationSlugRow {
 }
 
 export async function getDestinationBySlug(slug: string) {
-  const normalized = slug.toLowerCase().trim();
-  const tries = [
+  const normalized = normalizeDestinationSlug(slug);
+  if (!normalized) return null;
+
+  const slugVariants = destinationSlugVariants(slug);
+  const selectTries = [
+    'id,name,slug,description,image_url,cover_image_url,flag_image_url,is_active',
     'id,name,slug,description,image_url,cover_image_url,flag_image_url',
     'id,name,slug,description,cover_image_url,flag_image_url',
     'id,name,slug,description,image_url,cover_image_url',
@@ -835,29 +841,34 @@ export async function getDestinationBySlug(slug: string) {
     'id,name,slug,cover_image_url,image_url',
     'id,name,slug',
   ];
+
   let lastErr = '';
-  for (const cols of tries) {
-    const { data, error } = await supabase.from('destinations').select(cols).eq('slug', normalized).maybeSingle();
-    if (!error && isDestinationSlugRow(data)) {
-      const row = data;
-      const pageMeta = parseDestinationPageMeta(row.description);
-      return {
-        id: Number(row.id),
-        name: String(row.name || '').trim(),
-        slug: String(row.slug || normalized),
-        tagline: pageMeta.tagline,
-        banner_image_url:
-          pageMeta.banner_image_url ||
-          row.cover_image_url ||
-          row.image_url ||
-          row.flag_image_url ||
-          null,
-        default_view_mode: pageMeta.default_view_mode,
-        description: pageMeta.body,
-      };
+  for (const cols of selectTries) {
+    for (const variant of slugVariants) {
+      const { data, error } = await supabase.from('destinations').select(cols).eq('slug', variant).maybeSingle();
+      if (!error && isDestinationSlugRow(data)) {
+        const row = data;
+        if (row.is_active === false) return null;
+        const pageMeta = parseDestinationPageMeta(row.description);
+        return {
+          id: Number(row.id),
+          name: String(row.name || '').trim(),
+          slug: normalizeDestinationSlug(String(row.slug || normalized)),
+          tagline: pageMeta.tagline,
+          banner_image_url:
+            pageMeta.banner_image_url ||
+            row.cover_image_url ||
+            row.image_url ||
+            row.flag_image_url ||
+            null,
+          default_view_mode: pageMeta.default_view_mode,
+          description: pageMeta.body,
+        };
+      }
+      lastErr = String(error?.message || '');
+      if (lastErr && !/column .* does not exist/i.test(lastErr)) break;
     }
-    lastErr = String(error?.message || '');
-    if (!/column .* does not exist/i.test(lastErr)) break;
+    if (lastErr && !/column .* does not exist/i.test(lastErr)) break;
   }
   return null;
 }
@@ -999,7 +1010,9 @@ export async function getDestinationShowcase() {
       return {
         id: Number(d.id),
         name: d.name,
-        slug: d.slug || d.name.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-'),
+        slug: normalizeDestinationSlug(
+          String(d.slug || d.name.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-'))
+        ),
         continent,
         image_url:
           d.image_url ||

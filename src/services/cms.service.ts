@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabase';
 import { childPricesFromDb, childPricesToDb } from '../lib/tour-price-db';
+import { normalizeDestinationSlug } from '../lib/destination-slug';
 import { parseTourVisibility, type TourVisibilityStatus } from '../lib/tour-visibility';
 
 export type CmsStaffRow = {
@@ -409,12 +410,7 @@ export async function getDestination(id: number): Promise<CmsDestination | null>
 }
 
 function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-');
+  return normalizeDestinationSlug(name);
 }
 
 async function insertDestinationWithFallback(payload: Record<string, unknown>): Promise<CmsDestination> {
@@ -439,7 +435,7 @@ async function insertDestinationWithFallback(payload: Record<string, unknown>): 
 export async function createDestination(input: Partial<CmsDestination>): Promise<CmsDestination> {
   const name = String(input.name || '').trim();
   if (!name) throw new Error('Destination name is required.');
-  const slug = (input.slug || slugify(name)).trim() || slugify(name);
+  const slug = normalizeDestinationSlug((input.slug || slugify(name)).trim() || slugify(name));
   return insertDestinationWithFallback({
     name,
     slug,
@@ -457,7 +453,8 @@ export async function updateDestination(id: number, input: Partial<CmsDestinatio
   const basePatch: Record<string, unknown> = {};
   if (input.name !== undefined) basePatch.name = String(input.name).trim();
   if (input.slug !== undefined) {
-    basePatch.slug = String(input.slug).trim() || slugify(String(input.name || ''));
+    basePatch.slug =
+      normalizeDestinationSlug(String(input.slug).trim()) || slugify(String(input.name || ''));
   }
   if (input.country !== undefined) basePatch.country_region = input.country?.trim() || null;
   if (input.flag_image_url !== undefined) basePatch.flag_image_url = input.flag_image_url?.trim() || null;
