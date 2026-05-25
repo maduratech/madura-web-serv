@@ -42,7 +42,16 @@ export type CreateBookingInput = {
   infants: number;
   /** Optional: stored when `bookings.rooms` / `bookings.room_details` exist (for CRM payment notes). */
   rooms?: number;
-  room_details?: Array<{ adults: number; children: number; child_ages?: number[] }>;
+  room_details?: Array<{
+    adults: number;
+    children: number;
+    child_ages?: number[];
+    sharing_type?: 'single' | 'twin' | 'triple';
+    stranger_slots?: number;
+    billing_units?: number;
+    selected_seat_ids?: string[];
+  }>;
+  occupancy_notes?: string;
   /** Optional: ISO 4217 code (INR/USD/AED/AUD) the customer saw on the booking page. */
   display_currency?: string;
   /** Optional: INR-base FX rate (units of `display_currency` per 1 INR) snapshot at booking time. */
@@ -129,7 +138,16 @@ export type CreateEnquiryInput = {
   children: number;
   infants: number;
   rooms: number;
-  room_details?: Array<{ adults: number; children: number; child_ages?: number[] }>;
+  room_details?: Array<{
+    adults: number;
+    children: number;
+    child_ages?: number[];
+    sharing_type?: 'single' | 'twin' | 'triple';
+    stranger_slots?: number;
+    billing_units?: number;
+    selected_seat_ids?: string[];
+  }>;
+  occupancy_notes?: string;
   tour_title?: string;
   page_url?: string;
   enquiry_type?: string | null;
@@ -1574,10 +1592,22 @@ export async function createBooking(input: CreateBookingInput) {
     .map((t) => Number((t as TravellerInput & { child_age?: string }).child_age))
     .filter((a) => Number.isFinite(a));
 
+  const pricedRooms =
+    input.room_details?.map((room) => ({
+      adults: Number(room.adults || 0),
+      children: Number(room.children || 0),
+      child_ages: room.child_ages,
+      sharing_type: room.sharing_type,
+      billing_units:
+        room.billing_units != null && room.billing_units > 0 ? Number(room.billing_units) : undefined,
+      stranger_slots:
+        room.stranger_slots != null && room.stranger_slots >= 0 ? Number(room.stranger_slots) : undefined,
+    })) ?? [];
+
   let totalPrice = computeBookingTotalInr({
     sheet: depSheet,
     discountPercent,
-    room_details: input.room_details,
+    room_details: pricedRooms,
     adults,
     children: children + infants,
     child_ages: childAges.length
@@ -1755,7 +1785,13 @@ type TravellerRowForNote = {
 function buildTravellersAndRoomsCrmNote(
   travellers: TravellerRowForNote[],
   rooms: number | null | undefined,
-  roomDetails: Array<{ adults?: number; children?: number; child_ages?: number[] }> | null | undefined
+  roomDetails: Array<{
+    adults?: number;
+    children?: number;
+    child_ages?: number[];
+    sharing_type?: string;
+    stranger_slots?: number;
+  }> | null | undefined
 ): string {
   const lines: string[] = ['', 'Travellers Info:'];
   travellers.forEach((t, i) => {
@@ -1779,7 +1815,12 @@ function buildTravellersAndRoomsCrmNote(
       const c = Number(r.children ?? 0);
       const ages = Array.isArray(r.child_ages) ? r.child_ages.filter((n) => Number.isFinite(n)) : [];
       const agePart = ages.length ? ` | Child ages: ${ages.join(', ')}` : '';
-      lines.push(`Room ${idx + 1}: ${a} Adult(s), ${c} Child(ren)${agePart}`);
+      const sharingPart = r.sharing_type ? ` | ${String(r.sharing_type)} sharing` : '';
+      const strangerPart =
+        r.stranger_slots != null && Number(r.stranger_slots) > 0
+          ? ` | ${Number(r.stranger_slots)} stranger slot(s) to match`
+          : '';
+      lines.push(`Room ${idx + 1}: ${a} Adult(s), ${c} Child(ren)${sharingPart}${strangerPart}${agePart}`);
     });
     lines.push(`Total rooms: ${rooms ?? roomDetails.length}`);
   } else {

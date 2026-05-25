@@ -1,5 +1,6 @@
 import { defaultChildAgeYears, resolveTravellerAgeBand, type TravellerAgeBand } from './tour-age-bands';
 import { childPricesFromDb } from './tour-price-db';
+import { sharingCapacity, type RoomSharingType } from './room-sharing';
 
 export type TourPriceSheet = {
   twin_sharing_price?: number | null;
@@ -105,7 +106,33 @@ export type RoomPricingInput = {
   adults: number;
   children: number;
   child_ages?: number[];
+  sharing_type?: RoomSharingType;
+  billing_units?: number;
+  stranger_slots?: number;
 };
+
+export function rateForSharingType(type: RoomSharingType, sheet: TourPriceSheet): number {
+  const s = normalizePriceSheet(sheet);
+  switch (type) {
+    case 'single':
+      return s.single_sharing_price || s.twin_sharing_price || 0;
+    case 'twin':
+      return s.twin_sharing_price || 0;
+    case 'triple':
+      return s.triple_sharing_price || s.twin_sharing_price || 0;
+    default:
+      return s.twin_sharing_price || 0;
+  }
+}
+
+function inferSharingTypeForAdults(adults: number, sheet: TourPriceSheet): RoomSharingType {
+  const n = Math.max(1, Math.floor(adults) || 1);
+  const s = normalizePriceSheet(sheet);
+  if (n === 1) return s.single_sharing_price > 0 ? 'single' : 'twin';
+  if (n === 2) return 'twin';
+  if (n >= 3) return s.triple_sharing_price > 0 ? 'triple' : 'twin';
+  return 'twin';
+}
 
 export function computeBookingTotalInr(input: {
   sheet: TourPriceSheet;
@@ -128,8 +155,14 @@ export function computeBookingTotalInr(input: {
 
   let total = 0;
   for (const room of rooms) {
-    const adultRate = applyDiscountPercent(adultPerPersonRate(room.adults, input.sheet), discount);
-    total += adultRate * Math.max(0, room.adults);
+    const sharing =
+      room.sharing_type ?? inferSharingTypeForAdults(room.adults, input.sheet);
+    const capacity =
+      room.billing_units != null && room.billing_units > 0
+        ? room.billing_units
+        : sharingCapacity(sharing);
+    const adultRate = applyDiscountPercent(rateForSharingType(sharing, input.sheet), discount);
+    total += adultRate * capacity;
     const ages = Array.isArray(room.child_ages) ? room.child_ages : [];
     for (let i = 0; i < room.children; i += 1) {
       const age = ages[i] ?? defaultChildAgeYears();
