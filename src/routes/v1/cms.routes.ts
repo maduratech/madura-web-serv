@@ -28,6 +28,7 @@ function clientError(res: import('express').Response, err: unknown) {
 }
 import { searchStockImages, uploadCmsMedia } from '../../services/cms-media.service';
 import { listTourDepartures, replaceTourDepartures } from '../../services/cms-departures.service';
+import { parseTourSupplierContentForCms } from '../../services/cms-ai.service';
 
 export const cmsRouter = Router();
 
@@ -144,6 +145,28 @@ cmsRouter.get('/tours', async (_req, res, next) => {
     res.json({ items: await listTours() });
   } catch (err) {
     next(err);
+  }
+});
+
+cmsRouter.post('/tours/ai-parse-supplier', async (req, res, next) => {
+  try {
+    const { pastedText, context } = req.body || {};
+    if (!pastedText || typeof pastedText !== 'string') {
+      res.status(400).json({ message: 'pastedText is required.' });
+      return;
+    }
+    const trimmed = pastedText.trim();
+    if (trimmed.length < 15) {
+      res.status(400).json({ message: 'Please paste more content before processing.' });
+      return;
+    }
+    const result = await parseTourSupplierContentForCms({
+      pastedText: trimmed,
+      context: context && typeof context === 'object' ? context : undefined,
+    });
+    res.json(result);
+  } catch (err) {
+    clientError(res, err);
   }
 });
 
