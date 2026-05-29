@@ -1377,11 +1377,13 @@ export async function getToursListing(marketCountry = 'in') {
       departures.length > 0
         ? lowestStartingTwinFromDepartures(departures, cmsMeta, marketCountry, discountPercent)
         : null;
-    const startingTwin =
-      fromDepartures ??
-      (lowestAdultSharingDisplay(listingSheet, discountPercent) ||
-        row.twin_sharing_price ||
-        derivedTwin);
+    const isGlobalListing = marketCountry.toLowerCase() !== 'in';
+    const startingTwin = isGlobalListing
+      ? fromDepartures ?? lowestAdultSharingDisplay(listingSheet, discountPercent) ?? null
+      : (fromDepartures ??
+          (lowestAdultSharingDisplay(listingSheet, discountPercent) ||
+            row.twin_sharing_price ||
+            derivedTwin));
     const startingTriple =
       marketBands.triple ?? row.triple_sharing_price ?? (startingTwin ? Math.round(startingTwin * 0.9) : null);
     const startingSingle = marketBands.single ?? row.single_sharing_price ?? null;
@@ -1593,11 +1595,16 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
     youth_price: marketBands.youth,
     price: marketBands.twin ?? derivedTwin,
   };
-  const startingTwin =
-    lowestAdultSharingDisplay(detailSheet, discountPercent) ||
-    row.twin_sharing_price ||
-    row.discounted_price ||
-    derivedTwin;
+  const isGlobalDetail = marketCountry.toLowerCase() !== 'in';
+  const fromDepartureUsd = departures.length
+    ? lowestStartingTwinFromDepartures(departures, cmsMeta, marketCountry, discountPercent)
+    : null;
+  const startingTwin = isGlobalDetail
+    ? fromDepartureUsd ?? lowestAdultSharingDisplay(detailSheet, discountPercent) ?? null
+    : lowestAdultSharingDisplay(detailSheet, discountPercent) ||
+      row.twin_sharing_price ||
+      row.discounted_price ||
+      derivedTwin;
   const detailBand = childPricesFromDb(row);
   const destination = row.destination_ref?.name || row.destination || 'Unknown';
   const heroImage = String(row.hero_image_url || '').trim() || null;
