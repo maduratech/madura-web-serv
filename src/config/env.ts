@@ -13,5 +13,5 @@ export const env = {
   MADURA_WEB_PUBLIC_URL:
     process.env.MADURA_WEB_PUBLIC_URL ||
     process.env.WEB_PUBLIC_BASE_URL ||
-    'https://web.maduratravel.com',
+    'https://web.maduratravel.com', 
 };

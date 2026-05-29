@@ -412,11 +412,13 @@ function mapCrmFlightsToWeb(flights: unknown[] | null | undefined): WebFlightLeg
         departure_date: dep.slice(0, 10),
         departure_time: dep.length > 10 ? dep.slice(11, 16) : '',
         departure_airport_code: String(seg.from_airport || '').trim(),
-        departure_airport_name: String(seg.from_airport || '').trim(),
+        departure_airport_name: String(
+          seg.from_airport_name || seg.from_airport || '',
+        ).trim(),
         arrival_date: arr.slice(0, 10),
         arrival_time: arr.length > 10 ? arr.slice(11, 16) : '',
         arrival_airport_code: String(seg.to_airport || '').trim(),
-        arrival_airport_name: String(seg.to_airport || '').trim(),
+        arrival_airport_name: String(seg.to_airport_name || seg.to_airport || '').trim(),
         duration: String(seg.duration || f.totalDuration || '').trim(),
         cost_inr: f.price != null ? Number(f.price) : null,
       });
