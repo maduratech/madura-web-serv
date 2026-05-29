@@ -692,7 +692,12 @@ type ListingTourRow = {
     cover_image_url?: string | null;
   } | null;
   departures?: Array<{
+    id?: number;
     price?: number | null;
+    twin_sharing_price?: number | null;
+    triple_sharing_price?: number | null;
+    single_sharing_price?: number | null;
+    quad_sharing_price?: number | null;
     start_date?: string | null;
     end_date?: string | null;
     city?: string | null;
@@ -1235,6 +1240,59 @@ function resolveMarketPriceBands(
   };
 }
 
+/** Group tours: “from” price = lowest departure (matches tour detail), not tour-level USD only. */
+function lowestStartingTwinFromDepartures(
+  departures: NonNullable<ListingTourRow['departures']>,
+  cmsMeta: TourCmsMeta,
+  marketCountry: string,
+  discountPercent: number | null,
+  inrPerUsd: number
+): number | null {
+  const depUsd = cmsMeta.departure_pricing_usd || {};
+  const isGlobal = marketCountry.toLowerCase() !== 'in';
+  const candidates: number[] = [];
+
+  for (const dep of departures) {
+    const twinInr = Number(dep.twin_sharing_price ?? dep.price) || 0;
+    if (twinInr <= 0) continue;
+
+    const depKey = dep.id != null && Number(dep.id) > 0 ? String(dep.id) : '';
+    const stored = depKey ? depUsd[depKey] : undefined;
+
+    const sheet: TourPriceSheet = isGlobal
+      ? {
+          twin_sharing_price:
+            resolveGlobalUsdPrice(
+              twinInr,
+              stored?.twin_sharing_price ?? stored?.price_from,
+              inrPerUsd
+            ) ?? globalUsdDisplayFromInr(twinInr, inrPerUsd),
+          triple_sharing_price: resolveGlobalUsdPrice(
+            Number(dep.triple_sharing_price) || 0,
+            stored?.triple_sharing_price,
+            inrPerUsd
+          ),
+          single_sharing_price: resolveGlobalUsdPrice(
+            Number(dep.single_sharing_price) || 0,
+            stored?.single_sharing_price,
+            inrPerUsd
+          ),
+          quad_sharing_price: null,
+        }
+      : {
+          twin_sharing_price: twinInr,
+          triple_sharing_price: dep.triple_sharing_price ?? null,
+          single_sharing_price: dep.single_sharing_price ?? null,
+          quad_sharing_price: null,
+        };
+
+    const display = lowestAdultSharingDisplay(sheet, discountPercent);
+    if (display > 0) candidates.push(display);
+  }
+
+  return candidates.length ? Math.min(...candidates) : null;
+}
+
 export async function getToursListing(marketCountry = 'in') {
   let data: ListingTourRow[] | null = null;
   let error: { message: string } | null = null;
@@ -1246,7 +1304,9 @@ export async function getToursListing(marketCountry = 'in') {
     'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price',
     'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,child_price,youth_price',
   ];
-  const departuresPart = 'departures(price,start_date,end_date,city,departure_city:departure_cities(name))';
+  const departuresPart =
+    'departures(id,price,twin_sharing_price,triple_sharing_price,single_sharing_price,start_date,end_date,city,departure_city:departure_cities(name))';
+  const inrPerUsdForMarket = marketCountry.toLowerCase() !== 'in' ? await getInrPerUsd() : DEFAULT_INR_PER_USD;
   const destinationEmbedTries = [
     'destination_ref:destinations(name,slug,image_url)',
     'destination_ref:destinations(name,slug)',
@@ -1315,10 +1375,21 @@ export async function getToursListing(marketCountry = 'in') {
       price: marketBands.twin ?? derivedTwin,
     };
     const bandPrices = childPricesFromDb(row);
+    const fromDepartures =
+      departures.length > 0
+        ? lowestStartingTwinFromDepartures(
+            departures,
+            cmsMeta,
+            marketCountry,
+            discountPercent,
+            inrPerUsdForMarket
+          )
+        : null;
     const startingTwin =
-      lowestAdultSharingDisplay(listingSheet, discountPercent) ||
-      row.twin_sharing_price ||
-      derivedTwin;
+      fromDepartures ??
+      (lowestAdultSharingDisplay(listingSheet, discountPercent) ||
+        row.twin_sharing_price ||
+        derivedTwin);
     const startingTriple =
       marketBands.triple ?? row.triple_sharing_price ?? (startingTwin ? Math.round(startingTwin * 0.9) : null);
     const startingSingle = marketBands.single ?? row.single_sharing_price ?? null;
@@ -1436,7 +1507,8 @@ export async function getTourByKey(key: string, marketCountry = 'in'): Promise<T
 }
 
 export async function getTourById(tourId: number, marketCountry = 'in'): Promise<TourDetail | null> {
-  const departuresPart = 'departures(price,start_date,end_date,city,departure_city:departure_cities(name))';
+  const departuresPart =
+    'departures(id,price,twin_sharing_price,triple_sharing_price,single_sharing_price,start_date,end_date,city,departure_city:departure_cities(name))';
   const destinationEmbedTries = [
     'destination_ref:destinations(name,slug,image_url)',
     'destination_ref:destinations(name,slug)',
