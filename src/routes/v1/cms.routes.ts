@@ -202,31 +202,20 @@ cmsRouter.get('/tours/:id', async (req, res, next) => {
 
 cmsRouter.post('/tours', async (req, res, next) => {
   try {
-    const body = (req.body || {}) as Record<string, unknown>;
-    assertStaffMayMutate(req.cmsAuth!.role, body, 'tour');
-    const row = await createTour(body);
+    const row = await createTour(req.body || {});
     res.status(201).json(row);
   } catch (err) {
-    clientError(res, err);
+    next(err);
   }
 });
 
 cmsRouter.patch('/tours/:id', async (req, res, next) => {
   try {
-    const body = (req.body || {}) as Record<string, unknown>;
     const id = Number(req.params.id);
-    const existing = await getTour(id);
-    if (!existing) {
-      res.status(404).json({ message: 'Tour not found.' });
-      return;
-    }
-    assertStaffMayMutate(req.cmsAuth!.role, body, 'tour', {
-      visibility_status: existing.visibility_status,
-    });
-    const row = await updateTour(id, body);
+    const row = await updateTour(id, req.body || {});
     res.json(row);
   } catch (err) {
-    clientError(res, err);
+    next(err);
   }
 });
 
