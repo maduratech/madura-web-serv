@@ -538,13 +538,76 @@ export async function updateDestination(id: number, input: Partial<CmsDestinatio
   throw new Error(`Failed to update destination: ${lastErr || 'Unknown error'}`);
 }
 
-export async function deleteDestination(id: number): Promise<void> {
-  const { count } = await supabase.from('tours').select('id', { count: 'exact', head: true }).eq('destination_id', id);
-  if (count && count > 0) {
-    throw new Error('Cannot delete: tours are linked to this destination. Remove or reassign tours first.');
+async function countLinkedRows(
+  table: string,
+  column: string,
+  value: number | string
+): Promise<{ count: number; skipped: boolean }> {
+  const { count, error } = await supabase
+    .from(table)
+    .select('id', { count: 'exact', head: true })
+    .eq(column, value);
+  if (error) {
+    if (isSchemaColumnMismatch(error.message)) return { count: 0, skipped: true };
+    throw new Error(`${table}: ${error.message}`);
   }
+  return { count: count ?? 0, skipped: false };
+}
+
+export async function deleteDestination(id: number): Promise<void> {
+  if (!Number.isFinite(id) || id <= 0) {
+    throw new Error('Invalid destination id.');
+  }
+
+  const dest = await getDestination(id);
+  if (!dest) throw new Error('Destination not found.');
+
+  const blockers: string[] = [];
+
+  const toursById = await countLinkedRows('tours', 'destination_id', id);
+  if (!toursById.skipped && toursById.count > 0) {
+    blockers.push(`${toursById.count} tour(s)`);
+  }
+
+  if (dest.name) {
+    const { count, error } = await supabase
+      .from('tours')
+      .select('id', { count: 'exact', head: true })
+      .ilike('destination', dest.name);
+    if (error && !isSchemaColumnMismatch(error.message)) {
+      throw new Error(`tours: ${error.message}`);
+    }
+    if ((count ?? 0) > 0) {
+      blockers.push(`${count} tour(s) matched by destination name`);
+    }
+  }
+
+  const sightseeing = await countLinkedRows('sightseeing', 'destination_id', id);
+  if (!sightseeing.skipped && sightseeing.count > 0) {
+    blockers.push(`${sightseeing.count} attraction(s)`);
+  }
+
+  const transfers = await countLinkedRows('transfers', 'destination_id', id);
+  if (!transfers.skipped && transfers.count > 0) {
+    blockers.push(`${transfers.count} transfer(s)`);
+  }
+
+  if (blockers.length > 0) {
+    throw new Error(
+      `Cannot delete: still linked to ${blockers.join(', ')}. Remove or reassign them first.`
+    );
+  }
+
   const { error } = await supabase.from('destinations').delete().eq('id', id);
-  if (error) throw new Error(error.message);
+  if (error) {
+    const msg = String(error.message || '');
+    if (/foreign key|violates|referenced/i.test(msg)) {
+      throw new Error(
+        'Cannot delete: this destination is still referenced elsewhere. Remove linked records first.'
+      );
+    }
+    throw new Error(msg || 'Failed to delete destination.');
+  }
 }
 
 export type CmsTourItineraryDay = {

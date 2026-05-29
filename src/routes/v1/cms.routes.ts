@@ -99,9 +99,26 @@ cmsRouter.patch('/destinations/:id', async (req, res, next) => {
 cmsRouter.delete('/destinations/:id', async (req, res, next) => {
   try {
     const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      clientError(res, new Error('Invalid destination id.'));
+      return;
+    }
     await deleteDestination(id);
     res.status(204).send();
   } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to delete destination.';
+    if (message.includes('not found')) {
+      res.status(404).json({ message, error: message });
+      return;
+    }
+    if (message.includes('Cannot delete') || message.includes('linked')) {
+      res.status(409).json({ message, error: message });
+      return;
+    }
+    if (message.includes('Invalid destination')) {
+      clientError(res, err);
+      return;
+    }
     next(err);
   }
 });
