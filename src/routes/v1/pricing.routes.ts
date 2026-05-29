@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getFxRatesPayload } from '../../lib/fx-rates';
 import { globalUsdDisplayFromInr, suggestedUsdFromInr } from '../../lib/tour-market-audience';
 
+/** CMS-only helpers (INR → USD suggest). Storefront uses saved meta from Supabase — no live convert. */
 export const pricingRouter = Router();
 
 pricingRouter.get('/pricing/fx', async (_req, res, next) => {

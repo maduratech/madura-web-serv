@@ -44,13 +44,16 @@ export function suggestedUsdFromInr(inr: number, inrPerUsdRate?: number | null):
   return globalUsdDisplayFromInr(inr, inrPerUsdRate);
 }
 
+/**
+ * Storefront / API read path: CMS-saved USD only (overview meta).
+ * Live FX conversion is CMS-only — use `globalUsdDisplayFromInr` in `/pricing/*` routes.
+ */
 export function resolveGlobalUsdPrice(
-  inr: number | null | undefined,
+  _inr: number | null | undefined,
   storedUsd: number | null | undefined,
-  inrPerUsdRate?: number | null
+  _inrPerUsdRate?: number | null
 ): number | null {
   if (storedUsd != null && storedUsd > 0) return Number(storedUsd);
-  if (inr != null && inr > 0) return globalUsdDisplayFromInr(inr, inrPerUsdRate);
   return null;
 }
 

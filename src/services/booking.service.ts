@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabase';
 import { parseTourCmsMeta } from '../lib/tour-meta';
+import { lookupDeparturePricingUsd } from '../lib/departure-pricing-key';
 import {
   bookingTotalWithFlightOption,
   countPayingTravellers,
@@ -23,11 +24,9 @@ import {
   parseTourVisibility,
   type TourVisibilityStatus,
 } from '../lib/tour-visibility';
-import { getInrPerUsd } from '../lib/fx-rates';
 import {
   globalUsdDisplayFromInr,
   resolveGlobalUsdPrice,
-  DEFAULT_INR_PER_USD,
   readGlobalPricingFromMeta,
   tourVisibleForMarket,
   type TourMarketPricing,
@@ -596,8 +595,7 @@ type DepartureApiRow = ReturnType<typeof mapDepartureApiRow>;
 function mapDepartureForMarket(
   row: DepartureRow,
   marketCountry: string,
-  departureUsdById: Record<string, import('../lib/tour-market-audience').TourMarketPricing> | undefined,
-  inrPerUsd: number
+  departureUsdById: Record<string, import('../lib/tour-market-audience').TourMarketPricing> | undefined
 ): DepartureApiRow & {
   display_currency?: 'INR' | 'USD';
   twin_sharing_price_inr?: number;
@@ -612,7 +610,11 @@ function mapDepartureForMarket(
   const isGlobal = marketCountry.toLowerCase() !== 'in';
   if (!isGlobal) return base;
 
-  const depUsd = departureUsdById?.[String(row.id)];
+  const depUsd = lookupDeparturePricingUsd(departureUsdById, {
+    id: row.id,
+    city: row.departure_city?.name || row.city,
+    start_date: row.start_date,
+  });
   const pick = (
     inr: number | null | undefined,
     keys: Array<keyof import('../lib/tour-market-audience').TourMarketPricing>
@@ -620,14 +622,14 @@ function mapDepartureForMarket(
     for (const key of keys) {
       const stored = depUsd?.[key];
       if (stored != null && Number(stored) > 0) {
-        return resolveGlobalUsdPrice(inr, Number(stored), inrPerUsd);
+        return resolveGlobalUsdPrice(inr, Number(stored));
       }
     }
-    return resolveGlobalUsdPrice(inr, null, inrPerUsd);
+    return null;
   };
 
   const twinInr = base.twin_sharing_price ?? base.price;
-  const twinUsd = pick(twinInr, ['twin_sharing_price', 'price_from']) ?? twinInr;
+  const twinUsd = pick(twinInr, ['twin_sharing_price', 'price_from']) ?? 0;
 
   return {
     ...base,
@@ -1221,10 +1223,9 @@ function resolveMarketPriceBands(
   }
 
   const stored = readGlobalPricingFromMeta(cmsMeta);
-  const pick = (inr: number | null | undefined, usd?: number | null | undefined) => {
+  const pick = (_inr: number | null | undefined, usd?: number | null | undefined) => {
     if (usd != null && usd > 0) return usd;
-    if (inr != null && inr > 0) return globalUsdDisplayFromInr(inr);
-    return inr ?? null;
+    return null;
   };
 
   const bands = childPricesFromDb(row);
@@ -1245,8 +1246,7 @@ function lowestStartingTwinFromDepartures(
   departures: NonNullable<ListingTourRow['departures']>,
   cmsMeta: TourCmsMeta,
   marketCountry: string,
-  discountPercent: number | null,
-  inrPerUsd: number
+  discountPercent: number | null
 ): number | null {
   const depUsd = cmsMeta.departure_pricing_usd || {};
   const isGlobal = marketCountry.toLowerCase() !== 'in';
@@ -1256,26 +1256,25 @@ function lowestStartingTwinFromDepartures(
     const twinInr = Number(dep.twin_sharing_price ?? dep.price) || 0;
     if (twinInr <= 0) continue;
 
-    const depKey = dep.id != null && Number(dep.id) > 0 ? String(dep.id) : '';
-    const stored = depKey ? depUsd[depKey] : undefined;
+    const stored = lookupDeparturePricingUsd(depUsd, {
+      id: dep.id,
+      city: dep.city ?? dep.departure_city?.name,
+      start_date: dep.start_date,
+    });
 
     const sheet: TourPriceSheet = isGlobal
       ? {
-          twin_sharing_price:
-            resolveGlobalUsdPrice(
-              twinInr,
-              stored?.twin_sharing_price ?? stored?.price_from,
-              inrPerUsd
-            ) ?? globalUsdDisplayFromInr(twinInr, inrPerUsd),
+          twin_sharing_price: resolveGlobalUsdPrice(
+            twinInr,
+            stored?.twin_sharing_price ?? stored?.price_from
+          ),
           triple_sharing_price: resolveGlobalUsdPrice(
             Number(dep.triple_sharing_price) || 0,
-            stored?.triple_sharing_price,
-            inrPerUsd
+            stored?.triple_sharing_price
           ),
           single_sharing_price: resolveGlobalUsdPrice(
             Number(dep.single_sharing_price) || 0,
-            stored?.single_sharing_price,
-            inrPerUsd
+            stored?.single_sharing_price
           ),
           quad_sharing_price: null,
         }
@@ -1306,7 +1305,6 @@ export async function getToursListing(marketCountry = 'in') {
   ];
   const departuresPart =
     'departures(id,price,twin_sharing_price,triple_sharing_price,single_sharing_price,start_date,end_date,city,departure_city:departure_cities(name))';
-  const inrPerUsdForMarket = marketCountry.toLowerCase() !== 'in' ? await getInrPerUsd() : DEFAULT_INR_PER_USD;
   const destinationEmbedTries = [
     'destination_ref:destinations(name,slug,image_url)',
     'destination_ref:destinations(name,slug)',
@@ -1377,13 +1375,7 @@ export async function getToursListing(marketCountry = 'in') {
     const bandPrices = childPricesFromDb(row);
     const fromDepartures =
       departures.length > 0
-        ? lowestStartingTwinFromDepartures(
-            departures,
-            cmsMeta,
-            marketCountry,
-            discountPercent,
-            inrPerUsdForMarket
-          )
+        ? lowestStartingTwinFromDepartures(departures, cmsMeta, marketCountry, discountPercent)
         : null;
     const startingTwin =
       fromDepartures ??
@@ -1463,6 +1455,13 @@ export type TourDetail = {
   starting_from_infant: number | null;
   starting_from_child: number | null;
   starting_from_youth: number | null;
+  starting_from_twin_inr?: number | null;
+  starting_from_triple_inr?: number | null;
+  starting_from_single_inr?: number | null;
+  starting_from_quad_inr?: number | null;
+  starting_from_infant_inr?: number | null;
+  starting_from_child_inr?: number | null;
+  starting_from_youth_inr?: number | null;
   sales_price: number | null;
   discounted_price: number | null;
   discount_percent: number | null;
@@ -1645,6 +1644,13 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
     starting_from_infant: marketBands.infant ?? detailBand.infant_price ?? null,
     starting_from_child: marketBands.child ?? detailBand.child_price ?? null,
     starting_from_youth: marketBands.youth ?? detailBand.youth_price ?? null,
+    starting_from_twin_inr: row.twin_sharing_price ?? derivedTwin,
+    starting_from_triple_inr: row.triple_sharing_price ?? null,
+    starting_from_single_inr: row.single_sharing_price ?? null,
+    starting_from_quad_inr: row.quad_sharing_price ?? null,
+    starting_from_infant_inr: detailBand.infant_price ?? null,
+    starting_from_child_inr: detailBand.child_price ?? null,
+    starting_from_youth_inr: detailBand.youth_price ?? null,
     sales_price: row.sales_price ?? null,
     discounted_price: row.discounted_price ?? startingTwin,
     discount_percent: discountPercent,
@@ -1666,7 +1672,6 @@ export async function getTourDepartures(tourId: number, marketCountry = 'in') {
   const tour = await getTourById(tourId, marketCountry);
   if (!tour) return null;
   const cmsMeta = parseTourCmsMeta(tour.overview);
-  const inrPerUsd = marketCountry.toLowerCase() !== 'in' ? await getInrPerUsd() : DEFAULT_INR_PER_USD;
   const departureUsdById = cmsMeta.departure_pricing_usd;
   const selectTries = [
     'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,max_travellers,departure_city:departure_cities(name)',
@@ -1683,7 +1688,7 @@ export async function getTourDepartures(tourId: number, marketCountry = 'in') {
       .order('start_date', { ascending: true });
     if (!error) {
       return ((data || []) as unknown as DepartureRow[]).map((row) =>
-        mapDepartureForMarket(row, marketCountry, departureUsdById, inrPerUsd)
+        mapDepartureForMarket(row, marketCountry, departureUsdById)
       );
     }
     lastErr = String(error.message || '');
