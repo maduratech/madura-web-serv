@@ -42,3 +42,25 @@ export function requireSuperAdmin(req: Request, res: Response, next: NextFunctio
   }
   next();
 }
+
+/** Staff may add/edit content but not delete or newly deactivate. */
+export function assertStaffMayMutate(
+  role: CmsAuthContext['role'],
+  body: Record<string, unknown>,
+  kind: 'tour' | 'destination',
+  existing?: { visibility_status?: string | null; is_active?: boolean | null }
+): void {
+  if (role === 'super_admin') return;
+  if (kind === 'tour' && body.visibility_status === 'inactive') {
+    const wasInactive = (existing?.visibility_status ?? 'active') === 'inactive';
+    if (!wasInactive) {
+      throw new Error('Staff cannot deactivate tours. Contact a Super Admin.');
+    }
+  }
+  if (kind === 'destination' && body.is_active === false) {
+    const wasHidden = existing?.is_active === false;
+    if (!wasHidden) {
+      throw new Error('Staff cannot deactivate destinations. Contact a Super Admin.');
+    }
+  }
+}

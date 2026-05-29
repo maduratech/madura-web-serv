@@ -308,6 +308,91 @@ export async function upsertCmsStaff(input: {
 }
 
 /** Disable or re-enable any website account (traveler ban + optional CMS staff flag). */
+export type UpdateManagedUserInput = {
+  full_name?: string | null;
+  phone?: string | null;
+  account_type?: 'traveler' | 'staff' | 'super_admin';
+  password?: string;
+  is_active?: boolean;
+};
+
+export async function updateManagedUser(
+  userId: string,
+  input: UpdateManagedUserInput,
+  requestingUserId?: string
+): Promise<CmsWebsiteUserRow> {
+  const users = await listWebsiteUsers();
+  const current = users.find((u) => u.id === userId);
+  if (!current) throw new Error('User not found.');
+
+  if (input.is_active !== undefined) {
+    if (userId === requestingUserId && !input.is_active) {
+      throw new Error('You cannot deactivate your own account.');
+    }
+    await setWebsiteUserActive(userId, input.is_active);
+  }
+
+  const nameProvided = input.full_name !== undefined;
+  const phoneProvided = input.phone !== undefined;
+  if (nameProvided || phoneProvided) {
+    const profilePatch: Record<string, unknown> = {};
+    if (nameProvided) profilePatch.full_name = input.full_name?.trim() || null;
+    if (phoneProvided) profilePatch.phone = input.phone?.trim() || null;
+    const { error: profErr } = await supabase.from('profiles').update(profilePatch).eq('id', userId);
+    if (profErr) throw new Error(profErr.message);
+
+    if (nameProvided) {
+      const { error: metaErr } = await supabase.auth.admin.updateUserById(userId, {
+        user_metadata: { full_name: input.full_name?.trim() || null },
+      });
+      if (metaErr) throw new Error(metaErr.message);
+    }
+
+    const staff = await getCmsStaffByUserId(userId);
+    if (staff && nameProvided) {
+      const { error: staffErr } = await supabase
+        .from('cms_staff')
+        .update({
+          full_name: input.full_name?.trim() || null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', userId);
+      if (staffErr) throw new Error(staffErr.message);
+    }
+  }
+
+  const password = input.password?.trim();
+  if (password) {
+    if (password.length < 8) {
+      throw new Error('Password must be at least 8 characters.');
+    }
+    const { error: pwErr } = await supabase.auth.admin.updateUserById(userId, { password });
+    if (pwErr) throw new Error(pwErr.message);
+  }
+
+  if (input.account_type !== undefined && input.account_type !== current.account_type) {
+    if (
+      userId === requestingUserId &&
+      current.account_type === 'super_admin' &&
+      input.account_type !== 'super_admin'
+    ) {
+      throw new Error('You cannot remove your own Super Admin access.');
+    }
+    if (input.account_type === 'traveler') {
+      await removeCmsStaff(userId);
+    } else {
+      const role = input.account_type === 'super_admin' ? 'super_admin' : 'staff';
+      const name = nameProvided ? input.full_name : current.full_name;
+      await upsertCmsStaffForUser(userId, current.email, name, role);
+    }
+  }
+
+  const refreshed = await listWebsiteUsers();
+  const row = refreshed.find((u) => u.id === userId);
+  if (!row) throw new Error('User updated but could not be loaded. Refresh the list.');
+  return row;
+}
+
 export async function setWebsiteUserActive(userId: string, isActive: boolean): Promise<void> {
   const staff = await getCmsStaffByUserId(userId);
   if (staff) {

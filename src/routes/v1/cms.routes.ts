@@ -1,6 +1,10 @@
 import { Router } from 'express';
 import { loadAuthFromHeader } from '../../middlewares/auth.middleware';
-import { requireCmsAuth, requireSuperAdmin } from '../../middlewares/cms-auth.middleware';
+import {
+  assertStaffMayMutate,
+  requireCmsAuth,
+  requireSuperAdmin,
+} from '../../middlewares/cms-auth.middleware';
 import {
   createDestination,
   createTour,
@@ -20,6 +24,7 @@ import {
   updateDestination,
   updateTour,
   upsertCmsStaff,
+  updateManagedUser,
 } from '../../services/cms.service';
 
 function clientError(res: import('express').Response, err: unknown) {
@@ -82,20 +87,31 @@ cmsRouter.get('/destinations/:id', async (req, res, next) => {
 
 cmsRouter.post('/destinations', async (req, res, next) => {
   try {
-    const row = await createDestination(req.body || {});
+    const body = (req.body || {}) as Record<string, unknown>;
+    assertStaffMayMutate(req.cmsAuth!.role, body, 'destination');
+    const row = await createDestination(body);
     res.status(201).json(row);
   } catch (err) {
-    next(err);
+    clientError(res, err);
   }
 });
 
 cmsRouter.patch('/destinations/:id', async (req, res, next) => {
   try {
+    const body = (req.body || {}) as Record<string, unknown>;
     const id = Number(req.params.id);
-    const row = await updateDestination(id, req.body || {});
+    const existing = await getDestination(id);
+    if (!existing) {
+      res.status(404).json({ message: 'Destination not found.' });
+      return;
+    }
+    assertStaffMayMutate(req.cmsAuth!.role, body, 'destination', {
+      is_active: existing.is_active,
+    });
+    const row = await updateDestination(id, body);
     res.json(row);
   } catch (err) {
-    next(err);
+    clientError(res, err);
   }
 });
 
@@ -113,7 +129,7 @@ cmsRouter.post('/destinations/:id/duplicate', async (req, res, next) => {
   }
 });
 
-cmsRouter.delete('/destinations/:id', async (req, res, next) => {
+cmsRouter.delete('/destinations/:id', requireSuperAdmin, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) {
@@ -186,20 +202,31 @@ cmsRouter.get('/tours/:id', async (req, res, next) => {
 
 cmsRouter.post('/tours', async (req, res, next) => {
   try {
-    const row = await createTour(req.body || {});
+    const body = (req.body || {}) as Record<string, unknown>;
+    assertStaffMayMutate(req.cmsAuth!.role, body, 'tour');
+    const row = await createTour(body);
     res.status(201).json(row);
   } catch (err) {
-    next(err);
+    clientError(res, err);
   }
 });
 
 cmsRouter.patch('/tours/:id', async (req, res, next) => {
   try {
+    const body = (req.body || {}) as Record<string, unknown>;
     const id = Number(req.params.id);
-    const row = await updateTour(id, req.body || {});
+    const existing = await getTour(id);
+    if (!existing) {
+      res.status(404).json({ message: 'Tour not found.' });
+      return;
+    }
+    assertStaffMayMutate(req.cmsAuth!.role, body, 'tour', {
+      visibility_status: existing.visibility_status,
+    });
+    const row = await updateTour(id, body);
     res.json(row);
   } catch (err) {
-    next(err);
+    clientError(res, err);
   }
 });
 
@@ -217,7 +244,7 @@ cmsRouter.post('/tours/:id/duplicate', async (req, res, next) => {
   }
 });
 
-cmsRouter.delete('/tours/:id', async (req, res, next) => {
+cmsRouter.delete('/tours/:id', requireSuperAdmin, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     await deleteTour(id);
@@ -341,17 +368,52 @@ cmsRouter.post('/staff', requireSuperAdmin, async (req, res, next) => {
 cmsRouter.patch('/staff/:id', requireSuperAdmin, async (req, res, next) => {
   try {
     const id = String(req.params.id);
-    const { is_active } = req.body || {};
-    if (typeof is_active !== 'boolean') {
-      res.status(400).json({ message: 'is_active (boolean) is required.' });
+    const { is_active, full_name, phone, account_type, password } = req.body || {};
+
+    const hasUpdate =
+      typeof is_active === 'boolean' ||
+      full_name !== undefined ||
+      phone !== undefined ||
+      account_type !== undefined ||
+      (typeof password === 'string' && password.trim().length > 0);
+
+    if (!hasUpdate) {
+      res.status(400).json({
+        message:
+          'Provide at least one of: is_active, full_name, phone, account_type, password.',
+      });
       return;
     }
-    if (id === req.cmsAuth?.userId && !is_active) {
-      res.status(400).json({ message: 'You cannot deactivate your own account.' });
+
+    if (
+      account_type !== undefined &&
+      account_type !== 'traveler' &&
+      account_type !== 'staff' &&
+      account_type !== 'super_admin'
+    ) {
+      res.status(400).json({
+        message: 'account_type must be traveler, staff, or super_admin.',
+      });
       return;
     }
-    await setWebsiteUserActive(id, is_active);
-    res.status(204).send();
+
+    const row = await updateManagedUser(
+      id,
+      {
+        is_active: typeof is_active === 'boolean' ? is_active : undefined,
+        full_name: full_name !== undefined ? full_name : undefined,
+        phone: phone !== undefined ? phone : undefined,
+        account_type:
+          account_type === 'traveler' ||
+          account_type === 'staff' ||
+          account_type === 'super_admin'
+            ? account_type
+            : undefined,
+        password: typeof password === 'string' ? password : undefined,
+      },
+      req.cmsAuth?.userId
+    );
+    res.json(row);
   } catch (err) {
     clientError(res, err);
   }
