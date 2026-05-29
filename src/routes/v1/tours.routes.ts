@@ -98,7 +98,9 @@ toursRouter.get('/tours/:id/departures', async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tour id.' });
     }
 
-    const departures = await getTourDepartures(tourId);
+    const rawMarket = String(req.query.market || 'in').trim().toLowerCase();
+    const market = rawMarket.split('-')[0] || 'in';
+    const departures = await getTourDepartures(tourId, market);
     if (departures === null) {
       return res.status(404).json({ message: 'Tour not found.' });
     }

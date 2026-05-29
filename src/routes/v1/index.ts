@@ -5,8 +5,10 @@ import { healthRouter } from './health.routes';
 import { accountRouter } from './account.routes';
 import { cmsRouter } from './cms.routes';
 import { integrationRouter } from './integration.routes';
+import { pricingRouter } from './pricing.routes';
 
 const v1Router = Router();
+v1Router.use(pricingRouter);
 v1Router.use(toursRouter);
 v1Router.use(bookingsRouter);
 v1Router.use(accountRouter);

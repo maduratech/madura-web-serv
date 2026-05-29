@@ -20,16 +20,38 @@ export function inrPerUsd(rate?: number | null): number {
   return Number.isFinite(r) && r > 0 ? r : DEFAULT_INR_PER_USD;
 }
 
-/** Convert INR → USD at FX, then ×1.5 (50% on top of converted USD). */
+/**
+ * Round global shelf USD up to a clean price (e.g. 736.02 → 750).
+ * Used for auto-suggest until staff override in CMS.
+ */
+export function roundUsdShelfPrice(usd: number): number {
+  if (!Number.isFinite(usd) || usd <= 0) return 0;
+  if (usd < 50) return Math.ceil(usd);
+  if (usd < 1000) return Math.ceil(usd / 50) * 50;
+  return Math.ceil(usd / 100) * 100;
+}
+
+/** Convert INR → USD at FX, then ×1.5 (50% on top of converted USD), then shelf round-up. */
 export function globalUsdDisplayFromInr(inr: number, inrPerUsdRate?: number | null): number {
   if (!Number.isFinite(inr) || inr <= 0) return 0;
   const rate = inrPerUsd(inrPerUsdRate);
   const usdBase = inr / rate;
-  return Math.round(usdBase * 1.5 * 100) / 100;
+  const withMarkup = usdBase * 1.5;
+  return roundUsdShelfPrice(withMarkup);
 }
 
 export function suggestedUsdFromInr(inr: number, inrPerUsdRate?: number | null): number {
   return globalUsdDisplayFromInr(inr, inrPerUsdRate);
+}
+
+export function resolveGlobalUsdPrice(
+  inr: number | null | undefined,
+  storedUsd: number | null | undefined,
+  inrPerUsdRate?: number | null
+): number | null {
+  if (storedUsd != null && storedUsd > 0) return Number(storedUsd);
+  if (inr != null && inr > 0) return globalUsdDisplayFromInr(inr, inrPerUsdRate);
+  return null;
 }
 
 export function inrFromGlobalUsdDisplay(usd: number, inrPerUsdRate?: number | null): number {

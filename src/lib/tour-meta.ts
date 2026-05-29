@@ -17,6 +17,8 @@ export type TourCmsMeta = {
   market_audience?: TourMarketAudience;
   pricing_usd?: TourMarketPricing;
   pricing_aud?: TourMarketPricing;
+  /** Per-departure USD overrides (key = departure id). Group tours with scheduled departures. */
+  departure_pricing_usd?: Record<string, TourMarketPricing>;
 };
 
 export function parseTourCmsMeta(raw: string | null | undefined): TourCmsMeta {

@@ -23,8 +23,11 @@ import {
   parseTourVisibility,
   type TourVisibilityStatus,
 } from '../lib/tour-visibility';
+import { getInrPerUsd } from '../lib/fx-rates';
 import {
   globalUsdDisplayFromInr,
+  resolveGlobalUsdPrice,
+  DEFAULT_INR_PER_USD,
   readGlobalPricingFromMeta,
   tourVisibleForMarket,
   type TourMarketPricing,
@@ -569,6 +572,7 @@ type DepartureRow = {
 function mapDepartureApiRow(row: DepartureRow) {
   const legacy = Number(row.price) || 0;
   const twin = Number(row.twin_sharing_price) || legacy || 0;
+  const bands = childPricesFromDb(row);
   return {
     id: row.id,
     tour_id: row.tour_id,
@@ -580,8 +584,69 @@ function mapDepartureApiRow(row: DepartureRow) {
     triple_sharing_price: row.triple_sharing_price ?? null,
     single_sharing_price: row.single_sharing_price ?? null,
     quad_sharing_price: row.quad_sharing_price ?? null,
-    ...childPricesFromDb(row),
+    infant_price: bands.infant_price ?? null,
+    child_price: bands.child_price ?? null,
+    youth_price: bands.youth_price ?? null,
     max_travellers: row.max_travellers ?? null,
+  };
+}
+
+type DepartureApiRow = ReturnType<typeof mapDepartureApiRow>;
+
+function mapDepartureForMarket(
+  row: DepartureRow,
+  marketCountry: string,
+  departureUsdById: Record<string, import('../lib/tour-market-audience').TourMarketPricing> | undefined,
+  inrPerUsd: number
+): DepartureApiRow & {
+  display_currency?: 'INR' | 'USD';
+  twin_sharing_price_inr?: number;
+  triple_sharing_price_inr?: number | null;
+  single_sharing_price_inr?: number | null;
+  quad_sharing_price_inr?: number | null;
+  infant_price_inr?: number | null;
+  child_price_inr?: number | null;
+  youth_price_inr?: number | null;
+} {
+  const base = mapDepartureApiRow(row);
+  const isGlobal = marketCountry.toLowerCase() !== 'in';
+  if (!isGlobal) return base;
+
+  const depUsd = departureUsdById?.[String(row.id)];
+  const pick = (
+    inr: number | null | undefined,
+    keys: Array<keyof import('../lib/tour-market-audience').TourMarketPricing>
+  ) => {
+    for (const key of keys) {
+      const stored = depUsd?.[key];
+      if (stored != null && Number(stored) > 0) {
+        return resolveGlobalUsdPrice(inr, Number(stored), inrPerUsd);
+      }
+    }
+    return resolveGlobalUsdPrice(inr, null, inrPerUsd);
+  };
+
+  const twinInr = base.twin_sharing_price ?? base.price;
+  const twinUsd = pick(twinInr, ['twin_sharing_price', 'price_from']) ?? twinInr;
+
+  return {
+    ...base,
+    display_currency: 'USD',
+    twin_sharing_price_inr: twinInr,
+    triple_sharing_price_inr: base.triple_sharing_price,
+    single_sharing_price_inr: base.single_sharing_price,
+    quad_sharing_price_inr: base.quad_sharing_price,
+    infant_price_inr: base.infant_price,
+    child_price_inr: base.child_price,
+    youth_price_inr: base.youth_price,
+    twin_sharing_price: twinUsd,
+    price: twinUsd,
+    triple_sharing_price: pick(base.triple_sharing_price, ['triple_sharing_price']),
+    single_sharing_price: pick(base.single_sharing_price, ['single_sharing_price']),
+    quad_sharing_price: pick(base.quad_sharing_price, ['quad_sharing_price']),
+    infant_price: pick(base.infant_price, ['infant_price']),
+    child_price: pick(base.child_price, ['child_price']),
+    youth_price: pick(base.youth_price, ['youth_price']),
   };
 }
 
@@ -1525,9 +1590,12 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
   };
 }
 
-export async function getTourDepartures(tourId: number) {
-  const tour = await getTourById(tourId);
+export async function getTourDepartures(tourId: number, marketCountry = 'in') {
+  const tour = await getTourById(tourId, marketCountry);
   if (!tour) return null;
+  const cmsMeta = parseTourCmsMeta(tour.overview);
+  const inrPerUsd = marketCountry.toLowerCase() !== 'in' ? await getInrPerUsd() : DEFAULT_INR_PER_USD;
+  const departureUsdById = cmsMeta.departure_pricing_usd;
   const selectTries = [
     'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,max_travellers,departure_city:departure_cities(name)',
     'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,max_travellers,departure_city:departure_cities(name)',
@@ -1542,7 +1610,9 @@ export async function getTourDepartures(tourId: number) {
       .eq('tour_id', tourId)
       .order('start_date', { ascending: true });
     if (!error) {
-      return ((data || []) as unknown as DepartureRow[]).map((row) => mapDepartureApiRow(row));
+      return ((data || []) as unknown as DepartureRow[]).map((row) =>
+        mapDepartureForMarket(row, marketCountry, departureUsdById, inrPerUsd)
+      );
     }
     lastErr = String(error.message || '');
     if (!/column .* does not exist/i.test(lastErr) && !lastErr.includes('departure_cities')) {
