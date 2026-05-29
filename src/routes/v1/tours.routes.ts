@@ -21,9 +21,11 @@ toursRouter.get('/tours', async (_req, res, next) => {
   }
 });
 
-toursRouter.get('/tours-listing', async (_req, res, next) => {
+toursRouter.get('/tours-listing', async (req, res, next) => {
   try {
-    const tours = await getToursListing();
+    const raw = String(req.query.market || 'in').trim().toLowerCase();
+    const market = raw.split('-')[0] || 'in';
+    const tours = await getToursListing(market);
     return res.json({ data: tours });
   } catch (error) {
     return next(error);
@@ -76,7 +78,9 @@ toursRouter.get('/tours/:idOrSlug', async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tour reference.' });
     }
 
-    const tour = await getTourByKey(key);
+    const rawMarket = String(req.query.market || 'in').trim().toLowerCase();
+    const market = rawMarket.split('-')[0] || 'in';
+    const tour = await getTourByKey(key, market);
     if (!tour) {
       return res.status(404).json({ message: 'Tour not found.' });
     }

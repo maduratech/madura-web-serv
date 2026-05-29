@@ -2,6 +2,9 @@ import { supabase } from '../lib/supabase';
 import { childPricesFromDb, childPricesToDb } from '../lib/tour-price-db';
 import { normalizeDestinationSlug } from '../lib/destination-slug';
 import { parseTourVisibility, type TourVisibilityStatus } from '../lib/tour-visibility';
+import { parseTourCmsMeta } from '../lib/tour-meta';
+import { normalizeTourMarketAudience, type TourMarketAudience } from '../lib/tour-market-audience';
+import { listTourDepartures, replaceTourDepartures } from './cms-departures.service';
 
 /** PostgREST / Supabase wording when a column or embed is missing on this project. */
 function isSchemaColumnMismatch(errMsg: string): boolean {
@@ -636,6 +639,7 @@ export type CmsTour = {
   sales_price: number | null;
   discounted_price: number | null;
   currency: string | null;
+  market_audience: TourMarketAudience;
   max_travellers: number | null;
   min_age: number | null;
   visibility_status: TourVisibilityStatus;
@@ -736,7 +740,17 @@ function mapTourRow(row: TourRaw): CmsTour {
     youth_price: childBands.youth_price ?? null,
     sales_price: row.sales_price ?? null,
     discounted_price: row.discounted_price ?? null,
-    currency: 'INR',
+    market_audience: (() => {
+      const meta = parseTourCmsMeta(row.overview);
+      return normalizeTourMarketAudience(meta.market_audience);
+    })(),
+    currency: (() => {
+      const meta = parseTourCmsMeta(row.overview);
+      const audience = meta.market_audience;
+      if (audience === 'global') return 'AUD';
+      if (audience === 'both') return 'INR/AUD';
+      return 'INR';
+    })(),
     max_travellers: row.max_travellers ?? null,
     min_age: row.min_age ?? null,
     visibility_status: parseTourVisibility(row),
@@ -952,4 +966,70 @@ export async function updateTour(id: number, input: Partial<CmsTour>): Promise<C
 export async function deleteTour(id: number): Promise<void> {
   const { error } = await supabase.from('tours').delete().eq('id', id);
   if (error) throw new Error(error.message);
+}
+
+function uniqueCopySlug(base: string | null, suffix: string): string | null {
+  const root = (base || 'tour').trim().toLowerCase().replace(/-copy(-\d+)?$/i, '');
+  return `${root}-${suffix}`.replace(/-+/g, '-');
+}
+
+export async function duplicateDestination(id: number): Promise<CmsDestination> {
+  const src = await getDestination(id);
+  if (!src) throw new Error('Destination not found.');
+  const stamp = Date.now().toString(36);
+  return createDestination({
+    name: `${src.name} (Copy)`,
+    slug: uniqueCopySlug(src.slug, `copy-${stamp}`),
+    country: src.country,
+    description: src.description,
+    flag_image_url: src.flag_image_url,
+    is_active: false,
+  });
+}
+
+export async function duplicateTour(id: number): Promise<CmsTour> {
+  const src = await getTour(id);
+  if (!src) throw new Error('Tour not found.');
+  const departures = await listTourDepartures(id);
+  const stamp = Date.now().toString(36);
+  const created = await createTour({
+    title: `${src.title} (Copy)`,
+    slug: uniqueCopySlug(src.slug, `copy-${stamp}`),
+    destination_id: src.destination_id,
+    duration_days: src.duration_days,
+    flow_type: src.flow_type,
+    tour_region: src.tour_region,
+    starting_city: src.starting_city,
+    price_from: src.price_from,
+    twin_sharing_price: src.twin_sharing_price,
+    triple_sharing_price: src.triple_sharing_price,
+    single_sharing_price: src.single_sharing_price,
+    quad_sharing_price: src.quad_sharing_price,
+    infant_price: src.infant_price,
+    child_price: src.child_price,
+    youth_price: src.youth_price,
+    sales_price: src.sales_price,
+    discounted_price: src.discounted_price,
+    max_travellers: src.max_travellers,
+    min_age: src.min_age,
+    visibility_status: 'unlisted',
+    hero_image_url: src.hero_image_url,
+    gallery_image_urls: src.gallery_image_urls,
+    overview: src.overview,
+    tour_includes: src.tour_includes,
+    tour_exclusions: src.tour_exclusions,
+    itinerary_days: src.itinerary_days,
+  });
+  if (departures.length) {
+    await replaceTourDepartures(
+      created.id,
+      departures.map((d) => ({
+        ...d,
+        id: undefined,
+      }))
+    );
+  }
+  const fresh = await getTour(created.id);
+  if (!fresh) throw new Error('Tour duplicated but could not be loaded.');
+  return fresh;
 }

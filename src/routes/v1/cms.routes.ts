@@ -5,6 +5,8 @@ import {
   createDestination,
   createTour,
   deleteDestination,
+  duplicateDestination,
+  duplicateTour,
   deleteTour,
   getCmsStaffByUserId,
   getDestination,
@@ -96,6 +98,20 @@ cmsRouter.patch('/destinations/:id', async (req, res, next) => {
   }
 });
 
+cmsRouter.post('/destinations/:id/duplicate', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      clientError(res, new Error('Invalid destination id.'));
+      return;
+    }
+    const row = await duplicateDestination(id);
+    res.status(201).json(row);
+  } catch (err) {
+    next(err);
+  }
+});
+
 cmsRouter.delete('/destinations/:id', async (req, res, next) => {
   try {
     const id = Number(req.params.id);
@@ -159,6 +175,20 @@ cmsRouter.patch('/tours/:id', async (req, res, next) => {
     const id = Number(req.params.id);
     const row = await updateTour(id, req.body || {});
     res.json(row);
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.post('/tours/:id/duplicate', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      clientError(res, new Error('Invalid tour id.'));
+      return;
+    }
+    const row = await duplicateTour(id);
+    res.status(201).json(row);
   } catch (err) {
     next(err);
   }

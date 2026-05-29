@@ -1,3 +1,6 @@
+import type { TourMarketAudience, TourMarketPricing } from './tour-market-audience';
+import { splitOverviewWithMeta } from './tour-overview-meta';
+
 export type TourCmsMeta = {
   promo_badge?: string;
   gst_percent?: number | null;
@@ -11,20 +14,12 @@ export type TourCmsMeta = {
   child_bed_age_min?: number | null;
   flight_cost_inr?: number | null;
   flights?: Array<{ cost_inr?: number | null }>;
+  market_audience?: TourMarketAudience;
+  pricing_aud?: TourMarketPricing;
 };
 
-const META_RE = /^<!--cms-meta:([\s\S]*?)-->\s*/;
-
 export function parseTourCmsMeta(raw: string | null | undefined): TourCmsMeta {
-  const text = String(raw || '').trim();
-  if (!text) return {};
-  const match = text.match(META_RE);
-  if (!match) return {};
-  try {
-    return (JSON.parse(match[1]) as TourCmsMeta) || {};
-  } catch {
-    return {};
-  }
+  return splitOverviewWithMeta(raw).meta as TourCmsMeta;
 }
 
 export function defaultTaxPercentsForMarket(marketCountry: string): { gst: number; tds: number } {
