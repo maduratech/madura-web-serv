@@ -51,7 +51,17 @@ export function applyDiscountPercent(amount: number, discountPercent: number | n
   return Math.round(base * (1 - pct / 100));
 }
 
-/** Lowest twin / triple / single per-person rate after discount (hero & departure cards). */
+/** Twin / double per-person rate after discount — group tour cards & listing “from”. */
+export function twinSharingDisplayPrice(
+  sheet: TourPriceSheet,
+  discountPercent: number | null | undefined
+): number {
+  const s = normalizePriceSheet(sheet);
+  const twin = s.twin_sharing_price || 0;
+  return twin > 0 ? applyDiscountPercent(twin, discountPercent) : 0;
+}
+
+/** Lowest twin / triple / single per-person rate after discount. */
 export function lowestAdultSharingDisplay(
   sheet: TourPriceSheet,
   discountPercent: number | null | undefined

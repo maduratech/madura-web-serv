@@ -11,6 +11,7 @@ import {
   computeBookingTotalInr,
   inferDiscountPercent,
   lowestAdultSharingDisplay,
+  twinSharingDisplayPrice,
   type TourPriceSheet,
 } from '../lib/tour-pricing';
 import { enqueueCrmBookingSync } from '../jobs/crm.job';
@@ -1262,30 +1263,10 @@ function lowestStartingTwinFromDepartures(
       start_date: dep.start_date,
     });
 
-    const sheet: TourPriceSheet = isGlobal
-      ? {
-          twin_sharing_price: resolveGlobalUsdPrice(
-            twinInr,
-            stored?.twin_sharing_price ?? stored?.price_from
-          ),
-          triple_sharing_price: resolveGlobalUsdPrice(
-            Number(dep.triple_sharing_price) || 0,
-            stored?.triple_sharing_price
-          ),
-          single_sharing_price: resolveGlobalUsdPrice(
-            Number(dep.single_sharing_price) || 0,
-            stored?.single_sharing_price
-          ),
-          quad_sharing_price: null,
-        }
-      : {
-          twin_sharing_price: twinInr,
-          triple_sharing_price: dep.triple_sharing_price ?? null,
-          single_sharing_price: dep.single_sharing_price ?? null,
-          quad_sharing_price: null,
-        };
-
-    const display = lowestAdultSharingDisplay(sheet, discountPercent);
+    const twinUsd = isGlobal
+      ? resolveGlobalUsdPrice(twinInr, stored?.twin_sharing_price ?? stored?.price_from)
+      : twinInr;
+    const display = twinSharingDisplayPrice({ twin_sharing_price: twinUsd }, discountPercent);
     if (display > 0) candidates.push(display);
   }
 
