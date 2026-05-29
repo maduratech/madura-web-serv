@@ -623,6 +623,8 @@ export type CmsTour = {
   id: number;
   title: string;
   slug: string | null;
+  /** Denormalized destination name (required on insert in `tours.destination`). */
+  destination?: string | null;
   destination_id: number | null;
   duration_days: number | null;
   flow_type: 'enquiry' | 'booking' | 'both' | null;
@@ -726,6 +728,7 @@ function mapTourRow(row: TourRaw): CmsTour {
     title: String(row.title || '').trim(),
     slug,
     destination_id: row.destination_id ?? null,
+    destination: String(row.destination || embed?.name || '').trim() || null,
     duration_days: row.duration_days ?? null,
     flow_type: row.flow_type ?? null,
     tour_region: row.tour_region ?? null,
@@ -747,8 +750,8 @@ function mapTourRow(row: TourRaw): CmsTour {
     currency: (() => {
       const meta = parseTourCmsMeta(row.overview);
       const audience = meta.market_audience;
-      if (audience === 'global') return 'AUD';
-      if (audience === 'both') return 'INR/AUD';
+      if (audience === 'global') return 'USD';
+      if (audience === 'both') return 'INR/USD';
       return 'INR';
     })(),
     max_travellers: row.max_travellers ?? null,
@@ -766,12 +769,27 @@ function mapTourRow(row: TourRaw): CmsTour {
   };
 }
 
-function tourInputToDb(input: Partial<CmsTour>): Record<string, unknown> {
+async function resolveTourDestinationName(input: Partial<CmsTour>): Promise<string> {
+  const explicit = String(input.destination || '').trim();
+  if (explicit) return explicit;
+  const fromEmbed = String(input.destinations?.name || '').trim();
+  if (fromEmbed) return fromEmbed;
+  const destId = input.destination_id;
+  if (destId != null && Number(destId) > 0) {
+    const dest = await getDestination(Number(destId));
+    const name = String(dest?.name || '').trim();
+    if (name) return name;
+  }
+  throw new Error('Destination is required.');
+}
+
+function tourInputToDb(input: Partial<CmsTour>, destinationName: string): Record<string, unknown> {
   const slug = input.slug?.trim() || null;
   const priceFrom = input.price_from ?? input.twin_sharing_price ?? null;
   return {
     title: input.title != null ? String(input.title).trim() : undefined,
     slug,
+    destination: destinationName,
     destination_id: input.destination_id,
     duration_days: input.duration_days,
     flow_type: input.flow_type,
@@ -926,12 +944,20 @@ export async function createTour(input: Partial<CmsTour>): Promise<CmsTour> {
   if (!title) throw new Error('Tour title is required.');
   const slug =
     (input.slug || title.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-')).trim() || null;
-  const db = tourInputToDb({ ...input, title, slug });
+  const destinationName = await resolveTourDestinationName(input);
+  const db = tourInputToDb({ ...input, title, slug }, destinationName);
   return insertTourWithFallback(db);
 }
 
 export async function updateTour(id: number, input: Partial<CmsTour>): Promise<CmsTour> {
-  const db = tourInputToDb(input);
+  const existing = await getTour(id);
+  if (!existing) throw new Error('Tour not found.');
+  const destinationName = await resolveTourDestinationName({
+    ...existing,
+    ...input,
+    destinations: input.destinations ?? existing.destinations,
+  });
+  const db = tourInputToDb(input, destinationName);
   const keys = Object.keys(db);
   const patchTries: Record<string, unknown>[] = [];
   for (let i = 0; i <= keys.length; i += 1) {
@@ -995,7 +1021,9 @@ export async function duplicateTour(id: number): Promise<CmsTour> {
   const created = await createTour({
     title: `${src.title} (Copy)`,
     slug: uniqueCopySlug(src.slug, `copy-${stamp}`),
+    destination: src.destination ?? src.destinations?.name ?? undefined,
     destination_id: src.destination_id,
+    destinations: src.destinations,
     duration_days: src.duration_days,
     flow_type: src.flow_type,
     tour_region: src.tour_region,

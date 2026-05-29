@@ -15,6 +15,7 @@ export type TourCmsMeta = {
   flight_cost_inr?: number | null;
   flights?: Array<{ cost_inr?: number | null }>;
   market_audience?: TourMarketAudience;
+  pricing_usd?: TourMarketPricing;
   pricing_aud?: TourMarketPricing;
 };
 

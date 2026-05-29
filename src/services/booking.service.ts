@@ -23,7 +23,12 @@ import {
   parseTourVisibility,
   type TourVisibilityStatus,
 } from '../lib/tour-visibility';
-import { tourVisibleForMarket, type TourMarketPricing } from '../lib/tour-market-audience';
+import {
+  globalUsdDisplayFromInr,
+  readGlobalPricingFromMeta,
+  tourVisibleForMarket,
+  type TourMarketPricing,
+} from '../lib/tour-market-audience';
 import type { TourCmsMeta } from '../lib/tour-meta';
 
 export type TravellerInput = {
@@ -99,7 +104,10 @@ function formatInrDual(
   if (!rate) return inrPart;
   const converted = safeAmount / rate;
   let display: string;
-  if (cur === 'USD') display = `$${converted.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+  if (cur === 'USD') {
+    const usd = globalUsdDisplayFromInr(safeAmount, rate);
+    display = `$${usd.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+  }
   else if (cur === 'AED') display = `AED ${converted.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
   else if (cur === 'AUD') display = `AUD ${converted.toLocaleString('en-AU', { maximumFractionDigits: 0 })}`;
   else display = `${cur} ${converted.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
@@ -1128,8 +1136,7 @@ function resolveMarketPriceBands(
   marketCountry: string
 ) {
   const isGlobal = marketCountry.toLowerCase() !== 'in';
-  const aud = cmsMeta.pricing_aud as TourMarketPricing | undefined;
-  if (!isGlobal || !aud) {
+  if (!isGlobal) {
     const bands = childPricesFromDb(row);
     return {
       twin: row.twin_sharing_price,
@@ -1139,16 +1146,27 @@ function resolveMarketPriceBands(
       infant: bands.infant_price,
       child: bands.child_price,
       youth: bands.youth_price,
+      displayUsd: false,
     };
   }
+
+  const stored = readGlobalPricingFromMeta(cmsMeta);
+  const pick = (inr: number | null | undefined, usd?: number | null | undefined) => {
+    if (usd != null && usd > 0) return usd;
+    if (inr != null && inr > 0) return globalUsdDisplayFromInr(inr);
+    return inr ?? null;
+  };
+
+  const bands = childPricesFromDb(row);
   return {
-    twin: aud.twin_sharing_price ?? aud.price_from ?? row.twin_sharing_price,
-    triple: aud.triple_sharing_price ?? row.triple_sharing_price,
-    single: aud.single_sharing_price ?? row.single_sharing_price,
-    quad: aud.quad_sharing_price ?? row.quad_sharing_price,
-    infant: aud.infant_price ?? row.infant_price,
-    child: aud.child_price ?? row.child_price,
-    youth: aud.youth_price ?? row.youth_price,
+    twin: pick(row.twin_sharing_price, stored?.twin_sharing_price ?? stored?.price_from),
+    triple: pick(row.triple_sharing_price, stored?.triple_sharing_price),
+    single: pick(row.single_sharing_price, stored?.single_sharing_price),
+    quad: pick(row.quad_sharing_price, stored?.quad_sharing_price),
+    infant: pick(bands.infant_price, stored?.infant_price),
+    child: pick(bands.child_price, stored?.child_price),
+    youth: pick(bands.youth_price, stored?.youth_price),
+    displayUsd: true,
   };
 }
 
@@ -1231,17 +1249,18 @@ export async function getToursListing(marketCountry = 'in') {
       youth_price: marketBands.youth,
       price: marketBands.twin ?? derivedTwin,
     };
+    const bandPrices = childPricesFromDb(row);
     const startingTwin =
       lowestAdultSharingDisplay(listingSheet, discountPercent) ||
       row.twin_sharing_price ||
       derivedTwin;
-    const startingTriple = row.triple_sharing_price ?? (startingTwin ? Math.round(startingTwin * 0.9) : null);
-    const startingSingle = row.single_sharing_price ?? null;
-    const startingQuad = row.quad_sharing_price ?? null;
-    const bandPrices = childPricesFromDb(row);
-    const startingInfant = bandPrices.infant_price ?? null;
-    const startingChild = bandPrices.child_price ?? null;
-    const startingYouth = bandPrices.youth_price ?? null;
+    const startingTriple =
+      marketBands.triple ?? row.triple_sharing_price ?? (startingTwin ? Math.round(startingTwin * 0.9) : null);
+    const startingSingle = marketBands.single ?? row.single_sharing_price ?? null;
+    const startingQuad = marketBands.quad ?? row.quad_sharing_price ?? null;
+    const startingInfant = marketBands.infant ?? bandPrices.infant_price ?? null;
+    const startingChild = marketBands.child ?? bandPrices.child_price ?? null;
+    const startingYouth = marketBands.youth ?? bandPrices.youth_price ?? null;
     const destination = row.destination_ref?.name || row.destination || 'Unknown';
     const heroImage = String(row.hero_image_url || '').trim();
     const departureCities = Array.from(
@@ -1482,12 +1501,13 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
     theme: inferTheme(row.title),
     tour_type: row.flow_type === 'booking' ? 'Group Package' : 'Customizable',
     starting_from_twin: startingTwin,
-    starting_from_triple: row.triple_sharing_price ?? (startingTwin ? Math.round(startingTwin * 0.9) : null),
-    starting_from_single: row.single_sharing_price ?? null,
-    starting_from_quad: row.quad_sharing_price ?? null,
-    starting_from_infant: detailBand.infant_price ?? null,
-    starting_from_child: detailBand.child_price ?? null,
-    starting_from_youth: detailBand.youth_price ?? null,
+    starting_from_triple:
+      marketBands.triple ?? row.triple_sharing_price ?? (startingTwin ? Math.round(startingTwin * 0.9) : null),
+    starting_from_single: marketBands.single ?? row.single_sharing_price ?? null,
+    starting_from_quad: marketBands.quad ?? row.quad_sharing_price ?? null,
+    starting_from_infant: marketBands.infant ?? detailBand.infant_price ?? null,
+    starting_from_child: marketBands.child ?? detailBand.child_price ?? null,
+    starting_from_youth: marketBands.youth ?? detailBand.youth_price ?? null,
     sales_price: row.sales_price ?? null,
     discounted_price: row.discounted_price ?? startingTwin,
     discount_percent: discountPercent,
