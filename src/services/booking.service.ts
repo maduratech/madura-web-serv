@@ -168,6 +168,10 @@ export type CreateEnquiryInput = {
   source?: string | null;
   /** CRM services array (defaults from enquiry_type). */
   services?: string[] | null;
+  tour_region?: string | null;
+  budget?: string | number | null;
+  is_flexible_dates?: boolean;
+  return_date?: string | null;
   nationality?: string | null;
   ip_address?: string;
   user_agent?: string;
@@ -200,7 +204,7 @@ export type CreatePlannerLeadInput = {
   budget_tier_id?: string | null;
   budget_tier_label?: string | null;
   market?: string | null;
-  rooms: Array<{ adults: number; children: number; child_ages?: number[] }>;
+  rooms: Array<{ adults: number; children: number; child_ages?: number[]; childAges?: number[] }>;
   page_url?: string | null;
   user_id: string;
   name?: string | null;
@@ -2819,7 +2823,12 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
     enquiry: enquiryLabel,
     services: serviceList,
     starting_point: input.departure_city,
-    summary: `Website enquiry for ${input.destination || 'tour'} | ${input.duration || 'duration not specified'} | ${input.adults}A/${input.children}C | Rooms: ${input.rooms}`,
+    summary: [
+      `Website enquiry for ${input.destination || 'tour'} | ${input.duration || 'duration not specified'} | ${input.adults}A/${input.children}C | Rooms: ${input.rooms}`,
+      input.occupancy_notes ? String(input.occupancy_notes).trim() : null,
+    ]
+      .filter(Boolean)
+      .join(' | '),
     source: leadSource,
     adults: input.adults,
     children: input.children,
@@ -2829,6 +2838,11 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
     rooms: input.rooms,
     room_details: normalizedRoomDetails,
     children_ages: normalizedChildAges,
+    ...(input.tour_region ? { tour_region: input.tour_region } : {}),
+    ...(input.budget != null && input.budget !== '' ? { budget: input.budget } : {}),
+    ...(input.is_flexible_dates ? { is_flexible_dates: true } : {}),
+    ...(input.return_date ? { return_date: input.return_date } : {}),
+    ...(input.occupancy_notes ? { occupancy_notes: input.occupancy_notes } : {}),
     notes: [
       {
         type: 'note',
@@ -3207,6 +3221,103 @@ const PLANNER_MONTH_LABELS = [
   'December',
 ];
 
+const PLANNER_FLEXIBLE_DEFAULT_DAYS = 4;
+
+const PLANNER_BUDGET_CRM_MAP: Record<string, string> = {
+  'budget-friendly': 'economical',
+  'comfort-collection': 'standard',
+  'signature-tours': 'deluxe',
+  'royal-retreat': 'luxury',
+};
+
+const INDIAN_DESTINATION_HINTS = [
+  'india',
+  'andhra pradesh',
+  'arunachal pradesh',
+  'assam',
+  'bihar',
+  'chhattisgarh',
+  'goa',
+  'gujarat',
+  'haryana',
+  'himachal pradesh',
+  'jharkhand',
+  'karnataka',
+  'kerala',
+  'madhya pradesh',
+  'maharashtra',
+  'manipur',
+  'meghalaya',
+  'mizoram',
+  'nagaland',
+  'odisha',
+  'punjab',
+  'rajasthan',
+  'sikkim',
+  'tamil nadu',
+  'telangana',
+  'tripura',
+  'uttar pradesh',
+  'uttarakhand',
+  'west bengal',
+  'andaman',
+  'chandigarh',
+  'delhi',
+  'jammu',
+  'kashmir',
+  'ladakh',
+  'lakshadweep',
+  'puducherry',
+  'mumbai',
+  'bangalore',
+  'chennai',
+  'kolkata',
+  'hyderabad',
+  'jaipur',
+];
+
+function addDaysIsoDate(isoDate: string, daysToAdd: number): string | null {
+  const base = new Date(`${String(isoDate).slice(0, 10)}T12:00:00`);
+  if (Number.isNaN(base.getTime())) return null;
+  base.setDate(base.getDate() + daysToAdd);
+  return base.toISOString().slice(0, 10);
+}
+
+function normalizePlannerRooms(
+  raw: Array<{ adults: number; children: number; child_ages?: number[]; childAges?: number[] }>
+) {
+  return raw.map((room) => {
+    const childAges = Array.isArray(room.child_ages)
+      ? room.child_ages
+      : Array.isArray(room.childAges)
+        ? room.childAges
+        : [];
+    return {
+      adults: Number(room.adults || 0),
+      children: Number(room.children || 0),
+      child_ages: childAges.map((age) => Number(age)).filter((age) => Number.isFinite(age)),
+    };
+  });
+}
+
+function resolvePlannerTourRegion(destinations: string): 'Domestic' | 'International' {
+  const parts = String(destinations || '')
+    .split(',')
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean);
+  if (parts.length === 0) return 'International';
+
+  const isIndianDestination = (part: string) =>
+    INDIAN_DESTINATION_HINTS.some((hint) => part === hint || part.includes(hint) || hint.includes(part));
+
+  return parts.every(isIndianDestination) ? 'Domestic' : 'International';
+}
+
+function mapPlannerBudgetTier(tierId?: string | null): string {
+  const id = String(tierId || '').trim().toLowerCase();
+  return PLANNER_BUDGET_CRM_MAP[id] || 'standard';
+}
+
 /** Silent CRM handoff for the header holiday planner (signed-in customers only). */
 export async function createPlannerLead(input: CreatePlannerLeadInput) {
   const destinations = String(input.destinations || '').trim();
@@ -3217,7 +3328,9 @@ export async function createPlannerLead(input: CreatePlannerLeadInput) {
     throw new Error('Authentication required.');
   }
 
-  const rooms = Array.isArray(input.rooms) && input.rooms.length ? input.rooms : [{ adults: 1, children: 0 }];
+  const rooms = normalizePlannerRooms(
+    Array.isArray(input.rooms) && input.rooms.length ? input.rooms : [{ adults: 1, children: 0 }]
+  );
   const adults = rooms.reduce((sum, room) => sum + Number(room.adults || 0), 0) || 1;
   const children = rooms.reduce((sum, room) => sum + Number(room.children || 0), 0);
   const roomCount = Math.max(1, rooms.length);
@@ -3232,18 +3345,28 @@ export async function createPlannerLead(input: CreatePlannerLeadInput) {
   const digitsOnly = phoneRaw.replace(/\D/g, '');
 
   let travelDate = new Date().toISOString().slice(0, 10);
-  let duration = 'Flexible dates';
+  let returnDate: string | null = null;
+  let duration = String(PLANNER_FLEXIBLE_DEFAULT_DAYS);
+  let isFlexibleDates = input.when_mode === 'flexible';
+  let flexibleMonthNote: string | null = null;
+
   if (input.when_mode === 'specific' && input.travel_date) {
+    isFlexibleDates = false;
     travelDate = String(input.travel_date).slice(0, 10);
     if (input.travel_end_date) {
-      const start = new Date(travelDate);
-      const end = new Date(String(input.travel_end_date).slice(0, 10));
+      const start = new Date(`${travelDate}T12:00:00`);
+      const end = new Date(`${String(input.travel_end_date).slice(0, 10)}T12:00:00`);
       if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && end >= start) {
         const days = Math.max(1, Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1);
-        duration = `${days} days`;
+        duration = String(days);
+        returnDate = String(input.travel_end_date).slice(0, 10);
+      } else {
+        duration = String(PLANNER_FLEXIBLE_DEFAULT_DAYS);
+        returnDate = addDaysIsoDate(travelDate, PLANNER_FLEXIBLE_DEFAULT_DAYS - 1);
       }
     } else {
-      duration = 'Specific dates';
+      duration = String(PLANNER_FLEXIBLE_DEFAULT_DAYS);
+      returnDate = addDaysIsoDate(travelDate, PLANNER_FLEXIBLE_DEFAULT_DAYS - 1);
     }
   } else if (input.flexible_year != null && input.flexible_month != null) {
     const monthIndex = Number(input.flexible_month);
@@ -3257,16 +3380,21 @@ export async function createPlannerLead(input: CreatePlannerLeadInput) {
     ) {
       const month = String(monthIndex + 1).padStart(2, '0');
       travelDate = `${year}-${month}-01`;
-      duration = `Flexible: ${monthLabel} ${year}`;
+      duration = String(PLANNER_FLEXIBLE_DEFAULT_DAYS);
+      returnDate = addDaysIsoDate(travelDate, PLANNER_FLEXIBLE_DEFAULT_DAYS - 1);
+      flexibleMonthNote = `Tentative month: ${monthLabel} ${year}`;
     } else {
-      duration = 'Flexible month';
+      duration = String(PLANNER_FLEXIBLE_DEFAULT_DAYS);
+      returnDate = addDaysIsoDate(travelDate, PLANNER_FLEXIBLE_DEFAULT_DAYS - 1);
+      flexibleMonthNote = 'Tentative travel dates';
     }
+  } else {
+    returnDate = addDaysIsoDate(travelDate, PLANNER_FLEXIBLE_DEFAULT_DAYS - 1);
   }
 
   const budgetLabel = String(input.budget_tier_label || input.budget_tier_id || '').trim();
-  if (budgetLabel) {
-    duration = duration ? `${duration} · Budget: ${budgetLabel}` : `Budget: ${budgetLabel}`;
-  }
+  const crmBudget = mapPlannerBudgetTier(input.budget_tier_id);
+  const tourRegion = resolvePlannerTourRegion(destinations);
 
   const market = String(input.market || 'in').trim().toLowerCase();
   const departureCity = market === 'au' ? 'Australia (Web)' : 'India (Web)';
@@ -3295,10 +3423,12 @@ export async function createPlannerLead(input: CreatePlannerLeadInput) {
     destinations.toLowerCase(),
     travelDate,
     input.when_mode || '',
+    duration,
     adults,
     children,
     roomCount,
-    budgetLabel.toLowerCase(),
+    JSON.stringify(rooms),
+    crmBudget,
   ].join('|');
   const lastPlannerForward = plannerLeadDedupeMap.get(plannerDedupeKey);
   if (lastPlannerForward && Date.now() - lastPlannerForward < PLANNER_LEAD_DEDUPE_WINDOW_MS) {
@@ -3323,6 +3453,7 @@ export async function createPlannerLead(input: CreatePlannerLeadInput) {
       email: String(input.email || '').trim() || null,
       departure_city: departureCity,
       travel_date: travelDate,
+      return_date: returnDate,
       destination: destinations,
       duration,
       adults,
@@ -3340,9 +3471,18 @@ export async function createPlannerLead(input: CreatePlannerLeadInput) {
       enquiry_type: 'Tour Package',
       source: 'Trip Planner',
       services: ['Tour Package'],
+      tour_region: tourRegion,
+      budget: crmBudget,
+      is_flexible_dates: isFlexibleDates,
       nationality: null,
       ip_address: input.ip_address,
       user_agent: input.user_agent,
+      occupancy_notes: [
+        flexibleMonthNote,
+        budgetLabel ? `Budget tier: ${budgetLabel}` : null,
+      ]
+        .filter(Boolean)
+        .join(' | ') || undefined,
     });
     plannerLeadDedupeMap.set(plannerDedupeKey, Date.now());
     // eslint-disable-next-line no-console
