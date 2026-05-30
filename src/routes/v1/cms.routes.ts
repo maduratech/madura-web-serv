@@ -26,6 +26,12 @@ import {
   upsertCmsStaff,
   updateManagedUser,
 } from '../../services/cms.service';
+import {
+  addTourTaxonomy,
+  deleteTourTaxonomy,
+  listTourTaxonomy,
+  parseTourTaxonomyKindParam,
+} from '../../services/cms-taxonomy.service';
 
 function clientError(res: import('express').Response, err: unknown) {
   const message = err instanceof Error ? err.message : 'Request failed.';
@@ -419,5 +425,41 @@ cmsRouter.delete('/staff/:id', requireSuperAdmin, async (req, res, next) => {
     res.status(204).send();
   } catch (err) {
     next(err);
+  }
+});
+
+cmsRouter.get('/tour-taxonomy/:kind', async (req, res, next) => {
+  try {
+    const kind = parseTourTaxonomyKindParam(String(req.params.kind));
+    res.json({ items: await listTourTaxonomy(kind) });
+  } catch (err) {
+    clientError(res, err);
+  }
+});
+
+cmsRouter.post('/tour-taxonomy/:kind', async (req, res, next) => {
+  try {
+    assertStaffMayMutate(req.cmsAuth!.role, req.body || {}, 'tour');
+    const kind = parseTourTaxonomyKindParam(String(req.params.kind));
+    const label = String((req.body as { label?: string })?.label || '');
+    const row = await addTourTaxonomy(kind, label);
+    res.status(201).json(row);
+  } catch (err) {
+    clientError(res, err);
+  }
+});
+
+cmsRouter.delete('/tour-taxonomy/:id', async (req, res, next) => {
+  try {
+    assertStaffMayMutate(req.cmsAuth!.role, {}, 'tour');
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) {
+      res.status(400).json({ message: 'Invalid id.' });
+      return;
+    }
+    await deleteTourTaxonomy(id);
+    res.status(204).send();
+  } catch (err) {
+    clientError(res, err);
   }
 });

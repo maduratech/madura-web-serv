@@ -3,6 +3,8 @@ import { childPricesFromDb, childPricesToDb } from '../lib/tour-price-db';
 import { normalizeDestinationSlug } from '../lib/destination-slug';
 import { parseTourVisibility, type TourVisibilityStatus } from '../lib/tour-visibility';
 import { parseTourCmsMeta } from '../lib/tour-meta';
+import { splitOverviewWithMeta } from '../lib/tour-overview-meta';
+import { ensureTourTaxonomyFromMeta } from './cms-taxonomy.service';
 import { normalizeTourMarketAudience, type TourMarketAudience } from '../lib/tour-market-audience';
 import { listTourDepartures, replaceTourDepartures } from './cms-departures.service';
 
@@ -1024,6 +1026,15 @@ async function insertTourWithFallback(payload: Record<string, unknown>): Promise
   throw new Error(`Failed to create tour: ${lastErr}`);
 }
 
+async function maybeEnsureTourTaxonomyFromOverview(overview: unknown): Promise<void> {
+  if (typeof overview !== 'string' || !overview.trim()) return;
+  const { meta } = splitOverviewWithMeta(overview);
+  await ensureTourTaxonomyFromMeta({
+    tour_type: typeof meta.tour_type === 'string' ? meta.tour_type : null,
+    tour_experience: typeof meta.tour_experience === 'string' ? meta.tour_experience : null,
+  });
+}
+
 export async function createTour(input: Partial<CmsTour>): Promise<CmsTour> {
   const title = String(input.title || '').trim();
   if (!title) throw new Error('Tour title is required.');
@@ -1031,7 +1042,9 @@ export async function createTour(input: Partial<CmsTour>): Promise<CmsTour> {
     (input.slug || title.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-')).trim() || null;
   const destinationName = await resolveTourDestinationName(input);
   const db = tourInputToDb({ ...input, title, slug }, destinationName);
-  return insertTourWithFallback(db);
+  const created = await insertTourWithFallback(db);
+  await maybeEnsureTourTaxonomyFromOverview(db.overview);
+  return created;
 }
 
 export async function updateTour(id: number, input: Partial<CmsTour>): Promise<CmsTour> {
@@ -1066,6 +1079,9 @@ export async function updateTour(id: number, input: Partial<CmsTour>): Promise<C
     if (!error) {
       const row = await selectTourByIdQuick(id);
       if (!row) throw new Error('Tour not found after update.');
+      if (db.overview !== undefined) {
+        await maybeEnsureTourTaxonomyFromOverview(db.overview);
+      }
       return mapTourRow(row);
     }
     lastErr = String(error?.message || '');
