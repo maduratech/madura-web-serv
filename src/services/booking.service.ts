@@ -186,6 +186,26 @@ export type CreateWebsiteLeadInput = {
   user_agent?: string;
 };
 
+export type CreatePlannerLeadInput = {
+  destinations: string;
+  when_mode: 'specific' | 'flexible';
+  travel_date?: string | null;
+  travel_end_date?: string | null;
+  flexible_month?: number | null;
+  flexible_year?: number | null;
+  budget_tier_id?: string | null;
+  budget_tier_label?: string | null;
+  market?: string | null;
+  rooms: Array<{ adults: number; children: number; child_ages?: number[] }>;
+  page_url?: string | null;
+  user_id: string;
+  name?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  ip_address?: string;
+  user_agent?: string;
+};
+
 const enquiryIpRateMap = new Map<string, number[]>();
 const enquiryPhoneRateMap = new Map<string, number[]>();
 const ENQUIRY_RATE_WINDOW_MS = 10 * 60 * 1000; // 10 min
@@ -3153,5 +3173,138 @@ export async function createWebsiteLead(input: CreateWebsiteLeadInput) {
     success: true,
     forwarded: true,
   };
+}
+
+const PLANNER_MONTH_LABELS = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
+/** Silent CRM handoff for the header holiday planner (signed-in customers only). */
+export async function createPlannerLead(input: CreatePlannerLeadInput) {
+  const destinations = String(input.destinations || '').trim();
+  if (!destinations) {
+    throw new Error('destinations is required.');
+  }
+  if (!String(input.user_id || '').trim()) {
+    throw new Error('Authentication required.');
+  }
+
+  const rooms = Array.isArray(input.rooms) && input.rooms.length ? input.rooms : [{ adults: 1, children: 0 }];
+  const adults = rooms.reduce((sum, room) => sum + Number(room.adults || 0), 0) || 1;
+  const children = rooms.reduce((sum, room) => sum + Number(room.children || 0), 0);
+  const roomCount = Math.max(1, rooms.length);
+
+  const name =
+    String(input.name || '').trim() ||
+    String(input.email || '')
+      .split('@')[0]
+      ?.trim() ||
+    'Website traveller';
+  const phoneRaw = normalizePhoneNumber(String(input.phone || ''));
+  const digitsOnly = phoneRaw.replace(/\D/g, '');
+
+  let travelDate = new Date().toISOString().slice(0, 10);
+  let duration = 'Flexible dates';
+  if (input.when_mode === 'specific' && input.travel_date) {
+    travelDate = String(input.travel_date).slice(0, 10);
+    if (input.travel_end_date) {
+      const start = new Date(travelDate);
+      const end = new Date(String(input.travel_end_date).slice(0, 10));
+      if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && end >= start) {
+        const days = Math.max(1, Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1);
+        duration = `${days} days`;
+      }
+    } else {
+      duration = 'Specific dates';
+    }
+  } else if (input.flexible_year != null && input.flexible_month != null) {
+    const monthLabel = PLANNER_MONTH_LABELS[input.flexible_month] || 'Flexible';
+    travelDate = `${monthLabel} ${input.flexible_year}`;
+    duration = 'Flexible month';
+  }
+
+  const budgetLabel = String(input.budget_tier_label || input.budget_tier_id || '').trim();
+  if (budgetLabel) {
+    duration = duration ? `${duration} · Budget: ${budgetLabel}` : `Budget: ${budgetLabel}`;
+  }
+
+  const market = String(input.market || 'in').trim().toLowerCase();
+  const departureCity = market === 'au' ? 'Australia (Web)' : 'India (Web)';
+
+  if (digitsOnly.length < 7) {
+    // eslint-disable-next-line no-console
+    console.warn('[planner-lead] profile phone missing — CRM forward skipped', {
+      user_id: input.user_id,
+    });
+    return { success: true, forwarded: false };
+  }
+
+  const userRateKey = `planner:${input.user_id}`;
+  const userRate = consumeSlidingWindowRateLimit(
+    enquiryIpRateMap,
+    userRateKey,
+    8,
+    ENQUIRY_RATE_WINDOW_MS
+  );
+  if (!userRate.allowed) {
+    return { success: true, forwarded: false };
+  }
+
+  // eslint-disable-next-line no-console
+  console.info('[planner-lead] forwarding to CRM', {
+    user_id: input.user_id,
+    destination: destinations,
+    adults,
+    children,
+    rooms: roomCount,
+  });
+
+  try {
+    await forwardEnquiryToCrm25({
+      tour_id: 0,
+      departure_id: null,
+      name,
+      phone: phoneRaw,
+      email: String(input.email || '').trim() || null,
+      departure_city: departureCity,
+      travel_date: travelDate,
+      destination: destinations,
+      duration,
+      adults,
+      children,
+      infants: 0,
+      rooms: roomCount,
+      room_details: rooms.map((room) => ({
+        adults: Number(room.adults || 0),
+        children: Number(room.children || 0),
+        child_ages: Array.isArray(room.child_ages)
+          ? room.child_ages.map((age) => Number(age)).filter((age) => Number.isFinite(age))
+          : [],
+      })),
+      page_url: String(input.page_url || '').trim() || undefined,
+      enquiry_type: 'Holiday Planner',
+      nationality: null,
+      ip_address: input.ip_address,
+      user_agent: input.user_agent,
+    });
+    // eslint-disable-next-line no-console
+    console.info('[planner-lead] CRM forward success');
+    return { success: true, forwarded: true };
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[planner-lead] CRM forward failed', err);
+    return { success: true, forwarded: false };
+  }
 }
 

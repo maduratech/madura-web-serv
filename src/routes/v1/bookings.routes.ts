@@ -4,13 +4,14 @@ import {
   createBookingBalancePaymentOrder,
   createBookingPaymentOrder,
   createEnquiry,
+  createPlannerLead,
   createWebsiteLead,
   getBookingPaymentSummary,
   handleRazorpayWebhook,
   updateBookingPaymentStatus,
   verifyBookingPayment
 } from '../../services/booking.service';
-import { attachAuthIfPresent } from '../../middlewares/auth.middleware';
+import { attachAuthIfPresent, requireAuth } from '../../middlewares/auth.middleware';
 
 const bookingsRouter = Router();
 
@@ -146,6 +147,27 @@ bookingsRouter.post('/leads/website', async (req, res, next) => {
     });
     return res.status(201).json({
       message: 'Lead submitted successfully.',
+      data: result,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/** Holiday planner handoff — requires sign-in; never shown as a form submit in the UI. */
+bookingsRouter.post('/planner/enquiry', requireAuth, async (req, res, next) => {
+  try {
+    const result = await createPlannerLead({
+      ...req.body,
+      user_id: req.auth!.userId,
+      name: req.body?.name ?? req.auth!.fullName,
+      phone: req.body?.phone ?? req.auth!.phone,
+      email: req.body?.email ?? req.auth!.email,
+      ip_address: req.ip,
+      user_agent: req.get('user-agent') || '',
+    });
+    return res.status(201).json({
+      message: 'Planner enquiry recorded.',
       data: result,
     });
   } catch (error) {
