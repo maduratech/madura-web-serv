@@ -3229,9 +3229,21 @@ export async function createPlannerLead(input: CreatePlannerLeadInput) {
       duration = 'Specific dates';
     }
   } else if (input.flexible_year != null && input.flexible_month != null) {
-    const monthLabel = PLANNER_MONTH_LABELS[input.flexible_month] || 'Flexible';
-    travelDate = `${monthLabel} ${input.flexible_year}`;
-    duration = 'Flexible month';
+    const monthIndex = Number(input.flexible_month);
+    const year = Number(input.flexible_year);
+    const monthLabel = PLANNER_MONTH_LABELS[monthIndex] || 'Flexible';
+    if (
+      Number.isFinite(year) &&
+      Number.isFinite(monthIndex) &&
+      monthIndex >= 0 &&
+      monthIndex <= 11
+    ) {
+      const month = String(monthIndex + 1).padStart(2, '0');
+      travelDate = `${year}-${month}-01`;
+      duration = `Flexible: ${monthLabel} ${year}`;
+    } else {
+      duration = 'Flexible month';
+    }
   }
 
   const budgetLabel = String(input.budget_tier_label || input.budget_tier_id || '').trim();
