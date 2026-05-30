@@ -3338,7 +3338,7 @@ export async function createPlannerLead(input: CreatePlannerLeadInput) {
       })),
       page_url: String(input.page_url || '').trim() || undefined,
       enquiry_type: 'Tour Package',
-      source: 'Holiday Planner',
+      source: 'Trip Planner',
       services: ['Tour Package'],
       nationality: null,
       ip_address: input.ip_address,
