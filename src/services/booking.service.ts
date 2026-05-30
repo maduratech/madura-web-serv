@@ -208,7 +208,9 @@ export type CreatePlannerLeadInput = {
 
 const enquiryIpRateMap = new Map<string, number[]>();
 const enquiryPhoneRateMap = new Map<string, number[]>();
+const plannerLeadDedupeMap = new Map<string, number>();
 const ENQUIRY_RATE_WINDOW_MS = 10 * 60 * 1000; // 10 min
+const PLANNER_LEAD_DEDUPE_WINDOW_MS = 30 * 60 * 1000; // 30 min
 const ENQUIRY_IP_RATE_MAX = 12;
 const ENQUIRY_PHONE_RATE_MAX = 5;
 const DOMESTIC_ADVANCE_AMOUNT_INR = 1000;
@@ -3266,11 +3268,26 @@ export async function createPlannerLead(input: CreatePlannerLeadInput) {
   const userRate = consumeSlidingWindowRateLimit(
     enquiryIpRateMap,
     userRateKey,
-    8,
+    3,
     ENQUIRY_RATE_WINDOW_MS
   );
   if (!userRate.allowed) {
     return { success: true, forwarded: false };
+  }
+
+  const plannerDedupeKey = [
+    input.user_id,
+    destinations.toLowerCase(),
+    travelDate,
+    input.when_mode || '',
+    adults,
+    children,
+    roomCount,
+    budgetLabel.toLowerCase(),
+  ].join('|');
+  const lastPlannerForward = plannerLeadDedupeMap.get(plannerDedupeKey);
+  if (lastPlannerForward && Date.now() - lastPlannerForward < PLANNER_LEAD_DEDUPE_WINDOW_MS) {
+    return { success: true, forwarded: false, deduplicated: true };
   }
 
   // eslint-disable-next-line no-console
@@ -3310,6 +3327,7 @@ export async function createPlannerLead(input: CreatePlannerLeadInput) {
       ip_address: input.ip_address,
       user_agent: input.user_agent,
     });
+    plannerLeadDedupeMap.set(plannerDedupeKey, Date.now());
     // eslint-disable-next-line no-console
     console.info('[planner-lead] CRM forward success');
     return { success: true, forwarded: true };
