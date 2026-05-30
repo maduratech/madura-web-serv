@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { splitOverviewWithMeta } from '../lib/tour-overview-meta';
 
 export type TourTaxonomyKind = 'tour_type' | 'tour_experience';
 
@@ -8,6 +9,14 @@ export type TourTaxonomyRow = {
   label: string;
   sort_order: number;
   created_at: string;
+  usage_count?: number;
+};
+
+const LEGACY_TOUR_TYPE_MAP: Record<string, string> = {
+  Family: 'Family Holidays',
+  Honeymoon: 'Honeymoon Packages',
+  Friends: 'Friends Getaway Tours',
+  'Group Tour': 'Group Tours',
 };
 
 function isMissingTaxonomyTable(message: string): boolean {
@@ -28,7 +37,35 @@ function normalizeLabel(raw: string): string {
   return String(raw || '').replace(/\s+/g, ' ').trim();
 }
 
-export async function listTourTaxonomy(kind: TourTaxonomyKind): Promise<TourTaxonomyRow[]> {
+function tourTypeLabelFromMeta(meta: Record<string, unknown>): string {
+  const direct = normalizeLabel(typeof meta.tour_type === 'string' ? meta.tour_type : '');
+  if (direct) return direct;
+  const legacy = typeof meta.tour_category === 'string' ? meta.tour_category.trim() : '';
+  if (legacy && LEGACY_TOUR_TYPE_MAP[legacy]) return LEGACY_TOUR_TYPE_MAP[legacy];
+  return normalizeLabel(legacy);
+}
+
+async function usageCountsForKind(kind: TourTaxonomyKind): Promise<Map<string, number>> {
+  const { data, error } = await supabase.from('tours').select('overview');
+  if (error) throw new Error(error.message);
+  const counts = new Map<string, number>();
+  for (const row of data || []) {
+    const { meta } = splitOverviewWithMeta(row.overview);
+    const label =
+      kind === 'tour_type'
+        ? tourTypeLabelFromMeta(meta as Record<string, unknown>)
+        : normalizeLabel(typeof meta.tour_experience === 'string' ? meta.tour_experience : '');
+    if (!label) continue;
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+  return counts;
+}
+
+function labelKey(label: string): string {
+  return label.trim().toLowerCase();
+}
+
+async function listTourTaxonomyRows(kind: TourTaxonomyKind): Promise<TourTaxonomyRow[]> {
   const { data, error } = await supabase
     .from('cms_tour_taxonomy')
     .select('id,kind,label,sort_order,created_at')
@@ -40,6 +77,36 @@ export async function listTourTaxonomy(kind: TourTaxonomyKind): Promise<TourTaxo
     throw new Error(error.message);
   }
   return (data || []) as TourTaxonomyRow[];
+}
+
+export async function listTourTaxonomy(kind: TourTaxonomyKind): Promise<TourTaxonomyRow[]> {
+  const rows = await listTourTaxonomyRows(kind);
+  let counts = new Map<string, number>();
+  try {
+    counts = await usageCountsForKind(kind);
+  } catch {
+    counts = new Map();
+  }
+
+  const seen = new Set<string>();
+  const withUsage: TourTaxonomyRow[] = rows.map((row) => {
+    seen.add(labelKey(row.label));
+    return { ...row, usage_count: counts.get(row.label) || 0 };
+  });
+
+  for (const [label, usage_count] of counts.entries()) {
+    if (usage_count <= 0 || seen.has(labelKey(label))) continue;
+    withUsage.push({
+      id: 0,
+      kind,
+      label,
+      sort_order: 0,
+      created_at: '',
+      usage_count,
+    });
+  }
+
+  return withUsage;
 }
 
 export async function addTourTaxonomy(kind: TourTaxonomyKind, label: string): Promise<TourTaxonomyRow> {
