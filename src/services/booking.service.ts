@@ -1440,6 +1440,14 @@ export async function getToursListing(marketCountry = 'in') {
   });
 }
 
+export async function getToursListingByIds(tourIds: number[], marketCountry = 'in') {
+  const ids = [...new Set(tourIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0))];
+  if (!ids.length) return [];
+  const listing = await getToursListing(marketCountry);
+  const byId = new Map(listing.map((item) => [item.id, item]));
+  return ids.map((id) => byId.get(id)).filter((item): item is NonNullable<typeof item> => Boolean(item));
+}
+
 export type TourItineraryDay = {
   day: string;
   title: string;
