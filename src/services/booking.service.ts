@@ -164,6 +164,10 @@ export type CreateEnquiryInput = {
   tour_title?: string;
   page_url?: string;
   enquiry_type?: string | null;
+  /** CRM `lead_source_enum` value (defaults to website). */
+  source?: string | null;
+  /** CRM services array (defaults from enquiry_type). */
+  services?: string[] | null;
   nationality?: string | null;
   ip_address?: string;
   user_agent?: string;
@@ -2793,6 +2797,11 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
         ];
   const normalizedChildAges = normalizedRoomDetails.flatMap((room) => room.child_ages || []);
   const enquiryLabel = String(input.enquiry_type || '').trim() || 'Tour Package';
+  const leadSource = String(input.source || '').trim() || 'website';
+  const serviceList =
+    Array.isArray(input.services) && input.services.length > 0
+      ? input.services.map((service) => String(service).trim()).filter(Boolean)
+      : [enquiryLabel];
   const noteContent = hasTourTitle
     ? `Customer needs assistance for the tour booking - "${String(input.tour_title || '').trim()}". Link: ${String(input.page_url || '').trim() || 'Not provided'}`
     : `Customer needs assistance via ${input.destination || 'website contact'}${
@@ -2808,10 +2817,10 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
     date: input.travel_date,
     travel_date: input.travel_date,
     enquiry: enquiryLabel,
-    services: [enquiryLabel],
+    services: serviceList,
     starting_point: input.departure_city,
     summary: `Website enquiry for ${input.destination || 'tour'} | ${input.duration || 'duration not specified'} | ${input.adults}A/${input.children}C | Rooms: ${input.rooms}`,
-    source: 'website',
+    source: leadSource,
     adults: input.adults,
     children: input.children,
     babies: input.infants || 0,
@@ -2829,7 +2838,13 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
     ],
   };
 
-  const sourceCandidates: Array<string | null> = ['website', 'Website', 'WEB', null];
+  const sourceCandidates: Array<string | null> = [
+    leadSource,
+    ...(leadSource.toLowerCase() !== 'website' ? ['website'] : []),
+    'Website',
+    'WEB',
+    null,
+  ];
   let lastError = '';
 
   for (const source of sourceCandidates) {
@@ -3322,7 +3337,9 @@ export async function createPlannerLead(input: CreatePlannerLeadInput) {
           : [],
       })),
       page_url: String(input.page_url || '').trim() || undefined,
-      enquiry_type: 'Holiday Planner',
+      enquiry_type: 'Tour Package',
+      source: 'Holiday Planner',
+      services: ['Tour Package'],
       nationality: null,
       ip_address: input.ip_address,
       user_agent: input.user_agent,
