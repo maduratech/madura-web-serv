@@ -1,5 +1,5 @@
 import { supabase } from '../lib/supabase';
-import { parseTourCmsMeta } from '../lib/tour-meta';
+import { parseTourCmsMeta, resolveListingTourType } from '../lib/tour-meta';
 import { lookupDeparturePricingUsd } from '../lib/departure-pricing-key';
 import {
   bookingTotalWithFlightOption,
@@ -1440,7 +1440,7 @@ export async function getToursListing(marketCountry = 'in') {
       duration_nights: durationNights,
       tour_category: inferCategory(row.title),
       theme: inferTheme(row.title),
-      tour_type: row.flow_type === 'booking' ? 'Group Package' : 'Customizable',
+      tour_type: resolveListingTourType(cmsMeta, row.flow_type),
       starting_from_twin: startingTwin,
       starting_from_triple: startingTriple,
       starting_from_single: startingSingle,
@@ -1482,7 +1482,7 @@ export type TourDetail = {
   duration_days: number | null;
   tour_category: 'Family' | 'Honeymoon' | 'Friends' | 'Group Tour';
   theme: 'Adventure' | 'Culture';
-  tour_type: 'Customizable' | 'Group Package';
+  tour_type: string;
   starting_from_twin: number | null;
   starting_from_triple: number | null;
   starting_from_single: number | null;
@@ -1675,7 +1675,7 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
     duration_days: row.duration_days ?? durationNights + 1,
     tour_category: inferCategory(row.title),
     theme: inferTheme(row.title),
-    tour_type: row.flow_type === 'booking' ? 'Group Package' : 'Customizable',
+    tour_type: resolveListingTourType(cmsMeta, row.flow_type),
     starting_from_twin: startingTwin,
     starting_from_triple:
       marketBands.triple ?? row.triple_sharing_price ?? (startingTwin ? Math.round(startingTwin * 0.9) : null),
