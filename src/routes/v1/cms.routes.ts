@@ -40,6 +40,13 @@ import {
   listBlogPosts,
   updateBlogPost,
 } from '../../services/cms-blog.service';
+import {
+  createHeaderMarquee,
+  deleteHeaderMarquee,
+  listHeaderMarqueeAll,
+  reorderHeaderMarquee,
+  updateHeaderMarquee,
+} from '../../services/cms-header-marquee.service';
 
 function clientError(res: import('express').Response, err: unknown) {
   const message = err instanceof Error ? err.message : 'Request failed.';
@@ -466,6 +473,73 @@ cmsRouter.delete('/tour-taxonomy/:id', async (req, res, next) => {
       return;
     }
     await deleteTourTaxonomy(id);
+    res.status(204).send();
+  } catch (err) {
+    clientError(res, err);
+  }
+});
+
+cmsRouter.get('/header-marquee', async (_req, res, next) => {
+  try {
+    res.json({ items: await listHeaderMarqueeAll() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.post('/header-marquee', async (req, res, next) => {
+  try {
+    assertStaffMayMutate(req.cmsAuth!.role, req.body || {}, 'tour');
+    const text = String((req.body as { text?: string })?.text || '');
+    const row = await createHeaderMarquee(text);
+    res.status(201).json(row);
+  } catch (err) {
+    clientError(res, err);
+  }
+});
+
+cmsRouter.patch('/header-marquee/:id', async (req, res, next) => {
+  try {
+    assertStaffMayMutate(req.cmsAuth!.role, req.body || {}, 'tour');
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      res.status(400).json({ message: 'Invalid id.' });
+      return;
+    }
+    const body = (req.body || {}) as {
+      text?: string;
+      is_active?: boolean;
+      sort_order?: number;
+    };
+    const row = await updateHeaderMarquee(id, body);
+    res.json(row);
+  } catch (err) {
+    clientError(res, err);
+  }
+});
+
+cmsRouter.post('/header-marquee/reorder', async (req, res, next) => {
+  try {
+    assertStaffMayMutate(req.cmsAuth!.role, req.body || {}, 'tour');
+    const ids = Array.isArray((req.body as { ids?: unknown })?.ids)
+      ? ((req.body as { ids: unknown[] }).ids as unknown[])
+      : [];
+    const items = await reorderHeaderMarquee(ids.map((id) => Number(id)));
+    res.json({ items });
+  } catch (err) {
+    clientError(res, err);
+  }
+});
+
+cmsRouter.delete('/header-marquee/:id', async (req, res, next) => {
+  try {
+    assertStaffMayMutate(req.cmsAuth!.role, {}, 'tour');
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      res.status(400).json({ message: 'Invalid id.' });
+      return;
+    }
+    await deleteHeaderMarquee(id);
     res.status(204).send();
   } catch (err) {
     clientError(res, err);
