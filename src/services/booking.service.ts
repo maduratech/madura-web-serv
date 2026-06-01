@@ -12,6 +12,7 @@ import {
   inferDiscountPercent,
   lowestAdultSharingDisplay,
   twinSharingDisplayPrice,
+  twinSharingRateNote,
   type TourPriceSheet,
 } from '../lib/tour-pricing';
 import { enqueueCrmBookingSync } from '../jobs/crm.job';
@@ -1497,6 +1498,8 @@ export type TourDetail = {
   starting_from_infant_inr?: number | null;
   starting_from_child_inr?: number | null;
   starting_from_youth_inr?: number | null;
+  /** Caption for `starting_from_twin` (e.g. "Twin sharing rate"). */
+  starting_from_sharing_note?: string | null;
   sales_price: number | null;
   discounted_price: number | null;
   discount_percent: number | null;
@@ -1632,12 +1635,14 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
   const fromDepartureUsd = departures.length
     ? lowestStartingTwinFromDepartures(departures, cmsMeta, marketCountry, discountPercent)
     : null;
+  const tourTwinDisplay = twinSharingDisplayPrice(detailSheet, discountPercent);
   const startingTwin = isGlobalDetail
-    ? fromDepartureUsd ?? lowestAdultSharingDisplay(detailSheet, discountPercent) ?? null
-    : lowestAdultSharingDisplay(detailSheet, discountPercent) ||
+    ? fromDepartureUsd ?? tourTwinDisplay ?? null
+    : tourTwinDisplay ||
       row.twin_sharing_price ||
       row.discounted_price ||
       derivedTwin;
+  const startingSharingNote = twinSharingRateNote(detailSheet);
   const detailBand = childPricesFromDb(row);
   const destination = row.destination_ref?.name || row.destination || 'Unknown';
   const heroImage = String(row.hero_image_url || '').trim() || null;
@@ -1691,6 +1696,7 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
     starting_from_infant_inr: detailBand.infant_price ?? null,
     starting_from_child_inr: detailBand.child_price ?? null,
     starting_from_youth_inr: detailBand.youth_price ?? null,
+    starting_from_sharing_note: startingSharingNote,
     sales_price: row.sales_price ?? null,
     discounted_price: row.discounted_price ?? startingTwin,
     discount_percent: discountPercent,

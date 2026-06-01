@@ -61,6 +61,12 @@ export function twinSharingDisplayPrice(
   return twin > 0 ? applyDiscountPercent(twin, discountPercent) : 0;
 }
 
+/** Sidebar / detail caption for the twin per-person rate (e.g. "Twin sharing rate"). */
+export function twinSharingRateNote(sheet: TourPriceSheet): string | null {
+  const twin = normalizePriceSheet(sheet).twin_sharing_price;
+  return twin > 0 ? 'Twin sharing rate' : null;
+}
+
 /** Lowest twin / triple / single per-person rate after discount. */
 export function lowestAdultSharingDisplay(
   sheet: TourPriceSheet,
