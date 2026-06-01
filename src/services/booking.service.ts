@@ -168,6 +168,12 @@ export type CreateEnquiryInput = {
   source?: string | null;
   /** CRM services array (defaults from enquiry_type). */
   services?: string[] | null;
+  /** MICE lead fields (CRM Leads → MICE Details). */
+  event_type?: string | null;
+  event_date?: string | null;
+  venue_location?: string | null;
+  mice_requirements?: string | null;
+  attendees?: number;
   tour_region?: string | null;
   budget?: string | number | null;
   is_flexible_dates?: boolean;
@@ -191,6 +197,10 @@ export type CreateWebsiteLeadInput = {
   /** CRM `services` array (e.g. `['MICE', 'Visa']`). */
   services?: string[] | null;
   adults?: number;
+  event_type?: string | null;
+  event_date?: string | null;
+  venue_location?: string | null;
+  mice_requirements?: string | null;
   message?: string | null;
   page_url?: string | null;
   market?: string | null;
@@ -2818,11 +2828,20 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
     Array.isArray(input.services) && input.services.length > 0
       ? input.services.map((service) => String(service).trim()).filter(Boolean)
       : [enquiryLabel];
+  const isMiceLead =
+    enquiryLabel.toUpperCase() === 'MICE' ||
+    (Array.isArray(serviceList) && serviceList.some((s) => String(s).toUpperCase() === 'MICE'));
+  const miceRequirements = String(input.mice_requirements || '').trim();
   const noteContent = hasTourTitle
     ? `Customer needs assistance for the tour booking - "${String(input.tour_title || '').trim()}". Link: ${String(input.page_url || '').trim() || 'Not provided'}`
-    : `Customer needs assistance via ${input.destination || 'website contact'}${
-        input.nationality ? ` | Nationality: ${input.nationality}` : ''
-      }${input.page_url ? ` | ${input.page_url}` : ''}`;
+    : isMiceLead
+      ? `MICE website enquiry — ${input.destination || 'destination TBC'}${
+          miceRequirements ? `. ${miceRequirements}` : ''
+        }${input.page_url ? ` | ${input.page_url}` : ''}`
+      : `Customer needs assistance via ${input.destination || 'website contact'}${
+          input.nationality ? ` | Nationality: ${input.nationality}` : ''
+        }${input.page_url ? ` | ${input.page_url}` : ''}`;
+  const attendeeCount = Number(input.attendees ?? input.adults) || 1;
   const basePayload = {
     name: input.name,
     phone: input.phone,
@@ -2835,19 +2854,32 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
     enquiry: enquiryLabel,
     services: serviceList,
     starting_point: input.departure_city,
-    summary: [
-      `Website enquiry for ${input.destination || 'tour'} | ${input.duration || 'duration not specified'} | ${input.adults}A/${input.children}C | Rooms: ${input.rooms}`,
-      input.occupancy_notes ? String(input.occupancy_notes).trim() : null,
-    ]
-      .filter(Boolean)
-      .join(' | '),
+    summary: isMiceLead
+      ? [
+          `MICE enquiry — ${input.event_type || 'Event'} | ${input.destination || 'TBC'} | ${attendeeCount} attendee(s)`,
+          input.venue_location ? `Venue: ${input.venue_location}` : null,
+          input.event_date ? `Event date: ${input.event_date}` : null,
+        ]
+          .filter(Boolean)
+          .join(' | ')
+      : [
+          `Website enquiry for ${input.destination || 'tour'} | ${input.duration || 'duration not specified'} | ${input.adults}A/${input.children}C | Rooms: ${input.rooms}`,
+          input.occupancy_notes ? String(input.occupancy_notes).trim() : null,
+        ]
+          .filter(Boolean)
+          .join(' | '),
     source: leadSource,
     adults: input.adults,
     children: input.children,
     babies: input.infants || 0,
-    travelers: input.adults,
-    passengers: input.adults,
+    travelers: attendeeCount,
+    passengers: attendeeCount,
+    attendees: attendeeCount,
     rooms: input.rooms,
+    ...(input.event_type ? { event_type: input.event_type } : {}),
+    ...(input.event_date ? { event_date: input.event_date } : {}),
+    ...(input.venue_location ? { venue_location: input.venue_location } : {}),
+    ...(miceRequirements ? { mice_requirements: miceRequirements } : {}),
     room_details: normalizedRoomDetails,
     children_ages: normalizedChildAges,
     ...(input.tour_region ? { tour_region: input.tour_region } : {}),
@@ -3189,7 +3221,8 @@ export async function createWebsiteLead(input: CreateWebsiteLeadInput) {
         : null;
   const adults = Number(input.adults);
   const guestCount = Number.isFinite(adults) && adults > 0 ? adults : 1;
-  const extraMessage = String(input.message || input.nationality || '').trim() || null;
+  const isMice = enquiryType?.toUpperCase() === 'MICE';
+  const miceRequirements = String(input.mice_requirements || input.message || '').trim() || null;
 
   try {
     await forwardEnquiryToCrm25({
@@ -3201,15 +3234,20 @@ export async function createWebsiteLead(input: CreateWebsiteLeadInput) {
       departure_city: String(input.market || 'Website').trim() || 'Website',
       travel_date: String(input.travel_date || '').trim() || today,
       destination: String(input.destination || '').trim(),
-      duration: '',
+      duration: isMice && input.event_date ? String(input.event_date).trim() : '',
       adults: guestCount,
+      attendees: guestCount,
       children: 0,
       infants: 0,
       rooms: 1,
       page_url: String(input.page_url || '').trim() || undefined,
       enquiry_type: enquiryType,
       services: serviceList,
-      nationality: extraMessage,
+      event_type: input.event_type || null,
+      event_date: input.event_date || null,
+      venue_location: input.venue_location || null,
+      mice_requirements: miceRequirements,
+      nationality: isMice ? null : String(input.message || input.nationality || '').trim() || null,
       ip_address: input.ip_address,
       user_agent: input.user_agent,
     });
