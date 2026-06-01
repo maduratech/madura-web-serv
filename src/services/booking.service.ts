@@ -188,6 +188,10 @@ export type CreateWebsiteLeadInput = {
   travel_date?: string | null;
   nationality?: string | null;
   enquiry_type?: string | null;
+  /** CRM `services` array (e.g. `['MICE', 'Visa']`). */
+  services?: string[] | null;
+  adults?: number;
+  message?: string | null;
   page_url?: string | null;
   market?: string | null;
   ip_address?: string;
@@ -3176,6 +3180,17 @@ export async function createWebsiteLead(input: CreateWebsiteLeadInput) {
     hasTourId: Boolean(input.tour_id),
     hasIp: Boolean(input.ip_address),
   });
+  const enquiryType = String(input.enquiry_type || '').trim() || null;
+  const serviceList =
+    Array.isArray(input.services) && input.services.length > 0
+      ? input.services.map((s) => String(s).trim()).filter(Boolean)
+      : enquiryType
+        ? [enquiryType]
+        : null;
+  const adults = Number(input.adults);
+  const guestCount = Number.isFinite(adults) && adults > 0 ? adults : 1;
+  const extraMessage = String(input.message || input.nationality || '').trim() || null;
+
   try {
     await forwardEnquiryToCrm25({
       tour_id: Number(input.tour_id || 0),
@@ -3187,13 +3202,14 @@ export async function createWebsiteLead(input: CreateWebsiteLeadInput) {
       travel_date: String(input.travel_date || '').trim() || today,
       destination: String(input.destination || '').trim(),
       duration: '',
-      adults: 1,
+      adults: guestCount,
       children: 0,
       infants: 0,
       rooms: 1,
       page_url: String(input.page_url || '').trim() || undefined,
-      enquiry_type: String(input.enquiry_type || '').trim() || null,
-      nationality: String(input.nationality || '').trim() || null,
+      enquiry_type: enquiryType,
+      services: serviceList,
+      nationality: extraMessage,
       ip_address: input.ip_address,
       user_agent: input.user_agent,
     });
