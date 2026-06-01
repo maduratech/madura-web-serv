@@ -37,8 +37,40 @@ const isPublicGet = (req: Request): boolean => {
 };
 
 const allowedOrigins = parseAllowedOrigins();
+
+/** Mirror localhost/127.0.0.1 and bare vs www hostnames for CMS staff browsers. */
+const expandCorsOrigins = (origins: string[]): string[] => {
+  const out = new Set(origins);
+  for (const origin of origins) {
+    try {
+      const url = new URL(origin);
+      if (url.hostname === 'localhost') {
+        out.add(`${url.protocol}//127.0.0.1${url.port ? `:${url.port}` : ''}`);
+      }
+      if (url.hostname === '127.0.0.1') {
+        out.add(`${url.protocol}//localhost${url.port ? `:${url.port}` : ''}`);
+      }
+      if (url.hostname.startsWith('www.')) {
+        const bareHost = url.hostname.slice(4);
+        out.add(`${url.protocol}//${bareHost}${url.port ? `:${url.port}` : ''}`);
+      } else if (!url.hostname.startsWith('www.')) {
+        out.add(`${url.protocol}//www.${url.hostname}${url.port ? `:${url.port}` : ''}`);
+      }
+      if (url.protocol === 'https:') {
+        out.add(`http://${url.host}`);
+      }
+    } catch {
+      /* ignore invalid entries */
+    }
+  }
+  return [...out];
+};
+
+const corsAllowList =
+  allowedOrigins && allowedOrigins.length > 0 ? expandCorsOrigins(allowedOrigins) : null;
+
 const strictCorsOptions: cors.CorsOptions =
-  allowedOrigins && allowedOrigins.length > 0
+  corsAllowList && corsAllowList.length > 0
     ? {
         origin: (reqOrigin, callback) => {
           if (!reqOrigin) {
@@ -46,7 +78,7 @@ const strictCorsOptions: cors.CorsOptions =
             return;
           }
           const normalized = reqOrigin.replace(/\/$/, '');
-          if (allowedOrigins.includes(normalized)) {
+          if (corsAllowList.includes(normalized)) {
             callback(null, true);
             return;
           }
