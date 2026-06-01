@@ -182,6 +182,8 @@ export type CreateEnquiryInput = {
   nationality?: string | null;
   ip_address?: string;
   user_agent?: string;
+  forex_currency_have?: string | null;
+  forex_currency_required?: string | null;
   /** Optional: auth.users id when the enquiry is filed by a signed-in customer (P2). */
   user_id?: string;
 };
@@ -207,6 +209,10 @@ export type CreateWebsiteLeadInput = {
   market?: string | null;
   ip_address?: string;
   user_agent?: string;
+  forex_mode?: 'buy' | 'sell' | null;
+  forex_currency_have?: string | null;
+  forex_currency_required?: string | null;
+  forex_amount?: number | null;
 };
 
 export type CreatePlannerLeadInput = {
@@ -2837,16 +2843,23 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
   const isMiceLead =
     enquiryLabel.toUpperCase() === 'MICE' ||
     (Array.isArray(serviceList) && serviceList.some((s) => String(s).toUpperCase() === 'MICE'));
+  const isForexLead =
+    enquiryLabel.toUpperCase() === 'FOREX' ||
+    (Array.isArray(serviceList) && serviceList.some((s) => String(s).toUpperCase() === 'FOREX'));
   const miceRequirements = String(input.mice_requirements || '').trim();
   const noteContent = hasTourTitle
     ? `Customer needs assistance for the tour booking - "${String(input.tour_title || '').trim()}". Link: ${String(input.page_url || '').trim() || 'Not provided'}`
-    : isMiceLead
-      ? `MICE website enquiry — ${input.destination || 'destination TBC'}${
-          miceRequirements ? `. ${miceRequirements}` : ''
-        }${input.page_url ? ` | ${input.page_url}` : ''}`
-      : `Customer needs assistance via ${input.destination || 'website contact'}${
-          input.nationality ? ` | Nationality: ${input.nationality}` : ''
-        }${input.page_url ? ` | ${input.page_url}` : ''}`;
+    : isForexLead
+      ? `Forex website enquiry — ${miceRequirements || 'Rate / amount details in summary'}${
+          input.page_url ? ` | ${input.page_url}` : ''
+        }`
+      : isMiceLead
+        ? `MICE website enquiry — ${input.destination || 'destination TBC'}${
+            miceRequirements ? `. ${miceRequirements}` : ''
+          }${input.page_url ? ` | ${input.page_url}` : ''}`
+        : `Customer needs assistance via ${input.destination || 'website contact'}${
+            input.nationality ? ` | Nationality: ${input.nationality}` : ''
+          }${input.page_url ? ` | ${input.page_url}` : ''}`;
   const attendeeCount = Number(input.attendees ?? input.adults) || 1;
   const basePayload = {
     name: input.name,
@@ -2860,15 +2873,22 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
     enquiry: enquiryLabel,
     services: serviceList,
     starting_point: input.departure_city,
-    summary: isMiceLead
+    summary: isForexLead
       ? [
-          `MICE enquiry — ${input.event_type || 'Event'} | ${input.destination || 'TBC'} | ${attendeeCount} attendee(s)`,
-          input.venue_location ? `Venue: ${input.venue_location}` : null,
-          input.event_date ? `Event date: ${input.event_date}` : null,
+          `Forex enquiry — ${input.forex_currency_have || '?'} → ${input.forex_currency_required || '?'}`,
+          miceRequirements || null,
         ]
           .filter(Boolean)
           .join(' | ')
-      : [
+      : isMiceLead
+        ? [
+            `MICE enquiry — ${input.event_type || 'Event'} | ${input.destination || 'TBC'} | ${attendeeCount} attendee(s)`,
+            input.venue_location ? `Venue: ${input.venue_location}` : null,
+            input.event_date ? `Event date: ${input.event_date}` : null,
+          ]
+            .filter(Boolean)
+            .join(' | ')
+        : [
           `Website enquiry for ${input.destination || 'tour'} | ${input.duration || 'duration not specified'} | ${input.adults}A/${input.children}C | Rooms: ${input.rooms}`,
           input.occupancy_notes ? String(input.occupancy_notes).trim() : null,
         ]
@@ -2893,6 +2913,8 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
     ...(input.is_flexible_dates ? { is_flexible_dates: true } : {}),
     ...(input.return_date ? { return_date: input.return_date } : {}),
     ...(input.occupancy_notes ? { occupancy_notes: input.occupancy_notes } : {}),
+    ...(input.forex_currency_have ? { forex_currency_have: input.forex_currency_have } : {}),
+    ...(input.forex_currency_required ? { forex_currency_required: input.forex_currency_required } : {}),
     notes: [
       {
         type: 'note',
@@ -3228,7 +3250,24 @@ export async function createWebsiteLead(input: CreateWebsiteLeadInput) {
   const adults = Number(input.adults);
   const guestCount = Number.isFinite(adults) && adults > 0 ? adults : 1;
   const isMice = enquiryType?.toUpperCase() === 'MICE';
+  const isForex =
+    enquiryType?.toUpperCase() === 'FOREX' ||
+    (Array.isArray(serviceList) && serviceList.some((s) => String(s).toUpperCase() === 'FOREX'));
   const miceRequirements = String(input.mice_requirements || input.message || '').trim() || null;
+  const forexHave = String(input.forex_currency_have || '').trim() || null;
+  const forexRequired = String(input.forex_currency_required || '').trim() || null;
+  const forexAmount = Number(input.forex_amount);
+  const forexMessage = isForex
+    ? [
+        input.forex_mode ? `Mode: ${input.forex_mode}` : null,
+        forexHave ? `Currency have: ${forexHave}` : null,
+        forexRequired ? `Currency required: ${forexRequired}` : null,
+        Number.isFinite(forexAmount) && forexAmount > 0 ? `Amount: ${forexAmount}` : null,
+        String(input.message || '').trim() || null,
+      ]
+        .filter(Boolean)
+        .join(' | ')
+    : null;
 
   try {
     await forwardEnquiryToCrm25({
@@ -3239,7 +3278,7 @@ export async function createWebsiteLead(input: CreateWebsiteLeadInput) {
       email: String(input.email || '').trim() || null,
       departure_city: String(input.market || 'Website').trim() || 'Website',
       travel_date: String(input.travel_date || '').trim() || today,
-      destination: String(input.destination || '').trim(),
+      destination: String(input.destination || '').trim() || (isForex ? 'Forex' : ''),
       duration: isMice && input.event_date ? String(input.event_date).trim() : '',
       adults: guestCount,
       attendees: guestCount,
@@ -3252,8 +3291,10 @@ export async function createWebsiteLead(input: CreateWebsiteLeadInput) {
       event_type: input.event_type || null,
       event_date: input.event_date || null,
       venue_location: input.venue_location || null,
-      mice_requirements: miceRequirements,
-      nationality: isMice ? null : String(input.message || input.nationality || '').trim() || null,
+      mice_requirements: isForex ? forexMessage : miceRequirements,
+      forex_currency_have: forexHave,
+      forex_currency_required: forexRequired,
+      nationality: isMice || isForex ? null : String(input.message || input.nationality || '').trim() || null,
       ip_address: input.ip_address,
       user_agent: input.user_agent,
     });

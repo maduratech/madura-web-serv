@@ -26,6 +26,7 @@ const PUBLIC_GET_PATHS = [
   '/api/v1/search-options',
   '/api/v1/destination-showcase',
   '/api/v1/pricing',
+  '/api/v1/pricing/forex-rates',
 ];
 
 const isPublicGet = (req: Request): boolean => {

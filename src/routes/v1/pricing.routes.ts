@@ -1,9 +1,20 @@
 import { Router } from 'express';
+import { getForexDisplayRates } from '../../lib/forex-display-rates';
 import { getFxRatesPayload } from '../../lib/fx-rates';
 import { globalUsdDisplayFromInr, suggestedUsdFromInr } from '../../lib/tour-market-audience';
 
 /** CMS-only helpers (INR → USD suggest). Storefront uses saved meta from Supabase — no live convert. */
 export const pricingRouter = Router();
+
+pricingRouter.get('/pricing/forex-rates', async (_req, res, next) => {
+  try {
+    const payload = await getForexDisplayRates();
+    res.setHeader('Cache-Control', 'public, max-age=1800, s-maxage=1800');
+    return res.json(payload);
+  } catch (error) {
+    return next(error);
+  }
+});
 
 pricingRouter.get('/pricing/fx', async (_req, res, next) => {
   try {
