@@ -1092,7 +1092,36 @@ export async function updateTour(id: number, input: Partial<CmsTour>): Promise<C
 
 export async function deleteTour(id: number): Promise<void> {
   const { error } = await supabase.from('tours').delete().eq('id', id);
-  if (error) throw new Error(error.message);
+  if (!error) return;
+
+  const message = String(error.message || '');
+  const blockedByBookings =
+    /bookings_tour_id_fkey/i.test(message) ||
+    /foreign key constraint/i.test(message);
+
+  // Keep booking history intact: if a tour is referenced by bookings,
+  // archive it instead of hard-deleting.
+  if (blockedByBookings) {
+    const archiveTries: Record<string, unknown>[] = [
+      { visibility_status: 'inactive', is_active: false },
+      { visibility_status: 'inactive' },
+      { is_active: false },
+    ];
+    let archiveError = '';
+    for (const patch of archiveTries) {
+      const { error: updErr } = await supabase.from('tours').update(patch).eq('id', id);
+      if (!updErr) return;
+      archiveError = String(updErr.message || '');
+      if (!isSchemaColumnMismatch(archiveError)) break;
+    }
+    throw new Error(
+      archiveError
+        ? `Tour has bookings and could not be archived: ${archiveError}`
+        : 'Tour has bookings and could not be archived.'
+    );
+  }
+
+  throw new Error(message);
 }
 
 function uniqueCopySlug(base: string | null, suffix: string): string | null {
