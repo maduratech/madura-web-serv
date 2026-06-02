@@ -10,7 +10,6 @@ import { childPricesFromDb, childPricesToDb } from '../lib/tour-price-db';
 import {
   computeBookingTotalInr,
   inferDiscountPercent,
-  lowestAdultSharingDisplay,
   twinSharingDisplayPrice,
   twinSharingRateNote,
   type TourPriceSheet,
@@ -1324,6 +1323,36 @@ function lowestStartingTwinFromDepartures(
   return candidates.length ? Math.min(...candidates) : null;
 }
 
+function discountedDisplay(value: number | null | undefined, discountPercent: number | null): number | null {
+  const n = Number(value) || 0;
+  if (n <= 0) return null;
+  if (discountPercent && discountPercent > 0) {
+    return Math.max(1, Math.round(n * (1 - discountPercent / 100)));
+  }
+  return Math.round(n);
+}
+
+function selectLowestAdultRate(
+  sheet: TourPriceSheet,
+  discountPercent: number | null,
+  departureTwinDisplay?: number | null
+): { value: number | null; note: string | null } {
+  const candidates: Array<{ value: number; note: string }> = [];
+  const push = (value: number | null, note: string) => {
+    if (value && value > 0) candidates.push({ value, note });
+  };
+
+  push(discountedDisplay(sheet.single_sharing_price, discountPercent), 'Single sharing rate');
+  push(discountedDisplay(sheet.twin_sharing_price, discountPercent), 'Twin sharing rate');
+  push(discountedDisplay(sheet.triple_sharing_price, discountPercent), 'Triple sharing rate');
+  push(discountedDisplay(sheet.quad_sharing_price, discountPercent), 'Quad sharing rate');
+  push(discountedDisplay(departureTwinDisplay, null), 'Twin sharing rate');
+
+  if (!candidates.length) return { value: null, note: null };
+  const best = candidates.reduce((min, row) => (row.value < min.value ? row : min), candidates[0]);
+  return best;
+}
+
 export async function getToursListing(marketCountry = 'in') {
   let data: ListingTourRow[] | null = null;
   let error: { message: string } | null = null;
@@ -1410,12 +1439,10 @@ export async function getToursListing(marketCountry = 'in') {
         ? lowestStartingTwinFromDepartures(departures, cmsMeta, marketCountry, discountPercent)
         : null;
     const isGlobalListing = marketCountry.toLowerCase() !== 'in';
+    const lowestAdult = selectLowestAdultRate(listingSheet, discountPercent, fromDepartures);
     const startingTwin = isGlobalListing
-      ? fromDepartures ?? lowestAdultSharingDisplay(listingSheet, discountPercent) ?? null
-      : (fromDepartures ??
-          (lowestAdultSharingDisplay(listingSheet, discountPercent) ||
-            row.twin_sharing_price ||
-            derivedTwin));
+      ? lowestAdult.value
+      : lowestAdult.value || row.twin_sharing_price || derivedTwin;
     const startingTriple =
       marketBands.triple ?? row.triple_sharing_price ?? (startingTwin ? Math.round(startingTwin * 0.9) : null);
     const startingSingle = marketBands.single ?? row.single_sharing_price ?? null;
@@ -1641,14 +1668,12 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
   const fromDepartureUsd = departures.length
     ? lowestStartingTwinFromDepartures(departures, cmsMeta, marketCountry, discountPercent)
     : null;
+  const lowestAdult = selectLowestAdultRate(detailSheet, discountPercent, fromDepartureUsd);
   const tourTwinDisplay = twinSharingDisplayPrice(detailSheet, discountPercent);
   const startingTwin = isGlobalDetail
-    ? fromDepartureUsd ?? tourTwinDisplay ?? null
-    : tourTwinDisplay ||
-      row.twin_sharing_price ||
-      row.discounted_price ||
-      derivedTwin;
-  const startingSharingNote = twinSharingRateNote(detailSheet);
+    ? lowestAdult.value
+    : lowestAdult.value || tourTwinDisplay || row.twin_sharing_price || row.discounted_price || derivedTwin;
+  const startingSharingNote = lowestAdult.note ?? twinSharingRateNote(detailSheet);
   const detailBand = childPricesFromDb(row);
   const destination = row.destination_ref?.name || row.destination || 'Unknown';
   const heroImage = String(row.hero_image_url || '').trim() || null;
