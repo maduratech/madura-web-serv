@@ -1014,7 +1014,9 @@ export async function getDestinationBySlug(slug: string) {
 
   const slugVariants = destinationSlugVariants(slug);
   const selectTries = [
+    'id,name,slug,description,image_url,cover_image_url,flag_image_url,flag_iso,is_active',
     'id,name,slug,description,image_url,cover_image_url,flag_image_url,is_active',
+    'id,name,slug,description,image_url,cover_image_url,flag_image_url,flag_iso',
     'id,name,slug,description,image_url,cover_image_url,flag_image_url',
     'id,name,slug,description,cover_image_url,flag_image_url',
     'id,name,slug,description,image_url,cover_image_url',
@@ -1040,8 +1042,11 @@ export async function getDestinationBySlug(slug: string) {
             pageMeta.banner_image_url ||
             row.cover_image_url ||
             row.image_url ||
-            row.flag_image_url ||
             null,
+          flag_image_url: row.flag_image_url?.trim() || null,
+          flag_iso:
+            normalizeFlagIsoStored((row as { flag_iso?: string | null }).flag_iso) ||
+            resolveIso2FromCountryHint(String(row.name || '')),
           default_view_mode: pageMeta.default_view_mode,
           description: String(row.description || '').trim(),
           description_in: pageMeta.description_in,
