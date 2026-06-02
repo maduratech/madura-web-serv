@@ -462,6 +462,25 @@ function mapDestinationRow(row: DestinationRaw): CmsDestination {
   };
 }
 
+const DESTINATION_DESCRIPTION_MIGRATION_HINT =
+  'Add the destinations.description column in Supabase (see madura-web/scripts/supabase-destinations-cms-description.sql).';
+
+/** India/AU rich HTML is stored in destinations.description (meta comment + JSON). */
+async function persistDestinationDescription(id: number, description: string | null): Promise<void> {
+  const { error } = await supabase
+    .from('destinations')
+    .update({ description })
+    .eq('id', id);
+  if (!error) return;
+  const msg = String(error.message || '');
+  if (isSchemaColumnMismatch(msg)) {
+    throw new Error(
+      `Could not save destination descriptions (India / Australia). ${DESTINATION_DESCRIPTION_MIGRATION_HINT}`
+    );
+  }
+  throw new Error(`Failed to save destination description: ${msg}`);
+}
+
 async function selectDestinations(cols: string) {
   return supabase.from('destinations').select(cols).order('name');
 }
@@ -540,7 +559,17 @@ async function insertDestinationWithFallback(payload: Record<string, unknown>): 
     );
     if (!cleaned.name) continue;
     const { data, error } = await supabase.from('destinations').insert(cleaned).select('id').single();
-    if (!error && data?.id) return getDestination(Number(data.id)) as Promise<CmsDestination>;
+    if (!error && data?.id) {
+      const createdId = Number(data.id);
+      const description =
+        payload.description !== undefined && payload.description !== null
+          ? String(payload.description).trim() || null
+          : null;
+      if (description) {
+        await persistDestinationDescription(createdId, description);
+      }
+      return getDestination(createdId) as Promise<CmsDestination>;
+    }
     lastErr = String(error?.message || '');
     if (!isSchemaColumnMismatch(lastErr)) break;
   }
@@ -573,8 +602,11 @@ export async function updateDestination(id: number, input: Partial<CmsDestinatio
   }
   if (input.country !== undefined) basePatch.country_region = input.country?.trim() || null;
   if (input.flag_image_url !== undefined) basePatch.flag_image_url = input.flag_image_url?.trim() || null;
-  if (input.description !== undefined) basePatch.description = input.description?.trim() || null;
   if (input.is_active !== undefined) basePatch.is_active = Boolean(input.is_active);
+
+  if (input.description !== undefined) {
+    await persistDestinationDescription(id, input.description?.trim() || null);
+  }
 
   const patchVariants: Record<string, unknown>[] = [
     basePatch,
@@ -582,11 +614,11 @@ export async function updateDestination(id: number, input: Partial<CmsDestinatio
       Object.entries(basePatch).filter(([key]) => key !== 'country_region' && key !== 'is_active')
     ),
     Object.fromEntries(
-      Object.entries(basePatch).filter(([key]) => key !== 'description' && key !== 'is_active')
+      Object.entries(basePatch).filter(([key]) => key !== 'is_active')
     ),
     Object.fromEntries(
       Object.entries(basePatch).filter(
-        ([key]) => !['country_region', 'description', 'flag_image_url', 'is_active'].includes(key)
+        ([key]) => !['country_region', 'flag_image_url', 'is_active'].includes(key)
       )
     ),
   ];
