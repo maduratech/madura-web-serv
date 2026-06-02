@@ -730,6 +730,7 @@ type ListingTourRow = {
   destination?: string | null;
   tour_includes?: string[] | null;
   hero_image_url?: string | null;
+  gallery_image_urls?: string[] | null;
   duration_days?: number | null;
   twin_sharing_price?: number | null;
   triple_sharing_price?: number | null;
@@ -1391,6 +1392,8 @@ export async function getToursListing(marketCountry = 'in') {
   let error: { message: string } | null = null;
 
   const baseTries = [
+    'id,title,slug,flow_type,visibility_status,destination,tour_includes,hero_image_url,gallery_image_urls,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
+    'id,title,slug,flow_type,destination,tour_includes,hero_image_url,gallery_image_urls,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
     'id,title,slug,flow_type,visibility_status,destination,tour_includes,hero_image_url,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
     'id,title,slug,flow_type,destination,tour_includes,hero_image_url,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
     'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,overview',
@@ -1485,6 +1488,9 @@ export async function getToursListing(marketCountry = 'in') {
     const startingYouth = marketBands.youth ?? bandPrices.youth_price ?? null;
     const destination = row.destination_ref?.name || row.destination || 'Unknown';
     const heroImage = String(row.hero_image_url || '').trim();
+    const gallery = Array.isArray(row.gallery_image_urls)
+      ? row.gallery_image_urls.map((u) => String(u || '').trim()).filter(Boolean)
+      : [];
     const departureCities = Array.from(
       new Set(
         departures
@@ -1502,8 +1508,11 @@ export async function getToursListing(marketCountry = 'in') {
       destination_slug: row.destination_ref?.slug || toSlug(destination),
       image_url:
         heroImage ||
+        gallery[0] ||
         row.destination_ref?.image_url ||
         'https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=900&q=80',
+      hero_image_url: heroImage || null,
+      gallery_image_urls: gallery,
       duration_nights: durationNights,
       tour_category: inferCategory(row.title),
       theme: inferTheme(row.title),
