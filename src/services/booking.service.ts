@@ -938,27 +938,53 @@ function parseDestinationPageMeta(description: string | null | undefined): {
   banner_image_url: string | null;
   default_view_mode: 'list' | 'grid';
   body: string;
+  description_in: string;
+  description_au: string;
 } {
   const text = String(description || '').trim();
   const re = /^<!--dest-meta:([\s\S]*?)-->\s*/;
   const match = text.match(re);
   if (!match) {
-    return { tagline: null, banner_image_url: null, default_view_mode: 'grid', body: text };
+    return {
+      tagline: null,
+      banner_image_url: null,
+      default_view_mode: 'grid',
+      body: text,
+      description_in: text,
+      description_au: text,
+    };
   }
   try {
     const meta = JSON.parse(match[1]) as {
       tagline?: string;
       banner_image_url?: string;
       default_view_mode?: 'list' | 'grid';
+      description_in?: string;
+      description_au?: string;
     };
+    const legacyBody = text.slice(match[0].length).trim();
+    const description_in = String(meta.description_in || '').trim() || legacyBody;
+    const description_au =
+      String(meta.description_au || '').trim() ||
+      String(meta.description_in || '').trim() ||
+      legacyBody;
     return {
       tagline: meta.tagline?.trim() || null,
       banner_image_url: meta.banner_image_url?.trim() || null,
       default_view_mode: meta.default_view_mode === 'list' ? 'list' : 'grid',
-      body: text.slice(match[0].length).trim(),
+      body: legacyBody || description_in,
+      description_in,
+      description_au,
     };
   } catch {
-    return { tagline: null, banner_image_url: null, default_view_mode: 'grid', body: text };
+    return {
+      tagline: null,
+      banner_image_url: null,
+      default_view_mode: 'grid',
+      body: text,
+      description_in: text,
+      description_au: text,
+    };
   }
 }
 
@@ -1017,7 +1043,9 @@ export async function getDestinationBySlug(slug: string) {
             row.flag_image_url ||
             null,
           default_view_mode: pageMeta.default_view_mode,
-          description: pageMeta.body,
+          description: String(row.description || '').trim(),
+          description_in: pageMeta.description_in,
+          description_au: pageMeta.description_au,
         };
       }
       lastErr = String(error?.message || '');
