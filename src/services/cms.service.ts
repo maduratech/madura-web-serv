@@ -462,8 +462,11 @@ function mapDestinationRow(row: DestinationRaw): CmsDestination {
   };
 }
 
-const DESTINATION_DESCRIPTION_MIGRATION_HINT =
-  'Add the destinations.description column in Supabase (see madura-web/scripts/supabase-destinations-cms-description.sql).';
+const CMS_DESTINATION_PAGE_SAVE_UNAVAILABLE =
+  "We couldn't save the destination page content for India or Australia. Please try again in a few minutes. If this keeps happening, contact Madura Travel support.";
+
+const CMS_DESTINATION_PAGE_SAVE_FAILED =
+  "We couldn't save the destination page content. Please check your connection and try again.";
 
 /** India/AU rich HTML is stored in destinations.description (meta comment + JSON). */
 async function persistDestinationDescription(id: number, description: string | null): Promise<void> {
@@ -474,11 +477,13 @@ async function persistDestinationDescription(id: number, description: string | n
   if (!error) return;
   const msg = String(error.message || '');
   if (isSchemaColumnMismatch(msg)) {
-    throw new Error(
-      `Could not save destination descriptions (India / Australia). ${DESTINATION_DESCRIPTION_MIGRATION_HINT}`
-    );
+    // eslint-disable-next-line no-console
+    console.error('[cms] destination description column unavailable:', msg);
+    throw new Error(CMS_DESTINATION_PAGE_SAVE_UNAVAILABLE);
   }
-  throw new Error(`Failed to save destination description: ${msg}`);
+  // eslint-disable-next-line no-console
+  console.error('[cms] destination description save failed:', msg);
+  throw new Error(CMS_DESTINATION_PAGE_SAVE_FAILED);
 }
 
 async function selectDestinations(cols: string) {
