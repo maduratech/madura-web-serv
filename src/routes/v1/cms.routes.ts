@@ -33,6 +33,11 @@ import {
   parseTourTaxonomyKindParam,
 } from '../../services/cms-taxonomy.service';
 import {
+  addSidebarBadge,
+  deleteSidebarBadge,
+  listSidebarBadgesWithUsage,
+} from '../../services/cms-sidebar-badge.service';
+import {
   createBlogPost,
   deleteBlogPost,
   duplicateBlogPost,
@@ -473,6 +478,40 @@ cmsRouter.delete('/tour-taxonomy/:id', async (req, res, next) => {
       return;
     }
     await deleteTourTaxonomy(id);
+    res.status(204).send();
+  } catch (err) {
+    clientError(res, err);
+  }
+});
+
+cmsRouter.get('/sidebar-badges', async (_req, res, next) => {
+  try {
+    res.json({ items: await listSidebarBadgesWithUsage() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.post('/sidebar-badges', async (req, res, next) => {
+  try {
+    assertStaffMayMutate(req.cmsAuth!.role, req.body || {}, 'tour');
+    const label = String((req.body as { label?: string })?.label || '');
+    const row = await addSidebarBadge(label);
+    res.status(201).json(row);
+  } catch (err) {
+    clientError(res, err);
+  }
+});
+
+cmsRouter.delete('/sidebar-badges/:id', async (req, res, next) => {
+  try {
+    assertStaffMayMutate(req.cmsAuth!.role, {}, 'tour');
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) {
+      res.status(400).json({ message: 'Invalid id.' });
+      return;
+    }
+    await deleteSidebarBadge(id);
     res.status(204).send();
   } catch (err) {
     clientError(res, err);

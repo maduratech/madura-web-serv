@@ -2,6 +2,7 @@ import type { TourMarketAudience, TourMarketPricing } from './tour-market-audien
 import { splitOverviewWithMeta } from './tour-overview-meta';
 
 export type TourCmsMeta = {
+  promo_badge_id?: number | null;
   promo_badge?: string;
   gst_percent?: number | null;
   tds_percent?: number | null;

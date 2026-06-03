@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabase';
 import { parseTourCmsMeta, resolveListingTourType } from '../lib/tour-meta';
+import { loadActiveSidebarBadgeMap, resolvePromoBadgeLabel } from '../lib/sidebar-badge';
 import { lookupDeparturePricingUsd } from '../lib/departure-pricing-key';
 import {
   bookingTotalWithFlightOption,
@@ -1433,6 +1434,7 @@ export async function getToursListing(marketCountry = 'in') {
       const meta = parseTourCmsMeta((row as { overview?: string | null }).overview);
       return tourVisibleForMarket(meta.market_audience, marketCountry);
     });
+  const sidebarBadgeMap = await loadActiveSidebarBadgeMap();
   return rows.map((row) => {
     const departures = Array.isArray(row.departures) ? row.departures : [];
     const prices = departures
@@ -1517,7 +1519,7 @@ export async function getToursListing(marketCountry = 'in') {
       tour_category: inferCategory(row.title),
       theme: inferTheme(row.title),
       tour_type: resolveListingTourType(cmsMeta, row.flow_type),
-      promo_badge: cmsMeta.promo_badge?.trim() || null,
+      promo_badge: resolvePromoBadgeLabel(cmsMeta, sidebarBadgeMap),
       starting_from_twin: startingTwin,
       starting_from_triple: startingTriple,
       starting_from_single: startingSingle,
@@ -1691,6 +1693,7 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
   const derivedTwin = prices.length ? Math.min(...prices) : null;
   const cmsMeta = parseTourCmsMeta(row.overview);
   if (!tourVisibleForMarket(cmsMeta.market_audience, marketCountry)) return null;
+  const sidebarBadgeMap = await loadActiveSidebarBadgeMap();
   const marketBands = resolveMarketPriceBands(row, cmsMeta, marketCountry);
   const discountPercent = inferDiscountPercent(
     marketBands.twin ?? row.twin_sharing_price,
@@ -1755,6 +1758,7 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
     tour_category: inferCategory(row.title),
     theme: inferTheme(row.title),
     tour_type: resolveListingTourType(cmsMeta, row.flow_type),
+    promo_badge: resolvePromoBadgeLabel(cmsMeta, sidebarBadgeMap),
     starting_from_twin: startingTwin,
     starting_from_triple:
       marketBands.triple ?? row.triple_sharing_price ?? (startingTwin ? Math.round(startingTwin * 0.9) : null),
