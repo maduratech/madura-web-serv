@@ -1562,6 +1562,7 @@ export type TourDetail = {
   tour_category: 'Family' | 'Honeymoon' | 'Friends' | 'Group Tour';
   theme: 'Adventure' | 'Culture';
   tour_type: string;
+  promo_badge?: string | null;
   starting_from_twin: number | null;
   starting_from_triple: number | null;
   starting_from_single: number | null;
