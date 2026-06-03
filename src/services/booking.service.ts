@@ -1517,6 +1517,7 @@ export async function getToursListing(marketCountry = 'in') {
       tour_category: inferCategory(row.title),
       theme: inferTheme(row.title),
       tour_type: resolveListingTourType(cmsMeta, row.flow_type),
+      promo_badge: cmsMeta.promo_badge?.trim() || null,
       starting_from_twin: startingTwin,
       starting_from_triple: startingTriple,
       starting_from_single: startingSingle,
