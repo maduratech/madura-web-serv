@@ -17,8 +17,17 @@ import {
 } from '../lib/tour-pricing';
 import { enqueueCrmBookingSync } from '../jobs/crm.job';
 import { env } from '../config/env';
+import {
+  chargeCurrencyForAccount,
+  getRazorpayClient,
+  getRazorpayKeyId,
+  inrAmountToChargeMinorUnits,
+  razorpayAccountConfigured,
+  resolveRazorpayAccountForCurrency,
+  resolveWebhookAccount,
+  verifyPaymentSignature,
+} from '../lib/razorpay-accounts';
 import crypto from 'node:crypto';
-import Razorpay from 'razorpay';
 import {resolveIso2FromCountryHint} from '../lib/country-name-to-iso2';
 import { destinationSlugVariants, normalizeDestinationSlug } from '../lib/destination-slug';
 import {
@@ -271,11 +280,6 @@ const seaAndMiddleEastDestinations = new Set(
     'maldives',
   ].map((item) => item.toLowerCase())
 );
-
-const razorpayClient = new Razorpay({
-  key_id: env.RAZORPAY_KEY_ID || '',
-  key_secret: env.RAZORPAY_KEY_SECRET || '',
-});
 
 /** One CRM payment-event per booking+gateway payment (verify + webhook often run together). */
 const bookingPaymentCrmSyncInflight = new Map<string, Promise<unknown>>();
@@ -2550,23 +2554,34 @@ function attachChildAgesToTravellers(
 
 export async function createBookingPaymentOrder(input: CreateBookingPaymentOrderInput) {
   if (!input.booking_id) throw new Error('booking_id is required.');
-  if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
-    throw new Error('Razorpay credentials are not configured.');
-  }
 
   const context = await getBookingPaymentContext(input.booking_id);
+  const razorpayAccount = resolveRazorpayAccountForCurrency(context.displayCurrency);
+  if (!razorpayAccountConfigured(razorpayAccount)) {
+    const label = razorpayAccount === 'au' ? 'Australia (AUD)' : 'India (INR)';
+    throw new Error(`Razorpay credentials for ${label} are not configured.`);
+  }
+
   const resolvedRegion = resolveTourRegionFromData(context.tourRegion, context.destination, context.continent);
   const advanceAmountInInr = getAdvanceAmountInInr(resolvedRegion);
+  const charge = inrAmountToChargeMinorUnits(
+    advanceAmountInInr,
+    razorpayAccount,
+    context.displayFxRate
+  );
+  const currency = chargeCurrencyForAccount(razorpayAccount);
+  const client = getRazorpayClient(razorpayAccount);
 
-  const order = await razorpayClient.orders.create({
-    amount: advanceAmountInInr * 100,
-    currency: 'INR',
+  const order = await client.orders.create({
+    amount: charge.minorUnits,
+    currency,
     receipt: `booking_${context.booking.id}_${Date.now()}`,
     notes: {
       booking_id: String(context.booking.id),
       destination: context.destination || 'N/A',
       tour_title: context.tourTitle || 'N/A',
       region: resolvedRegion,
+      razorpay_account: razorpayAccount,
     },
   });
 
@@ -2574,9 +2589,9 @@ export async function createBookingPaymentOrder(input: CreateBookingPaymentOrder
     await upsertBookingPaymentFields(context.booking.id, {
       payment_status: 'pending',
       payment_order_id: order.id,
-      payment_amount: advanceAmountInInr,
-      payment_currency: 'INR',
-      payment_notes: `Payment initiated via Razorpay order ${order.id}`,
+      payment_amount: charge.majorAmount,
+      payment_currency: currency,
+      payment_notes: `Payment initiated via Razorpay (${razorpayAccount}) order ${order.id}`,
     });
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -2585,10 +2600,10 @@ export async function createBookingPaymentOrder(input: CreateBookingPaymentOrder
 
   return {
     booking: context.booking,
-    razorpay_key_id: env.RAZORPAY_KEY_ID,
+    razorpay_key_id: getRazorpayKeyId(razorpayAccount),
     razorpay_order_id: order.id,
-    amount: advanceAmountInInr * 100,
-    currency: 'INR',
+    amount: charge.minorUnits,
+    currency,
     slab_region: resolvedRegion,
     description: `Advance payment for ${context.tourTitle || context.destination || 'your tour'}`,
   };
@@ -2614,11 +2629,14 @@ export async function getBookingPaymentSummary(input: CreateBookingPaymentOrderI
 
 export async function createBookingBalancePaymentOrder(input: CreateBookingPaymentOrderInput) {
   if (!input.booking_id) throw new Error('booking_id is required.');
-  if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
-    throw new Error('Razorpay credentials are not configured.');
-  }
 
   const context = await getBookingPaymentContext(input.booking_id);
+  const razorpayAccount = resolveRazorpayAccountForCurrency(context.displayCurrency);
+  if (!razorpayAccountConfigured(razorpayAccount)) {
+    const label = razorpayAccount === 'au' ? 'Australia (AUD)' : 'India (INR)';
+    throw new Error(`Razorpay credentials for ${label} are not configured.`);
+  }
+
   const totalAmountInInr = Number((context.booking as { total_price?: number | null })?.total_price || 0);
   const paidAmountInInr = await getPaidAmountForBooking(context.booking);
   const remainingAmountInInr = Math.max(0, Math.round(totalAmountInInr - paidAmountInInr));
@@ -2626,15 +2644,24 @@ export async function createBookingBalancePaymentOrder(input: CreateBookingPayme
     throw new Error('No balance amount is due for this booking.');
   }
 
-  const order = await razorpayClient.orders.create({
-    amount: remainingAmountInInr * 100,
-    currency: 'INR',
+  const charge = inrAmountToChargeMinorUnits(
+    remainingAmountInInr,
+    razorpayAccount,
+    context.displayFxRate
+  );
+  const currency = chargeCurrencyForAccount(razorpayAccount);
+  const client = getRazorpayClient(razorpayAccount);
+
+  const order = await client.orders.create({
+    amount: charge.minorUnits,
+    currency,
     receipt: `booking_balance_${context.booking.id}_${Date.now()}`,
     notes: {
       booking_id: String(context.booking.id),
       purpose: 'balance',
       destination: context.destination || 'N/A',
       tour_title: context.tourTitle || 'N/A',
+      razorpay_account: razorpayAccount,
     },
   });
 
@@ -2642,8 +2669,9 @@ export async function createBookingBalancePaymentOrder(input: CreateBookingPayme
     await upsertBookingPaymentFields(context.booking.id, {
       payment_status: 'balance_pending',
       payment_order_id: order.id,
-      payment_currency: 'INR',
-      payment_notes: `Balance payment initiated via Razorpay order ${order.id}`,
+      payment_amount: charge.majorAmount,
+      payment_currency: currency,
+      payment_notes: `Balance payment initiated via Razorpay (${razorpayAccount}) order ${order.id}`,
     });
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -2652,10 +2680,10 @@ export async function createBookingBalancePaymentOrder(input: CreateBookingPayme
 
   return {
     booking: context.booking,
-    razorpay_key_id: env.RAZORPAY_KEY_ID,
+    razorpay_key_id: getRazorpayKeyId(razorpayAccount),
     razorpay_order_id: order.id,
-    amount: remainingAmountInInr * 100,
-    currency: 'INR',
+    amount: charge.minorUnits,
+    currency,
     paid_amount: paidAmountInInr,
     remaining_amount: remainingAmountInInr,
     description: `Balance payment for ${context.booking.mts_id || context.tourTitle || context.destination || 'your tour'}`,
@@ -2666,16 +2694,21 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
   if (!input.booking_id || !input.razorpay_order_id || !input.razorpay_payment_id || !input.razorpay_signature) {
     throw new Error('booking_id, razorpay_order_id, razorpay_payment_id and razorpay_signature are required.');
   }
-  const expectedSignature = crypto
-    .createHmac('sha256', String(env.RAZORPAY_KEY_SECRET || ''))
-    .update(`${input.razorpay_order_id}|${input.razorpay_payment_id}`)
-    .digest('hex');
 
-  if (expectedSignature !== input.razorpay_signature) {
+  const context = await getBookingPaymentContext(input.booking_id);
+  const razorpayAccount = resolveRazorpayAccountForCurrency(context.displayCurrency);
+  if (
+    !verifyPaymentSignature(
+      razorpayAccount,
+      input.razorpay_order_id,
+      input.razorpay_payment_id,
+      input.razorpay_signature
+    )
+  ) {
     throw new Error('Invalid payment signature.');
   }
 
-  const context = await getBookingPaymentContext(input.booking_id);
+  const razorpayClient = getRazorpayClient(razorpayAccount);
   const existingPaymentId = String((context.booking as { payment_id?: string | null })?.payment_id || '').trim();
   const existingPaymentStatus = String((context.booking as { payment_status?: string | null })?.payment_status || '').toLowerCase();
   if (existingPaymentId && existingPaymentId === input.razorpay_payment_id && existingPaymentStatus === 'paid') {
@@ -2689,8 +2722,16 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
     };
   }
   const paidBeforeInInr = await getPaidAmountForBooking(context.booking);
-  let currentPaymentAmountInInr = Number((context.booking as { payment_amount?: number | null })?.payment_amount || 0);
-  let paymentCurrency = 'INR';
+  const inrPerDisplayUnit =
+    razorpayAccount === 'au' && Number(context.displayFxRate) > 0 ? Number(context.displayFxRate) : 55;
+  const bookingPaymentStored = Number(
+    (context.booking as { payment_amount?: number | null })?.payment_amount || 0
+  );
+  let currentPaymentAmountInInr =
+    razorpayAccount === 'au'
+      ? Math.round(bookingPaymentStored * inrPerDisplayUnit)
+      : bookingPaymentStored;
+  let paymentCurrency: string = chargeCurrencyForAccount(razorpayAccount);
   let paidAtIso = new Date().toISOString();
   let razorpayBankRrn = '';
   let razorpayDescription = '';
@@ -2704,9 +2745,11 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
       description?: string;
     };
     if (Number.isFinite(Number(payment?.amount || 0)) && Number(payment?.amount || 0) > 0) {
-      currentPaymentAmountInInr = Number(payment.amount) / 100;
+      const paidMajor = Number(payment.amount) / 100;
+      currentPaymentAmountInInr =
+        razorpayAccount === 'au' ? Math.round(paidMajor * inrPerDisplayUnit) : paidMajor;
     }
-    paymentCurrency = String(payment?.currency || 'INR').toUpperCase();
+    paymentCurrency = String(payment?.currency || paymentCurrency).toUpperCase();
     if (Number.isFinite(Number(payment?.created_at || 0)) && Number(payment?.created_at || 0) > 0) {
       paidAtIso = new Date(Number(payment.created_at) * 1000).toISOString();
     }
@@ -2964,12 +3007,8 @@ export async function updateBookingPaymentStatus(input: UpdateBookingPaymentStat
 }
 
 export async function handleRazorpayWebhook(rawBody: string, signature: string | undefined) {
-  const webhookSecret = String(env.RAZORPAY_WEBHOOK_SECRET || '');
-  if (!signature || !webhookSecret) {
-    throw new Error('Webhook signature validation failed.');
-  }
-  const expected = crypto.createHmac('sha256', webhookSecret).update(rawBody).digest('hex');
-  if (expected !== signature) {
+  const webhookAccount = resolveWebhookAccount(rawBody, signature);
+  if (!webhookAccount) {
     throw new Error('Invalid webhook signature.');
   }
 
@@ -2999,14 +3038,17 @@ export async function handleRazorpayWebhook(rawBody: string, signature: string |
     if (paySt === 'paid' && existingPid) {
       return { processed: true, booking_id: booking.id, payment_status: 'paid', duplicate: true };
     }
+    const syntheticSignature = crypto
+      .createHmac('sha256', String(
+        webhookAccount === 'au' ? env.RAZORPAY_AU_KEY_SECRET : env.RAZORPAY_IN_KEY_SECRET
+      ))
+      .update(`${orderId}|${paymentId}`)
+      .digest('hex');
     await verifyBookingPayment({
       booking_id: booking.id,
       razorpay_order_id: orderId,
       razorpay_payment_id: paymentId,
-      razorpay_signature: crypto
-        .createHmac('sha256', String(env.RAZORPAY_KEY_SECRET || ''))
-        .update(`${orderId}|${paymentId}`)
-        .digest('hex'),
+      razorpay_signature: syntheticSignature,
     });
     return { processed: true, booking_id: booking.id, payment_status: 'paid' };
   }
