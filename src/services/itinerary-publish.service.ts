@@ -1,7 +1,13 @@
 import { supabase } from '../lib/supabase';
-import { joinOverviewWithMeta, splitOverviewWithMeta, type TourCmsMeta } from '../lib/tour-overview-meta';
+import {
+  joinOverviewWithMeta,
+  splitOverviewWithMeta,
+  type CrmDefaultRoom,
+  type TourCmsMeta,
+} from '../lib/tour-overview-meta';
 import type { TourVisibilityStatus } from '../lib/tour-visibility';
 import { createDestination } from './cms.service';
+import { searchStockImages } from './cms-media.service';
 
 export type WebItineraryDay = { day: string; title: string; details: string };
 
@@ -30,6 +36,17 @@ export type PublishItineraryPayload = {
   children?: number | null;
   infants?: number | null;
   grand_total?: number | null;
+  lead_requirements?: {
+    adults?: number;
+    children?: number;
+    babies?: number;
+    child_ages?: number[];
+    rooms?: Array<{
+      adults?: number;
+      children?: number;
+      child_ages?: number[];
+    }>;
+  } | null;
 };
 
 type CrmSharingPrices = {
@@ -38,6 +55,8 @@ type CrmSharingPrices = {
   single_sharing_price: number | null;
   quad_sharing_price: number | null;
   sales_price: number | null;
+  child_price: number | null;
+  infant_price: number | null;
 };
 
 function roundInr(n: number): number | null {
@@ -63,6 +82,8 @@ function deriveCrmSharingPrices(input: {
     single_sharing_price: null,
     quad_sharing_price: null,
     sales_price: null,
+    child_price: null,
+    infant_price: null,
   };
 
   if (opt?.isManualCosting) {
@@ -72,6 +93,10 @@ function deriveCrmSharingPrices(input: {
     const singleRaw = Number(opt.manualPerAdultSingle || 0);
     const tripleRaw = Number(opt.manualPerAdultTriple || 0);
     const quadRaw = Number(opt.manualPerAdultQuad || 0);
+    const childRaw = Number(opt.manualPerChild || 0);
+    const infantRaw = Number(opt.manualPerInfant || 0);
+    const childPrice = childRaw ? roundInr(childRaw * markupMultiplier) : null;
+    const infantPrice = infantRaw ? roundInr(infantRaw * markupMultiplier) : null;
 
     if (twinRaw || singleRaw || tripleRaw || quadRaw) {
       const twin = twinRaw ? roundInr(twinRaw * markupMultiplier) : null;
@@ -85,6 +110,8 @@ function deriveCrmSharingPrices(input: {
         triple_sharing_price: triple,
         quad_sharing_price: quad,
         sales_price: sales,
+        child_price: childPrice,
+        infant_price: infantPrice,
       };
     }
 
@@ -111,6 +138,8 @@ function deriveCrmSharingPrices(input: {
           single_sharing_price: null,
           quad_sharing_price: null,
           sales_price: perPerson,
+          child_price: childPrice,
+          infant_price: infantPrice,
         };
       }
     }
@@ -126,6 +155,8 @@ function deriveCrmSharingPrices(input: {
         single_sharing_price: null,
         quad_sharing_price: null,
         sales_price: perPerson,
+        child_price: null,
+        infant_price: null,
       };
     }
   }
@@ -527,6 +558,113 @@ function buildPublicTourUrl(
   return `${base}/tours/${tourId}`;
 }
 
+function mapLeadRequirementsToDefaultRooms(
+  req: PublishItineraryPayload['lead_requirements'],
+  metaAdults?: number | null,
+  metaChildren?: number | null
+): CrmDefaultRoom[] | undefined {
+  const rooms = req?.rooms;
+  if (Array.isArray(rooms) && rooms.length > 0) {
+    const mapped = rooms
+      .map((r) => ({
+        adults: Math.max(1, Number(r.adults) || 1),
+        children: Math.max(0, Number(r.children) || 0),
+        child_ages: Array.isArray(r.child_ages)
+          ? r.child_ages.map((a) => Math.max(0, Number(a) || 0))
+          : [],
+      }))
+      .filter((r) => r.adults > 0 || r.children > 0);
+    if (mapped.length) return mapped;
+  }
+
+  const adults = Math.max(0, Number(req?.adults ?? metaAdults) || 0);
+  const children = Math.max(0, Number(req?.children ?? metaChildren) || 0);
+  if (adults + children <= 0) return undefined;
+
+  const childAges = Array.isArray(req?.child_ages)
+    ? req.child_ages.map((a) => Math.max(0, Number(a) || 0))
+    : [];
+  while (childAges.length < children) childAges.push(0);
+
+  return [{ adults: Math.max(1, adults), children, child_ages: childAges.slice(0, children) }];
+}
+
+async function fetchExistingTourMedia(tourId: number): Promise<{
+  hero_image_url: string | null;
+  gallery_image_urls: string[];
+}> {
+  const { data } = await supabase
+    .from('tours')
+    .select('hero_image_url,gallery_image_urls')
+    .eq('id', tourId)
+    .maybeSingle();
+  const hero = String(data?.hero_image_url || '').trim() || null;
+  const gallery = Array.isArray(data?.gallery_image_urls)
+    ? data.gallery_image_urls.map((u) => String(u || '').trim()).filter(Boolean).slice(0, 4)
+    : [];
+  return { hero_image_url: hero, gallery_image_urls: gallery };
+}
+
+async function pickStockImageUrls(query: string, count: number): Promise<string[]> {
+  const q = String(query || 'travel destination').trim() || 'travel';
+  try {
+    const { items } = await searchStockImages(q, 1);
+    const urls: string[] = [];
+    for (const item of items) {
+      const url = String(item.full_url || item.preview_url || '').trim();
+      if (!url || urls.includes(url)) continue;
+      urls.push(url);
+      if (urls.length >= count) break;
+    }
+    return urls;
+  } catch (err) {
+    console.warn('[publish-itinerary] stock image search skipped:', err);
+    return [];
+  }
+}
+
+async function resolvePublishMedia(input: {
+  cover_image_url?: string | null;
+  gallery_image_urls?: string[] | null;
+  destination?: string | null;
+  creative_title?: string | null;
+  existingTourId?: number | null;
+}): Promise<{ hero_image_url: string | null; gallery_image_urls: string[] }> {
+  let hero = String(input.cover_image_url || '').trim();
+  let gallery = Array.isArray(input.gallery_image_urls)
+    ? input.gallery_image_urls.map((u) => String(u || '').trim()).filter(Boolean).slice(0, 4)
+    : [];
+
+  if (input.existingTourId && (!hero || gallery.length < 4)) {
+    const existing = await fetchExistingTourMedia(input.existingTourId);
+    if (!hero && existing.hero_image_url) hero = existing.hero_image_url;
+    for (const url of existing.gallery_image_urls) {
+      if (gallery.length >= 4) break;
+      if (url && url !== hero && !gallery.includes(url)) gallery.push(url);
+    }
+  }
+
+  const need = (hero ? 0 : 1) + Math.max(0, 4 - gallery.length);
+  if (need > 0) {
+    const stockQuery = [input.destination, input.creative_title, 'travel'].filter(Boolean).join(' ');
+    const stock = await pickStockImageUrls(stockQuery, need + 4);
+    if (!hero && stock[0]) {
+      hero = stock[0];
+      gallery = gallery.filter((u) => u !== hero);
+    }
+    for (const url of stock) {
+      if (gallery.length >= 4) break;
+      if (!url || url === hero || gallery.includes(url)) continue;
+      gallery.push(url);
+    }
+  }
+
+  return {
+    hero_image_url: hero || null,
+    gallery_image_urls: gallery.slice(0, 4),
+  };
+}
+
 export async function publishItineraryToTour(
   input: PublishItineraryPayload,
   webPublicBaseUrl: string
@@ -568,23 +706,46 @@ export async function publishItineraryToTour(
     duration: input.duration,
   });
 
+  const existingTourId = await findExistingTourForItinerary(itineraryId);
+
+  let priorMeta: TourCmsMeta = {};
+  if (existingTourId) {
+    const { data: existingRow } = await supabase
+      .from('tours')
+      .select('overview')
+      .eq('id', existingTourId)
+      .maybeSingle();
+    priorMeta = splitOverviewWithMeta(existingRow?.overview).meta;
+  }
+
+  const defaultRooms = mapLeadRequirementsToDefaultRooms(
+    input.lead_requirements,
+    input.adults,
+    input.children
+  );
+
   const cmsMeta: TourCmsMeta = {
+    ...priorMeta,
     crm_itinerary_id: itineraryId,
     tour_program_type: 'flexible',
-    tour_category: 'Family',
+    tour_category: priorMeta.tour_category || 'Family',
     flights: webFlights.length ? webFlights : undefined,
     hotels: webHotels.length ? webHotels : undefined,
+    default_rooms: defaultRooms?.length ? defaultRooms : priorMeta.default_rooms,
   };
 
   const overview = joinOverviewWithMeta(overviewBody, cmsMeta);
 
-  const existingTourId = await findExistingTourForItinerary(itineraryId);
   const baseSlug = titleTourSlug(title, itineraryId);
   const slug = await uniqueSlug(baseSlug, existingTourId ?? undefined);
 
-  const gallery = Array.isArray(input.gallery_image_urls)
-    ? input.gallery_image_urls.filter((u) => String(u || '').trim()).slice(0, 4)
-    : [];
+  const media = await resolvePublishMedia({
+    cover_image_url: input.cover_image_url,
+    gallery_image_urls: input.gallery_image_urls,
+    destination: input.destination,
+    creative_title: input.creative_title,
+    existingTourId,
+  });
 
   const sharingPrices = deriveCrmSharingPrices({
     costing_options: input.costing_options,
@@ -604,8 +765,8 @@ export async function publishItineraryToTour(
     visibility_status,
     tour_region: 'International',
     starting_city: String(input.starting_point || '').trim() || null,
-    hero_image_url: input.cover_image_url || null,
-    gallery_image_urls: gallery,
+    hero_image_url: media.hero_image_url,
+    gallery_image_urls: media.gallery_image_urls,
     overview,
     tour_includes: tourIncludes,
     tour_exclusions: splitBulletLines(String(input.exclusions || '')),
@@ -615,6 +776,8 @@ export async function publishItineraryToTour(
     single_sharing_price: sharingPrices.single_sharing_price,
     quad_sharing_price: sharingPrices.quad_sharing_price,
     sales_price: sharingPrices.sales_price,
+    child_price: sharingPrices.child_price,
+    infant_price: sharingPrices.infant_price,
   };
 
   let tourId: number;

@@ -1,7 +1,15 @@
 /** CMS meta prefix in tours.overview (matches madura-web). */
 
+export type CrmDefaultRoom = {
+  adults: number;
+  children: number;
+  child_ages?: number[];
+};
+
 export type TourCmsMeta = {
   crm_itinerary_id?: number;
+  /** Room split from CRM lead — pre-fills website Guests & rooms. */
+  default_rooms?: CrmDefaultRoom[];
   tour_program_type?: 'group_scheduled' | 'flexible';
   tour_category?: string;
   flights?: unknown[];

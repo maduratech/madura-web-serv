@@ -40,6 +40,12 @@ integrationRouter.post('/itinerary/publish', async (req, res, next) => {
         exclusions: body.exclusions,
         detailed_hotels: body.detailed_hotels,
         detailed_flights: body.detailed_flights,
+        costing_options: body.costing_options,
+        adults: body.adults,
+        children: body.children,
+        infants: body.infants,
+        grand_total: body.grand_total,
+        lead_requirements: body.lead_requirements,
       },
       webPublicBase
     );
