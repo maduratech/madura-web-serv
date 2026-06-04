@@ -5,6 +5,15 @@ export type TourCmsMeta = {
   crm_itinerary_id?: number;
   /** CRM itinerary display currency (e.g. AUD). Drives storefront INR vs USD. */
   crm_source_currency?: string;
+  crm_display_prices?: {
+    currency?: string;
+    twin_sharing_price?: number | null;
+    triple_sharing_price?: number | null;
+    single_sharing_price?: number | null;
+    quad_sharing_price?: number | null;
+    child_price?: number | null;
+    infant_price?: number | null;
+  };
   promo_badge_id?: number | null;
   promo_badge?: string;
   gst_percent?: number | null;

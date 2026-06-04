@@ -34,6 +34,7 @@ import {
   tourVisibleForMarket,
   type TourMarketPricing,
 } from '../lib/tour-market-audience';
+import { foreignAmountToInr, STATIC_RATES_TO_INR } from '../lib/fx-rates-to-inr';
 import type { TourCmsMeta } from '../lib/tour-meta';
 
 export type TravellerInput = {
@@ -1301,6 +1302,47 @@ function usdFromInrColumn(inr: number | null | undefined): number | null {
   return Math.round(n / inrPerUsd());
 }
 
+/** Legacy tours sometimes stored INR values inside `pricing_usd` — detect and recompute. */
+function saneStoredUsd(
+  storedUsd: number | null | undefined,
+  inrColumn: number | null | undefined
+): number | null {
+  const stored = Number(storedUsd);
+  const inr = Number(inrColumn);
+  if (Number.isFinite(stored) && stored > 0) {
+    if (Number.isFinite(inr) && inr > 0 && stored >= inr * 0.85) {
+      return usdFromInrColumn(inr);
+    }
+    return Math.round(stored);
+  }
+  return usdFromInrColumn(inrColumn);
+}
+
+function twinUsdFromCrmDisplayMeta(
+  cmsMeta: TourCmsMeta,
+  inrPerUsdRate: number
+): number | null {
+  const raw = cmsMeta.crm_display_prices as
+    | { currency?: string; twin_sharing_price?: number | null }
+    | undefined;
+  const amount = Number(raw?.twin_sharing_price);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const currency = String(raw?.currency || cmsMeta.crm_source_currency || 'INR')
+    .toUpperCase()
+    .trim();
+  if (currency === 'INR') return Math.round(amount);
+  const inr = foreignAmountToInr(amount, currency, STATIC_RATES_TO_INR);
+  if (!inr) return null;
+  return Math.round(inr / inrPerUsdRate);
+}
+
+function pickUsdBand(
+  inr: number | null | undefined,
+  storedUsd: number | null | undefined
+): number | null {
+  return saneStoredUsd(storedUsd, inr);
+}
+
 function resolveMarketPriceBands(
   row: {
     twin_sharing_price?: number | null;
@@ -1320,18 +1362,18 @@ function resolveMarketPriceBands(
 
   if (crmUsd) {
     const stored = readGlobalPricingFromMeta(cmsMeta);
-    const pickUsd = (inr: number | null | undefined, usd?: number | null | undefined) => {
-      if (usd != null && usd > 0) return usd;
-      return usdFromInrColumn(inr);
-    };
+    const rate = inrPerUsd();
+    const fromCrmDisplay = twinUsdFromCrmDisplayMeta(cmsMeta, rate);
     return {
-      twin: pickUsd(row.twin_sharing_price, stored?.twin_sharing_price ?? stored?.price_from),
-      triple: pickUsd(row.triple_sharing_price, stored?.triple_sharing_price),
-      single: pickUsd(row.single_sharing_price, stored?.single_sharing_price),
-      quad: pickUsd(row.quad_sharing_price, stored?.quad_sharing_price),
-      infant: pickUsd(bands.infant_price, stored?.infant_price),
-      child: pickUsd(bands.child_price, stored?.child_price),
-      youth: pickUsd(bands.youth_price, stored?.youth_price),
+      twin:
+        fromCrmDisplay ??
+        pickUsdBand(row.twin_sharing_price, stored?.twin_sharing_price ?? stored?.price_from),
+      triple: pickUsdBand(row.triple_sharing_price, stored?.triple_sharing_price),
+      single: pickUsdBand(row.single_sharing_price, stored?.single_sharing_price),
+      quad: pickUsdBand(row.quad_sharing_price, stored?.quad_sharing_price),
+      infant: pickUsdBand(bands.infant_price, stored?.infant_price),
+      child: pickUsdBand(bands.child_price, stored?.child_price),
+      youth: pickUsdBand(bands.youth_price, stored?.youth_price),
       displayUsd: true,
     };
   }
@@ -1351,18 +1393,18 @@ function resolveMarketPriceBands(
 
   if (crmMetaHasCrmItinerary(cmsMeta) && cmsMeta.market_audience === 'global') {
     const stored = readGlobalPricingFromMeta(cmsMeta);
-    const pickUsd = (inr: number | null | undefined, usd?: number | null | undefined) => {
-      if (usd != null && usd > 0) return usd;
-      return usdFromInrColumn(inr);
-    };
+    const rate = inrPerUsd();
+    const fromCrmDisplay = twinUsdFromCrmDisplayMeta(cmsMeta, rate);
     return {
-      twin: pickUsd(row.twin_sharing_price, stored?.twin_sharing_price ?? stored?.price_from),
-      triple: pickUsd(row.triple_sharing_price, stored?.triple_sharing_price),
-      single: pickUsd(row.single_sharing_price, stored?.single_sharing_price),
-      quad: pickUsd(row.quad_sharing_price, stored?.quad_sharing_price),
-      infant: pickUsd(bands.infant_price, stored?.infant_price),
-      child: pickUsd(bands.child_price, stored?.child_price),
-      youth: pickUsd(bands.youth_price, stored?.youth_price),
+      twin:
+        fromCrmDisplay ??
+        pickUsdBand(row.twin_sharing_price, stored?.twin_sharing_price ?? stored?.price_from),
+      triple: pickUsdBand(row.triple_sharing_price, stored?.triple_sharing_price),
+      single: pickUsdBand(row.single_sharing_price, stored?.single_sharing_price),
+      quad: pickUsdBand(row.quad_sharing_price, stored?.quad_sharing_price),
+      infant: pickUsdBand(bands.infant_price, stored?.infant_price),
+      child: pickUsdBand(bands.child_price, stored?.child_price),
+      youth: pickUsdBand(bands.youth_price, stored?.youth_price),
       displayUsd: true,
     };
   }
@@ -1556,7 +1598,7 @@ export async function getToursListing(marketCountry = 'in') {
     const isGlobalListing = marketCountry.toLowerCase() !== 'in';
     const lowestAdult = selectLowestAdultRate(listingSheet, discountPercent, fromDepartures);
     const startingTwin = crmUsdListing
-      ? lowestAdult.value ?? marketBands.twin ?? null
+      ? marketBands.twin ?? lowestAdult.value ?? null
       : isGlobalListing
         ? lowestAdult.value
         : lowestAdult.value || row.twin_sharing_price || derivedTwin;
@@ -1803,7 +1845,7 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
   const lowestAdult = selectLowestAdultRate(detailSheet, discountPercent, fromDepartureUsd);
   const tourTwinDisplay = twinSharingDisplayPrice(detailSheet, discountPercent);
   const startingTwin = crmUsdStorefront
-    ? lowestAdult.value ?? marketBands.twin ?? null
+    ? marketBands.twin ?? lowestAdult.value ?? null
     : isGlobalDetail
       ? lowestAdult.value
       : lowestAdult.value ||

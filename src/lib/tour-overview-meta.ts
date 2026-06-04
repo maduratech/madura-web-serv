@@ -10,6 +10,16 @@ export type TourCmsMeta = {
   crm_itinerary_id?: number;
   /** CRM itinerary `display_currency` when published (e.g. AUD). */
   crm_source_currency?: string;
+  /** Raw per-person rates from CRM manual costing (same currency as `crm_source_currency`). */
+  crm_display_prices?: {
+    currency?: string;
+    twin_sharing_price?: number | null;
+    triple_sharing_price?: number | null;
+    single_sharing_price?: number | null;
+    quad_sharing_price?: number | null;
+    child_price?: number | null;
+    infant_price?: number | null;
+  };
   /** USD shelf prices for global storefront (converted from CRM currency on publish). */
   pricing_usd?: {
     price_from?: number | null;

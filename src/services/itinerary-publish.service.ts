@@ -91,7 +91,10 @@ function deriveCrmSharingPrices(input: {
     infant_price: null,
   };
 
-  if (opt?.isManualCosting) {
+  const isManualCosting =
+    opt?.isManualCosting === true || String(opt?.isManualCosting || '').toLowerCase() === 'true';
+
+  if (isManualCosting && opt) {
     const markup = Number(opt.markup) || 0;
     const markupMultiplier = markup > 0 ? 1 + markup / 100 : 1;
     const twinRaw = Number(opt.manualPerAdultTwin || opt.manualPerAdult || 0);
@@ -152,7 +155,14 @@ function deriveCrmSharingPrices(input: {
 
   const grand = Number(input.grand_total || 0);
   if (grand > 0) {
-    const perPerson = roundInr(grand / adults);
+    const co = opt as Record<string, unknown> | undefined;
+    const allocated =
+      (Number(co?.manualAdultsSingle) || 0) +
+      (Number(co?.manualAdultsDouble) || 0) +
+      (Number(co?.manualAdultsTriple) || 0) +
+      (Number(co?.manualAdultsQuad) || 0);
+    const divisor = allocated > 0 ? allocated : adults;
+    const perPerson = roundInr(grand / divisor);
     if (perPerson) {
       return {
         twin_sharing_price: perPerson,
@@ -177,6 +187,16 @@ function inrToShelfUsd(inr: number | null | undefined, inrPerUsd: number): numbe
   const n = Number(inr);
   if (!Number.isFinite(n) || n <= 0 || !Number.isFinite(inrPerUsd) || inrPerUsd <= 0) return null;
   return Math.round(n / inrPerUsd);
+}
+
+function sourceAmountToUsd(
+  amount: number | null | undefined,
+  displayCurrency: string,
+  rates: Record<string, number>,
+  inrPerUsd: number
+): number | null {
+  const inr = foreignAmountToInr(amount, displayCurrency, rates);
+  return inrToShelfUsd(inr, inrPerUsd);
 }
 
 /** CRM amounts (AUD, etc.) → INR DB columns + USD meta for global storefront. */
@@ -204,13 +224,14 @@ async function convertCrmSharingPricesForWeb(
   }
 
   const usd: TourMarketPricing = {
-    twin_sharing_price: inrToShelfUsd(inr.twin_sharing_price, inrPerUsd),
-    triple_sharing_price: inrToShelfUsd(inr.triple_sharing_price, inrPerUsd),
-    single_sharing_price: inrToShelfUsd(inr.single_sharing_price, inrPerUsd),
-    quad_sharing_price: inrToShelfUsd(inr.quad_sharing_price, inrPerUsd),
-    infant_price: inrToShelfUsd(inr.infant_price, inrPerUsd),
-    child_price: inrToShelfUsd(inr.child_price, inrPerUsd),
-    price_from: inrToShelfUsd(inr.twin_sharing_price ?? inr.sales_price, inrPerUsd),
+    twin_sharing_price: sourceAmountToUsd(source.twin_sharing_price, currency, rates, inrPerUsd),
+    triple_sharing_price: sourceAmountToUsd(source.triple_sharing_price, currency, rates, inrPerUsd),
+    single_sharing_price: sourceAmountToUsd(source.single_sharing_price, currency, rates, inrPerUsd),
+    quad_sharing_price: sourceAmountToUsd(source.quad_sharing_price, currency, rates, inrPerUsd),
+    infant_price: sourceAmountToUsd(source.infant_price, currency, rates, inrPerUsd),
+    child_price: sourceAmountToUsd(source.child_price, currency, rates, inrPerUsd),
+    price_from:
+      sourceAmountToUsd(source.twin_sharing_price ?? source.sales_price, currency, rates, inrPerUsd),
   };
 
   const hasUsd = Object.values(usd).some((v) => v != null && Number(v) > 0);
@@ -800,6 +821,15 @@ export async function publishItineraryToTour(
     ...priorMeta,
     crm_itinerary_id: itineraryId,
     crm_source_currency: displayCurrency,
+    crm_display_prices: {
+      currency: displayCurrency,
+      twin_sharing_price: sourceSharingPrices.twin_sharing_price,
+      triple_sharing_price: sourceSharingPrices.triple_sharing_price,
+      single_sharing_price: sourceSharingPrices.single_sharing_price,
+      quad_sharing_price: sourceSharingPrices.quad_sharing_price,
+      child_price: sourceSharingPrices.child_price,
+      infant_price: sourceSharingPrices.infant_price,
+    },
     market_audience: marketAudience,
     tour_program_type: 'flexible',
     tour_category: priorMeta.tour_category || 'Family',
