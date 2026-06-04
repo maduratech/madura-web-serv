@@ -217,10 +217,9 @@ async function convertCrmSharingPricesForWeb(
   return { inr, usd: hasUsd ? usd : null };
 }
 
+/** INR costing → India storefront; AUD/USD/etc. → Global storefront (USD display). */
 function marketAudienceForCrmCurrency(displayCurrency: string): TourCmsMeta['market_audience'] {
-  const c = normalizeDisplayCurrency(displayCurrency);
-  if (c === 'INR') return 'both';
-  return 'both';
+  return normalizeDisplayCurrency(displayCurrency) === 'INR' ? 'india' : 'global';
 }
 
 function isSchemaColumnMismatch(errMsg: string): boolean {
@@ -796,18 +795,23 @@ export async function publishItineraryToTour(
     displayCurrency
   );
 
+  const marketAudience = marketAudienceForCrmCurrency(displayCurrency);
   const cmsMeta: TourCmsMeta = {
     ...priorMeta,
     crm_itinerary_id: itineraryId,
-    crm_source_currency: displayCurrency === 'INR' ? 'INR' : displayCurrency,
-    market_audience: marketAudienceForCrmCurrency(displayCurrency) ?? priorMeta.market_audience,
-    pricing_usd: pricingUsd ?? priorMeta.pricing_usd,
+    crm_source_currency: displayCurrency,
+    market_audience: marketAudience,
     tour_program_type: 'flexible',
     tour_category: priorMeta.tour_category || 'Family',
     flights: webFlights.length ? webFlights : undefined,
     hotels: webHotels.length ? webHotels : undefined,
     default_rooms: defaultRooms?.length ? defaultRooms : priorMeta.default_rooms,
   };
+  if (marketAudience === 'global' && pricingUsd) {
+    cmsMeta.pricing_usd = pricingUsd;
+  } else {
+    delete cmsMeta.pricing_usd;
+  }
 
   const overview = joinOverviewWithMeta(overviewBody, cmsMeta);
 

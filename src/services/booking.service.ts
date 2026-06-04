@@ -1281,14 +1281,17 @@ function inferTheme(title: string): 'Adventure' | 'Culture' {
   return 'Culture';
 }
 
-/** CRM-published tours: INR in CRM → INR on site; any other CRM currency → USD on site. */
+/** CRM-published tours: INR in CRM → INR on site; AUD/USD/etc. → USD on site. */
 function crmStorefrontUsesUsd(cmsMeta: TourCmsMeta): boolean {
   const src = String(cmsMeta.crm_source_currency || '').toUpperCase().trim();
-  return Boolean(src && src !== 'INR');
+  if (src) return src !== 'INR';
+  if (crmMetaHasCrmItinerary(cmsMeta) && cmsMeta.market_audience === 'global') return true;
+  return false;
 }
 
 export function resolveStorefrontPricingCurrency(cmsMeta: TourCmsMeta): 'INR' | 'USD' {
   if (crmStorefrontUsesUsd(cmsMeta)) return 'USD';
+  if (cmsMeta.market_audience === 'global') return 'USD';
   return 'INR';
 }
 
@@ -1333,7 +1336,7 @@ function resolveMarketPriceBands(
     };
   }
 
-  if (crmMetaHasCrmItinerary(cmsMeta)) {
+  if (crmMetaHasCrmItinerary(cmsMeta) && cmsMeta.market_audience === 'india') {
     return {
       twin: row.twin_sharing_price,
       triple: row.triple_sharing_price,
@@ -1343,6 +1346,24 @@ function resolveMarketPriceBands(
       child: bands.child_price,
       youth: bands.youth_price,
       displayUsd: false,
+    };
+  }
+
+  if (crmMetaHasCrmItinerary(cmsMeta) && cmsMeta.market_audience === 'global') {
+    const stored = readGlobalPricingFromMeta(cmsMeta);
+    const pickUsd = (inr: number | null | undefined, usd?: number | null | undefined) => {
+      if (usd != null && usd > 0) return usd;
+      return usdFromInrColumn(inr);
+    };
+    return {
+      twin: pickUsd(row.twin_sharing_price, stored?.twin_sharing_price ?? stored?.price_from),
+      triple: pickUsd(row.triple_sharing_price, stored?.triple_sharing_price),
+      single: pickUsd(row.single_sharing_price, stored?.single_sharing_price),
+      quad: pickUsd(row.quad_sharing_price, stored?.quad_sharing_price),
+      infant: pickUsd(bands.infant_price, stored?.infant_price),
+      child: pickUsd(bands.child_price, stored?.child_price),
+      youth: pickUsd(bands.youth_price, stored?.youth_price),
+      displayUsd: true,
     };
   }
 
