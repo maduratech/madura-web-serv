@@ -799,7 +799,7 @@ export async function publishItineraryToTour(
   const cmsMeta: TourCmsMeta = {
     ...priorMeta,
     crm_itinerary_id: itineraryId,
-    crm_source_currency: displayCurrency,
+    crm_source_currency: displayCurrency === 'INR' ? 'INR' : displayCurrency,
     market_audience: marketAudienceForCrmCurrency(displayCurrency) ?? priorMeta.market_audience,
     pricing_usd: pricingUsd ?? priorMeta.pricing_usd,
     tour_program_type: 'flexible',

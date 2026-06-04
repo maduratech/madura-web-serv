@@ -2,6 +2,9 @@ import type { TourMarketAudience, TourMarketPricing } from './tour-market-audien
 import { splitOverviewWithMeta } from './tour-overview-meta';
 
 export type TourCmsMeta = {
+  crm_itinerary_id?: number;
+  /** CRM itinerary display currency (e.g. AUD). Drives storefront INR vs USD. */
+  crm_source_currency?: string;
   promo_badge_id?: number | null;
   promo_badge?: string;
   gst_percent?: number | null;

@@ -28,6 +28,7 @@ import {
 } from '../lib/tour-visibility';
 import {
   globalUsdDisplayFromInr,
+  inrPerUsd,
   resolveGlobalUsdPrice,
   readGlobalPricingFromMeta,
   tourVisibleForMarket,
@@ -1280,6 +1281,23 @@ function inferTheme(title: string): 'Adventure' | 'Culture' {
   return 'Culture';
 }
 
+/** CRM-published tours: INR in CRM → INR on site; any other CRM currency → USD on site. */
+function crmStorefrontUsesUsd(cmsMeta: TourCmsMeta): boolean {
+  const src = String(cmsMeta.crm_source_currency || '').toUpperCase().trim();
+  return Boolean(src && src !== 'INR');
+}
+
+export function resolveStorefrontPricingCurrency(cmsMeta: TourCmsMeta): 'INR' | 'USD' {
+  if (crmStorefrontUsesUsd(cmsMeta)) return 'USD';
+  return 'INR';
+}
+
+function usdFromInrColumn(inr: number | null | undefined): number | null {
+  const n = Number(inr);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.round(n / inrPerUsd());
+}
+
 function resolveMarketPriceBands(
   row: {
     twin_sharing_price?: number | null;
@@ -1293,9 +1311,42 @@ function resolveMarketPriceBands(
   cmsMeta: TourCmsMeta,
   marketCountry: string
 ) {
-  const isGlobal = marketCountry.toLowerCase() !== 'in';
-  if (!isGlobal) {
-    const bands = childPricesFromDb(row);
+  const bands = childPricesFromDb(row);
+  const isGlobalMarket = marketCountry.toLowerCase() !== 'in';
+  const crmUsd = crmStorefrontUsesUsd(cmsMeta);
+
+  if (crmUsd) {
+    const stored = readGlobalPricingFromMeta(cmsMeta);
+    const pickUsd = (inr: number | null | undefined, usd?: number | null | undefined) => {
+      if (usd != null && usd > 0) return usd;
+      return usdFromInrColumn(inr);
+    };
+    return {
+      twin: pickUsd(row.twin_sharing_price, stored?.twin_sharing_price ?? stored?.price_from),
+      triple: pickUsd(row.triple_sharing_price, stored?.triple_sharing_price),
+      single: pickUsd(row.single_sharing_price, stored?.single_sharing_price),
+      quad: pickUsd(row.quad_sharing_price, stored?.quad_sharing_price),
+      infant: pickUsd(bands.infant_price, stored?.infant_price),
+      child: pickUsd(bands.child_price, stored?.child_price),
+      youth: pickUsd(bands.youth_price, stored?.youth_price),
+      displayUsd: true,
+    };
+  }
+
+  if (crmMetaHasCrmItinerary(cmsMeta)) {
+    return {
+      twin: row.twin_sharing_price,
+      triple: row.triple_sharing_price,
+      single: row.single_sharing_price,
+      quad: row.quad_sharing_price,
+      infant: bands.infant_price,
+      child: bands.child_price,
+      youth: bands.youth_price,
+      displayUsd: false,
+    };
+  }
+
+  if (!isGlobalMarket) {
     return {
       twin: row.twin_sharing_price,
       triple: row.triple_sharing_price,
@@ -1314,7 +1365,6 @@ function resolveMarketPriceBands(
     return null;
   };
 
-  const bands = childPricesFromDb(row);
   return {
     twin: pick(row.twin_sharing_price, stored?.twin_sharing_price ?? stored?.price_from),
     triple: pick(row.triple_sharing_price, stored?.triple_sharing_price),
@@ -1325,6 +1375,10 @@ function resolveMarketPriceBands(
     youth: pick(bands.youth_price, stored?.youth_price),
     displayUsd: true,
   };
+}
+
+function crmMetaHasCrmItinerary(cmsMeta: TourCmsMeta): boolean {
+  return Number(cmsMeta.crm_itinerary_id) > 0;
 }
 
 /** Group tours: “from” price = lowest departure (matches tour detail), not tour-level USD only. */
@@ -1432,6 +1486,7 @@ export async function getToursListing(marketCountry = 'in') {
     .filter((row) => isTourListedPublicly(parseTourVisibility(row)))
     .filter((row) => {
       const meta = parseTourCmsMeta((row as { overview?: string | null }).overview);
+      if (crmMetaHasCrmItinerary(meta)) return true;
       return tourVisibleForMarket(meta.market_audience, marketCountry);
     });
   const sidebarBadgeMap = await loadActiveSidebarBadgeMap();
@@ -1461,15 +1516,16 @@ export async function getToursListing(marketCountry = 'in') {
       (row as { discounted_price?: number | null }).discounted_price,
       cmsMeta.discount_percent
     );
+    const crmUsdListing = resolveStorefrontPricingCurrency(cmsMeta) === 'USD';
     const listingSheet: TourPriceSheet = {
-      twin_sharing_price: marketBands.twin ?? derivedTwin,
+      twin_sharing_price: marketBands.twin ?? (crmUsdListing ? null : derivedTwin),
       triple_sharing_price: marketBands.triple,
       single_sharing_price: marketBands.single,
       quad_sharing_price: marketBands.quad,
       infant_price: marketBands.infant,
       child_price: marketBands.child,
       youth_price: marketBands.youth,
-      price: marketBands.twin ?? derivedTwin,
+      price: marketBands.twin ?? (crmUsdListing ? null : derivedTwin),
     };
     const bandPrices = childPricesFromDb(row);
     const fromDepartures =
@@ -1478,9 +1534,11 @@ export async function getToursListing(marketCountry = 'in') {
         : null;
     const isGlobalListing = marketCountry.toLowerCase() !== 'in';
     const lowestAdult = selectLowestAdultRate(listingSheet, discountPercent, fromDepartures);
-    const startingTwin = isGlobalListing
-      ? lowestAdult.value
-      : lowestAdult.value || row.twin_sharing_price || derivedTwin;
+    const startingTwin = crmUsdListing
+      ? lowestAdult.value ?? marketBands.twin ?? null
+      : isGlobalListing
+        ? lowestAdult.value
+        : lowestAdult.value || row.twin_sharing_price || derivedTwin;
     const startingTriple =
       marketBands.triple ?? row.triple_sharing_price ?? (startingTwin ? Math.round(startingTwin * 0.9) : null);
     const startingSingle = marketBands.single ?? row.single_sharing_price ?? null;
@@ -1591,6 +1649,8 @@ export type TourDetail = {
   min_age: number | null;
   starting_city: string | null;
   visibility_status: TourVisibilityStatus;
+  /** CRM-published: INR or USD on all storefronts (/in/, /au/). */
+  storefront_pricing_currency?: 'INR' | 'USD';
 };
 
 export async function getTourBySlug(slug: string, marketCountry = 'in'): Promise<TourDetail | null> {
@@ -1693,23 +1753,27 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
 
   const derivedTwin = prices.length ? Math.min(...prices) : null;
   const cmsMeta = parseTourCmsMeta(row.overview);
-  if (!tourVisibleForMarket(cmsMeta.market_audience, marketCountry)) return null;
+  if (!crmMetaHasCrmItinerary(cmsMeta) && !tourVisibleForMarket(cmsMeta.market_audience, marketCountry)) {
+    return null;
+  }
   const sidebarBadgeMap = await loadActiveSidebarBadgeMap();
   const marketBands = resolveMarketPriceBands(row, cmsMeta, marketCountry);
+  const storefrontCurrency = resolveStorefrontPricingCurrency(cmsMeta);
+  const crmUsdStorefront = storefrontCurrency === 'USD';
   const discountPercent = inferDiscountPercent(
     marketBands.twin ?? row.twin_sharing_price,
     row.discounted_price,
     cmsMeta.discount_percent
   );
   const detailSheet: TourPriceSheet = {
-    twin_sharing_price: marketBands.twin ?? derivedTwin,
+    twin_sharing_price: marketBands.twin ?? (crmUsdStorefront ? null : derivedTwin),
     triple_sharing_price: marketBands.triple,
     single_sharing_price: marketBands.single,
     quad_sharing_price: marketBands.quad,
     infant_price: marketBands.infant,
     child_price: marketBands.child,
     youth_price: marketBands.youth,
-    price: marketBands.twin ?? derivedTwin,
+    price: marketBands.twin ?? (crmUsdStorefront ? null : derivedTwin),
   };
   const isGlobalDetail = marketCountry.toLowerCase() !== 'in';
   const fromDepartureUsd = departures.length
@@ -1717,9 +1781,15 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
     : null;
   const lowestAdult = selectLowestAdultRate(detailSheet, discountPercent, fromDepartureUsd);
   const tourTwinDisplay = twinSharingDisplayPrice(detailSheet, discountPercent);
-  const startingTwin = isGlobalDetail
-    ? lowestAdult.value
-    : lowestAdult.value || tourTwinDisplay || row.twin_sharing_price || row.discounted_price || derivedTwin;
+  const startingTwin = crmUsdStorefront
+    ? lowestAdult.value ?? marketBands.twin ?? null
+    : isGlobalDetail
+      ? lowestAdult.value
+      : lowestAdult.value ||
+        tourTwinDisplay ||
+        row.twin_sharing_price ||
+        row.discounted_price ||
+        derivedTwin;
   const startingSharingNote = lowestAdult.note ?? twinSharingRateNote(detailSheet);
   const detailBand = childPricesFromDb(row);
   const destination = row.destination_ref?.name || row.destination || 'Unknown';
@@ -1790,6 +1860,7 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
     min_age: row.min_age ?? null,
     starting_city: row.starting_city || 'Sydney',
     visibility_status: visibility,
+    storefront_pricing_currency: storefrontCurrency,
   };
 }
 
