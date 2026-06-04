@@ -8,6 +8,9 @@ import {
 import type { TourVisibilityStatus } from '../lib/tour-visibility';
 import { createDestination } from './cms.service';
 import { searchStockImages } from './cms-media.service';
+import { getInrPerUsd } from '../lib/fx-rates';
+import { fetchFxRatesToInr, foreignAmountToInr } from '../lib/fx-rates-to-inr';
+import type { TourMarketPricing } from '../lib/tour-market-audience';
 
 export type WebItineraryDay = { day: string; title: string; details: string };
 
@@ -47,6 +50,8 @@ export type PublishItineraryPayload = {
       child_ages?: number[];
     }>;
   } | null;
+  /** CRM manual costing currency (e.g. AUD). Amounts in costing are in this currency. */
+  display_currency?: string | null;
 };
 
 type CrmSharingPrices = {
@@ -162,6 +167,60 @@ function deriveCrmSharingPrices(input: {
   }
 
   return empty;
+}
+
+function normalizeDisplayCurrency(raw: unknown): string {
+  return String(raw || 'INR').toUpperCase().trim() || 'INR';
+}
+
+function inrToShelfUsd(inr: number | null | undefined, inrPerUsd: number): number | null {
+  const n = Number(inr);
+  if (!Number.isFinite(n) || n <= 0 || !Number.isFinite(inrPerUsd) || inrPerUsd <= 0) return null;
+  return Math.round(n / inrPerUsd);
+}
+
+/** CRM amounts (AUD, etc.) → INR DB columns + USD meta for global storefront. */
+async function convertCrmSharingPricesForWeb(
+  source: CrmSharingPrices,
+  displayCurrency: string
+): Promise<{ inr: CrmSharingPrices; usd: TourMarketPricing | null }> {
+  const currency = normalizeDisplayCurrency(displayCurrency);
+  const [rates, inrPerUsd] = await Promise.all([fetchFxRatesToInr(), getInrPerUsd()]);
+
+  const toInr = (amount: number | null) => foreignAmountToInr(amount, currency, rates);
+
+  const inr: CrmSharingPrices = {
+    twin_sharing_price: toInr(source.twin_sharing_price),
+    triple_sharing_price: toInr(source.triple_sharing_price),
+    single_sharing_price: toInr(source.single_sharing_price),
+    quad_sharing_price: toInr(source.quad_sharing_price),
+    sales_price: toInr(source.sales_price),
+    child_price: toInr(source.child_price),
+    infant_price: toInr(source.infant_price),
+  };
+
+  if (currency === 'INR') {
+    return { inr, usd: null };
+  }
+
+  const usd: TourMarketPricing = {
+    twin_sharing_price: inrToShelfUsd(inr.twin_sharing_price, inrPerUsd),
+    triple_sharing_price: inrToShelfUsd(inr.triple_sharing_price, inrPerUsd),
+    single_sharing_price: inrToShelfUsd(inr.single_sharing_price, inrPerUsd),
+    quad_sharing_price: inrToShelfUsd(inr.quad_sharing_price, inrPerUsd),
+    infant_price: inrToShelfUsd(inr.infant_price, inrPerUsd),
+    child_price: inrToShelfUsd(inr.child_price, inrPerUsd),
+    price_from: inrToShelfUsd(inr.twin_sharing_price ?? inr.sales_price, inrPerUsd),
+  };
+
+  const hasUsd = Object.values(usd).some((v) => v != null && Number(v) > 0);
+  return { inr, usd: hasUsd ? usd : null };
+}
+
+function marketAudienceForCrmCurrency(displayCurrency: string): TourCmsMeta['market_audience'] {
+  const c = normalizeDisplayCurrency(displayCurrency);
+  if (c === 'INR') return 'both';
+  return 'both';
 }
 
 function isSchemaColumnMismatch(errMsg: string): boolean {
@@ -724,9 +783,25 @@ export async function publishItineraryToTour(
     input.children
   );
 
+  const displayCurrency = normalizeDisplayCurrency(input.display_currency);
+  const sourceSharingPrices = deriveCrmSharingPrices({
+    costing_options: input.costing_options,
+    adults: input.adults,
+    children: input.children,
+    infants: input.infants,
+    grand_total: input.grand_total,
+  });
+  const { inr: sharingPrices, usd: pricingUsd } = await convertCrmSharingPricesForWeb(
+    sourceSharingPrices,
+    displayCurrency
+  );
+
   const cmsMeta: TourCmsMeta = {
     ...priorMeta,
     crm_itinerary_id: itineraryId,
+    crm_source_currency: displayCurrency,
+    market_audience: marketAudienceForCrmCurrency(displayCurrency) ?? priorMeta.market_audience,
+    pricing_usd: pricingUsd ?? priorMeta.pricing_usd,
     tour_program_type: 'flexible',
     tour_category: priorMeta.tour_category || 'Family',
     flights: webFlights.length ? webFlights : undefined,
@@ -745,14 +820,6 @@ export async function publishItineraryToTour(
     destination: input.destination,
     creative_title: input.creative_title,
     existingTourId,
-  });
-
-  const sharingPrices = deriveCrmSharingPrices({
-    costing_options: input.costing_options,
-    adults: input.adults,
-    children: input.children,
-    infants: input.infants,
-    grand_total: input.grand_total,
   });
 
   const payload: Record<string, unknown> = {

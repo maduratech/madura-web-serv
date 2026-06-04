@@ -46,6 +46,7 @@ integrationRouter.post('/itinerary/publish', async (req, res, next) => {
         infants: body.infants,
         grand_total: body.grand_total,
         lead_requirements: body.lead_requirements,
+        display_currency: body.display_currency,
       },
       webPublicBase
     );

@@ -8,6 +8,21 @@ export type CrmDefaultRoom = {
 
 export type TourCmsMeta = {
   crm_itinerary_id?: number;
+  /** CRM itinerary `display_currency` when published (e.g. AUD). */
+  crm_source_currency?: string;
+  /** USD shelf prices for global storefront (converted from CRM currency on publish). */
+  pricing_usd?: {
+    price_from?: number | null;
+    twin_sharing_price?: number | null;
+    triple_sharing_price?: number | null;
+    single_sharing_price?: number | null;
+    quad_sharing_price?: number | null;
+    infant_price?: number | null;
+    child_price?: number | null;
+    youth_price?: number | null;
+  };
+  /** india | global | both — set from CRM display currency on publish. */
+  market_audience?: 'india' | 'global' | 'both';
   /** Room split from CRM lead — pre-fills website Guests & rooms. */
   default_rooms?: CrmDefaultRoom[];
   tour_program_type?: 'group_scheduled' | 'flexible';
