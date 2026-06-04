@@ -13,6 +13,7 @@ import {
   inferDiscountPercent,
   twinSharingDisplayPrice,
   twinSharingRateNote,
+  type RoomPricingInput,
   type TourPriceSheet,
 } from '../lib/tour-pricing';
 import { enqueueCrmBookingSync } from '../jobs/crm.job';
@@ -21,7 +22,8 @@ import {
   chargeCurrencyForAccount,
   getRazorpayClient,
   getRazorpayKeyId,
-  inrAmountToChargeMinorUnits,
+  chargeAmountMinorUnits,
+  type RazorpayAccount,
   razorpayAccountConfigured,
   resolveRazorpayAccountForCurrency,
   resolveWebhookAccount,
@@ -254,9 +256,13 @@ const ENQUIRY_RATE_WINDOW_MS = 10 * 60 * 1000; // 10 min
 const PLANNER_LEAD_DEDUPE_WINDOW_MS = 30 * 60 * 1000; // 30 min
 const ENQUIRY_IP_RATE_MAX = 12;
 const ENQUIRY_PHONE_RATE_MAX = 5;
-const DOMESTIC_ADVANCE_AMOUNT_INR = 1000;
-const SEA_MIDDLE_EAST_ADVANCE_AMOUNT_INR = 3000;
-const INTERNATIONAL_ADVANCE_AMOUNT_INR = 5000;
+type AdvanceRegion = 'domestic' | 'sea_middle_east' | 'international';
+
+const ADVANCE_AMOUNTS: Record<'INR' | 'USD' | 'AUD', Record<AdvanceRegion, number>> = {
+  INR: { domestic: 1000, sea_middle_east: 3000, international: 5000 },
+  USD: { domestic: 15, sea_middle_east: 40, international: 60 },
+  AUD: { domestic: 20, sea_middle_east: 50, international: 90 },
+};
 
 const seaAndMiddleEastDestinations = new Set(
   [
@@ -310,10 +316,80 @@ function resolveTourRegionFromData(tourRegion: string, destination: string, cont
   return 'international' as const;
 }
 
-function getAdvanceAmountInInr(resolvedRegion: 'domestic' | 'sea_middle_east' | 'international') {
-  if (resolvedRegion === 'domestic') return DOMESTIC_ADVANCE_AMOUNT_INR;
-  if (resolvedRegion === 'sea_middle_east') return SEA_MIDDLE_EAST_ADVANCE_AMOUNT_INR;
-  return INTERNATIONAL_ADVANCE_AMOUNT_INR;
+function getAdvanceAmountForCurrency(
+  resolvedRegion: AdvanceRegion,
+  currency: 'INR' | 'USD' | 'AUD'
+): number {
+  const table = ADVANCE_AMOUNTS[currency];
+  if (resolvedRegion === 'domestic') return table.domestic;
+  if (resolvedRegion === 'sea_middle_east') return table.sea_middle_east;
+  return table.international;
+}
+
+function marketCountryForDisplayCurrency(currency: string): string {
+  const c = String(currency || 'INR').toUpperCase().trim();
+  if (c === 'INR') return 'in';
+  if (c === 'AUD') return 'au';
+  return 'us';
+}
+
+function priceSheetFromMarketBands(
+  bands: ReturnType<typeof resolveMarketPriceBands>
+): TourPriceSheet {
+  return {
+    twin_sharing_price: bands.twin,
+    triple_sharing_price: bands.triple,
+    single_sharing_price: bands.single,
+    quad_sharing_price: bands.quad,
+    infant_price: bands.infant,
+    child_price: bands.child,
+    youth_price: bands.youth,
+  };
+}
+
+function tourPriceSheetForCurrency(
+  row: {
+    twin_sharing_price?: number | null;
+    triple_sharing_price?: number | null;
+    single_sharing_price?: number | null;
+    quad_sharing_price?: number | null;
+    infant_price?: number | null;
+    child_price?: number | null;
+    youth_price?: number | null;
+  },
+  cmsMeta: TourCmsMeta,
+  currency: string
+): TourPriceSheet {
+  const cur = String(currency || 'INR').toUpperCase().trim() || 'INR';
+  if (cur === 'INR') {
+    return {
+      twin_sharing_price: row.twin_sharing_price,
+      triple_sharing_price: row.triple_sharing_price,
+      single_sharing_price: row.single_sharing_price,
+      quad_sharing_price: row.quad_sharing_price,
+      ...childPricesFromDb(row),
+    };
+  }
+  return priceSheetFromMarketBands(
+    resolveMarketPriceBands(row, cmsMeta, marketCountryForDisplayCurrency(cur))
+  );
+}
+
+function formatBookingAmount(amount: number, displayCurrency: string | null | undefined): string {
+  const safe = Number.isFinite(amount) ? amount : 0;
+  const cur = String(displayCurrency || 'INR').toUpperCase().trim() || 'INR';
+  if (cur === 'INR') return `INR ${Number(safe || 0).toLocaleString('en-IN')}`;
+  if (cur === 'AUD') {
+    return `AUD ${Number(safe || 0).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+  if (cur === 'USD') {
+    return `$${Number(safe || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+  }
+  return `${cur} ${Number(safe || 0).toLocaleString('en-US')}`;
+}
+
+function chargeCurrencyForBooking(_displayCurrency: string | null | undefined, razorpayAccount: RazorpayAccount): 'INR' | 'AUD' {
+  return razorpayAccount === 'au' ? 'AUD' : 'INR';
 }
 
 async function upsertBookingPaymentFields(bookingId: number, fields: Record<string, unknown>) {
@@ -2090,13 +2166,19 @@ export async function createBooking(input: CreateBookingInput) {
     (tourRow as { discounted_price?: number | null } | null)?.discounted_price,
     cmsMeta.discount_percent
   );
-  const tourSheet: TourPriceSheet = {
-    twin_sharing_price: (tourRow as { twin_sharing_price?: number | null } | null)?.twin_sharing_price,
-    triple_sharing_price: (tourRow as { triple_sharing_price?: number | null } | null)?.triple_sharing_price,
-    single_sharing_price: (tourRow as { single_sharing_price?: number | null } | null)?.single_sharing_price,
-    quad_sharing_price: (tourRow as { quad_sharing_price?: number | null } | null)?.quad_sharing_price,
-    ...childPricesFromDb(tourRow as Parameters<typeof childPricesFromDb>[0]),
-  };
+  const displayCurrency =
+    String(input.display_currency || '').toUpperCase().trim() ||
+    resolveStorefrontPricingCurrency(cmsMeta);
+  const tourSheetInr = tourPriceSheetForCurrency(
+    tourRow as Parameters<typeof tourPriceSheetForCurrency>[0],
+    cmsMeta,
+    'INR'
+  );
+  const tourSheetDisplay = tourPriceSheetForCurrency(
+    tourRow as Parameters<typeof tourPriceSheetForCurrency>[0],
+    cmsMeta,
+    displayCurrency
+  );
 
   type BookingDepartureRow = {
     id: number;
@@ -2112,7 +2194,8 @@ export async function createBooking(input: CreateBookingInput) {
   };
 
   let effectiveTourId = Number(input.tour_id);
-  let depSheet = tourSheet;
+  let depSheetDisplay = tourSheetDisplay;
+  let depSheetInr = tourSheetInr;
 
   if (departureId) {
     const depSelectTries = [
@@ -2160,7 +2243,12 @@ export async function createBooking(input: CreateBookingInput) {
       throw new Error('Invalid departure selected for this tour.');
     }
     effectiveTourId = Number(departure.tour_id || input.tour_id);
-    depSheet = mergePriceSheet(departure as TourPriceSheet, tourSheet);
+    const depRow = departure as TourPriceSheet;
+    depSheetInr = mergePriceSheet(depRow, tourSheetInr);
+    depSheetDisplay =
+      displayCurrency === 'INR'
+        ? depSheetInr
+        : mergePriceSheet(depRow, tourSheetDisplay);
   }
   const childAges = (input.travellers || [])
     .filter((t) => t.type === 'child')
@@ -2179,16 +2267,29 @@ export async function createBooking(input: CreateBookingInput) {
         room.stranger_slots != null && room.stranger_slots >= 0 ? Number(room.stranger_slots) : undefined,
     })) ?? [];
 
-  let totalPrice = computeBookingTotalInr({
-    sheet: depSheet,
-    discountPercent,
-    room_details: pricedRooms,
-    adults,
-    children: children + infants,
-    child_ages: childAges.length
-      ? childAges
-      : input.room_details?.flatMap((r) => r.child_ages || []) || [],
-  });
+  const crmSnap = cmsMeta.crm_costing_snapshot;
+  const crmSnapCurrency = String(crmSnap?.currency || cmsMeta.crm_source_currency || '').toUpperCase().trim();
+  const crmSnapTotal = Number(crmSnap?.total);
+  let totalPrice = 0;
+  if (
+    crmMetaHasCrmItinerary(cmsMeta) &&
+    Number.isFinite(crmSnapTotal) &&
+    crmSnapTotal > 0 &&
+    (!crmSnapCurrency || crmSnapCurrency === displayCurrency)
+  ) {
+    totalPrice = Math.round(crmSnapTotal);
+  } else {
+    totalPrice = computeBookingTotalInr({
+      sheet: depSheetDisplay,
+      discountPercent,
+      room_details: pricedRooms,
+      adults,
+      children: children + infants,
+      child_ages: childAges.length
+        ? childAges
+        : input.room_details?.flatMap((r) => r.child_ages || []) || [],
+    });
+  }
 
   const flightCostPerPerson = tourFlightCostPerPerson(cmsMeta.flights, cmsMeta.flight_cost_inr);
   const includeFlight = input.include_flight !== false;
@@ -2208,6 +2309,9 @@ export async function createBooking(input: CreateBookingInput) {
   };
   if (departureId != null) {
     bookingBaseInsert.departure_id = departureId;
+  }
+  if (displayCurrency && displayCurrency !== 'INR') {
+    bookingBaseInsert.display_currency = displayCurrency;
   }
   const bookingBaseInsertUpperStatus = {
     ...bookingBaseInsert,
@@ -2268,7 +2372,13 @@ export async function createBooking(input: CreateBookingInput) {
   }
 
   if (bookingError || !booking) {
-    throw new Error(`Failed to create booking: ${bookingError?.message || 'Unknown error'}`);
+    const msg = String(bookingError?.message || 'Unknown error');
+    if (/departure_id.*not-null/i.test(msg)) {
+      throw new Error(
+        `${msg} — run migrations/20250604_bookings_departure_id_nullable.sql in Supabase to allow flexible bookings without a departure.`
+      );
+    }
+    throw new Error(`Failed to create booking: ${msg}`);
   }
 
   const roomPatch: Record<string, unknown> = {};
@@ -2276,12 +2386,8 @@ export async function createBooking(input: CreateBookingInput) {
   if (Array.isArray(input.room_details) && input.room_details.length > 0) {
     roomPatch.room_details = input.room_details;
   }
-  const displayCurrencyClean = String(input.display_currency || '').toUpperCase().trim();
-  if (displayCurrencyClean && displayCurrencyClean !== 'INR') {
-    roomPatch.display_currency = displayCurrencyClean;
-    if (Number(input.display_fx_rate) > 0) {
-      roomPatch.display_fx_rate = Number(input.display_fx_rate);
-    }
+  if (displayCurrency && displayCurrency !== 'INR') {
+    roomPatch.display_currency = displayCurrency;
   }
   if (input.user_id) {
     roomPatch.user_id = input.user_id;
@@ -2365,6 +2471,99 @@ type TravellerRowForNote = {
   pan?: string | null;
 };
 
+async function computeInrPackageTotalForBooking(booking: Record<string, unknown>): Promise<number> {
+  const tourId = Number(booking.tour_id);
+  const { data: tourRow } = await supabase
+    .from('tours')
+    .select(
+      'twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview'
+    )
+    .eq('id', tourId)
+    .maybeSingle();
+  if (!tourRow) return Number(booking.total_price) || 0;
+
+  const cmsMeta = parseTourCmsMeta((tourRow as { overview?: string | null }).overview);
+  const discountPercent = inferDiscountPercent(
+    (tourRow as { twin_sharing_price?: number | null }).twin_sharing_price,
+    (tourRow as { discounted_price?: number | null }).discounted_price,
+    cmsMeta.discount_percent
+  );
+  let depSheetInr = tourPriceSheetForCurrency(
+    tourRow as Parameters<typeof tourPriceSheetForCurrency>[0],
+    cmsMeta,
+    'INR'
+  );
+  const departureId = Number(booking.departure_id) > 0 ? Number(booking.departure_id) : null;
+  if (departureId) {
+    const { data: dep } = await supabase
+      .from('departures')
+      .select(
+        'id,tour_id,price,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price'
+      )
+      .eq('id', departureId)
+      .maybeSingle();
+    if (dep) depSheetInr = mergePriceSheet(dep as TourPriceSheet, depSheetInr);
+  }
+
+  const roomDetails = Array.isArray(booking.room_details)
+    ? (booking.room_details as Array<{
+        adults?: number;
+        children?: number;
+        child_ages?: number[];
+        sharing_type?: string;
+        billing_units?: number;
+        stranger_slots?: number;
+      }>)
+    : [];
+  const pricedRooms = roomDetails.map((room) => ({
+    adults: Number(room.adults || 0),
+    children: Number(room.children || 0),
+    child_ages: room.child_ages,
+    sharing_type: room.sharing_type as RoomPricingInput['sharing_type'],
+    billing_units:
+      room.billing_units != null && room.billing_units > 0 ? Number(room.billing_units) : undefined,
+    stranger_slots:
+      room.stranger_slots != null && room.stranger_slots >= 0 ? Number(room.stranger_slots) : undefined,
+  }));
+  const adults = pricedRooms.reduce((sum, room) => sum + Number(room.adults || 0), 0);
+  const children = pricedRooms.reduce((sum, room) => sum + Number(room.children || 0), 0);
+
+  return computeBookingTotalInr({
+    sheet: depSheetInr,
+    discountPercent,
+    room_details: pricedRooms,
+    adults,
+    children,
+    child_ages: pricedRooms.flatMap((r) => r.child_ages || []),
+  });
+}
+
+async function packageTotalForPayment(
+  context: { booking: Record<string, unknown>; displayCurrency: string | null },
+  razorpayAccount: RazorpayAccount
+): Promise<number> {
+  const chargeCur = chargeCurrencyForBooking(context.displayCurrency, razorpayAccount);
+  if (chargeCur === 'INR' && context.displayCurrency && context.displayCurrency !== 'INR') {
+    return computeInrPackageTotalForBooking(context.booking);
+  }
+  return Number((context.booking as { total_price?: number | null }).total_price || 0);
+}
+
+async function resolvePaymentChargeAmount(
+  context: Awaited<ReturnType<typeof getBookingPaymentContext>>,
+  razorpayAccount: RazorpayAccount,
+  purpose: 'advance' | 'balance'
+): Promise<number> {
+  const region = resolveTourRegionFromData(context.tourRegion, context.destination, context.continent);
+  const chargeCur = chargeCurrencyForBooking(context.displayCurrency, razorpayAccount);
+  const packageTotal = await packageTotalForPayment(context, razorpayAccount);
+  const paid = await getPaidAmountForBooking(context.booking);
+  if (purpose === 'balance') {
+    return Math.max(0, Math.round(packageTotal - paid));
+  }
+  return getAdvanceAmountForCurrency(region, chargeCur);
+}
+
 function buildTravellersAndRoomsCrmNote(
   travellers: TravellerRowForNote[],
   rooms: number | null | undefined,
@@ -2399,11 +2598,7 @@ function buildTravellersAndRoomsCrmNote(
       const ages = Array.isArray(r.child_ages) ? r.child_ages.filter((n) => Number.isFinite(n)) : [];
       const agePart = ages.length ? ` | Child ages: ${ages.join(', ')}` : '';
       const sharingPart = r.sharing_type ? ` | ${String(r.sharing_type)} sharing` : '';
-      const strangerPart =
-        r.stranger_slots != null && Number(r.stranger_slots) > 0
-          ? ` | ${Number(r.stranger_slots)} stranger slot(s) to match`
-          : '';
-      lines.push(`Room ${idx + 1}: ${a} Adult(s), ${c} Child(ren)${sharingPart}${strangerPart}${agePart}`);
+      lines.push(`Room ${idx + 1}: ${a} Adult(s), ${c} Child(ren)${sharingPart}${agePart}`);
     });
     lines.push(`Total rooms: ${rooms ?? roomDetails.length}`);
   } else {
@@ -2533,7 +2728,7 @@ async function getBookingPaymentContext(bookingId: number) {
   const displayCurrencyRaw = String(bookingRow.display_currency || '').toUpperCase().trim();
   const displayCurrency = displayCurrencyRaw && displayCurrencyRaw !== 'INR' ? displayCurrencyRaw : null;
   const displayFxRate = Number(bookingRow.display_fx_rate) > 0 ? Number(bookingRow.display_fx_rate) : null;
-  const formatInr = (amount: number) => formatInrDual(amount, displayCurrency, displayFxRate);
+  const formatInr = (amount: number) => formatBookingAmount(amount, displayCurrency || 'INR');
 
   const travellersForCrm = attachChildAgesToTravellers(travellerRowsLoaded, roomDetailsStored);
 
@@ -2586,12 +2781,8 @@ export async function createBookingPaymentOrder(input: CreateBookingPaymentOrder
   }
 
   const resolvedRegion = resolveTourRegionFromData(context.tourRegion, context.destination, context.continent);
-  const advanceAmountInInr = getAdvanceAmountInInr(resolvedRegion);
-  const charge = inrAmountToChargeMinorUnits(
-    advanceAmountInInr,
-    razorpayAccount,
-    context.displayFxRate
-  );
+  const advanceAmount = await resolvePaymentChargeAmount(context, razorpayAccount, 'advance');
+  const charge = chargeAmountMinorUnits(advanceAmount, razorpayAccount);
   const currency = chargeCurrencyForAccount(razorpayAccount);
   const client = getRazorpayClient(razorpayAccount);
 
@@ -2614,7 +2805,7 @@ export async function createBookingPaymentOrder(input: CreateBookingPaymentOrder
       payment_order_id: order.id,
       payment_amount: charge.majorAmount,
       payment_currency: currency,
-      payment_notes: `Payment initiated via Razorpay (${razorpayAccount}) order ${order.id}`,
+      payment_notes: `Payment initiated via Razorpay (${razorpayAccount}) order ${order.id}; ${charge.currency} ${charge.majorAmount}`,
     });
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -2635,7 +2826,8 @@ export async function createBookingPaymentOrder(input: CreateBookingPaymentOrder
 export async function getBookingPaymentSummary(input: CreateBookingPaymentOrderInput) {
   if (!input.booking_id) throw new Error('booking_id is required.');
   const context = await getBookingPaymentContext(input.booking_id);
-  const totalAmountInInr = Number((context.booking as { total_price?: number | null })?.total_price || 0);
+  const razorpayAccount = resolveRazorpayAccountForCurrency(context.displayCurrency);
+  const totalAmountInInr = await packageTotalForPayment(context, razorpayAccount);
   const paidAmountInInr = await getPaidAmountForBooking(context.booking);
   const remainingAmountInInr = Math.max(0, totalAmountInInr - paidAmountInInr);
   return {
@@ -2667,11 +2859,8 @@ export async function createBookingBalancePaymentOrder(input: CreateBookingPayme
     throw new Error('No balance amount is due for this booking.');
   }
 
-  const charge = inrAmountToChargeMinorUnits(
-    remainingAmountInInr,
-    razorpayAccount,
-    context.displayFxRate
-  );
+  const remainingCharge = await resolvePaymentChargeAmount(context, razorpayAccount, 'balance');
+  const charge = chargeAmountMinorUnits(remainingCharge, razorpayAccount);
   const currency = chargeCurrencyForAccount(razorpayAccount);
   const client = getRazorpayClient(razorpayAccount);
 
@@ -2744,16 +2933,11 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
       lead_id: context.booking.crm_lead_id ?? null,
     };
   }
-  const paidBeforeInInr = await getPaidAmountForBooking(context.booking);
-  const inrPerDisplayUnit =
-    razorpayAccount === 'au' && Number(context.displayFxRate) > 0 ? Number(context.displayFxRate) : 55;
+  const paidBefore = await getPaidAmountForBooking(context.booking);
   const bookingPaymentStored = Number(
     (context.booking as { payment_amount?: number | null })?.payment_amount || 0
   );
-  let currentPaymentAmountInInr =
-    razorpayAccount === 'au'
-      ? Math.round(bookingPaymentStored * inrPerDisplayUnit)
-      : bookingPaymentStored;
+  let currentPaymentAmountInInr = bookingPaymentStored;
   let paymentCurrency: string = chargeCurrencyForAccount(razorpayAccount);
   let paidAtIso = new Date().toISOString();
   let razorpayBankRrn = '';
@@ -2768,9 +2952,7 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
       description?: string;
     };
     if (Number.isFinite(Number(payment?.amount || 0)) && Number(payment?.amount || 0) > 0) {
-      const paidMajor = Number(payment.amount) / 100;
-      currentPaymentAmountInInr =
-        razorpayAccount === 'au' ? Math.round(paidMajor * inrPerDisplayUnit) : paidMajor;
+      currentPaymentAmountInInr = Number(payment.amount) / 100;
     }
     paymentCurrency = String(payment?.currency || paymentCurrency).toUpperCase();
     if (Number.isFinite(Number(payment?.created_at || 0)) && Number(payment?.created_at || 0) > 0) {
@@ -2794,19 +2976,19 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
       // Order notes are best-effort; default advance behavior remains.
     }
   }
-  const fullAmountInInr = Number((context.booking as { total_price?: number | null })?.total_price || 0);
+  const fullAmountInInr = await packageTotalForPayment(context, razorpayAccount);
   const cumulativePaidAmountInInr =
     paymentPurpose === 'balance'
-      ? Math.min(fullAmountInInr, paidBeforeInInr + currentPaymentAmountInInr)
+      ? Math.min(fullAmountInInr, paidBefore + currentPaymentAmountInInr)
       : currentPaymentAmountInInr;
   const remainingAmountInInr = Math.max(0, fullAmountInInr - cumulativePaidAmountInInr);
   const nextPaymentStatus = remainingAmountInInr <= 0 ? 'paid' : 'partial_paid';
   const advanceSlabInInr =
     paymentPurpose === 'balance'
-      ? Number(paidBeforeInInr || 0)
+      ? Number(paidBefore || 0)
       : Number((context.booking as { payment_amount?: number | null })?.payment_amount || currentPaymentAmountInInr || 0);
   const customerCurrencyLine = context.displayCurrency
-    ? `\nCustomer Display Currency: ${context.displayCurrency}${context.displayFxRate ? ` (1 INR ≈ ${(1 / context.displayFxRate).toFixed(6)} ${context.displayCurrency} | 1 ${context.displayCurrency} ≈ INR ${context.displayFxRate})` : ''}`
+    ? `\nCustomer Display Currency: ${context.displayCurrency}`
     : '';
   const paymentCurrencyAmount =
     paymentCurrency && paymentCurrency !== 'INR'

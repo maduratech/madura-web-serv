@@ -54,19 +54,18 @@ export function chargeCurrencyForAccount(account: RazorpayAccount): RazorpayChar
   return account === 'au' ? 'AUD' : 'INR';
 }
 
-/** `displayFxRate` = INR per 1 unit of display currency (e.g. 55 INR per AUD). */
-export function inrAmountToChargeMinorUnits(
-  amountInr: number,
-  account: RazorpayAccount,
-  displayFxRate: number | null | undefined
+/** Charge amount already in the gateway currency (INR on `in`, AUD on `au`) — no FX conversion. */
+export function chargeAmountMinorUnits(
+  amountMajor: number,
+  account: RazorpayAccount
 ): { minorUnits: number; currency: RazorpayChargeCurrency; majorAmount: number } {
-  const safeInr = Math.max(0, Math.round(Number(amountInr) || 0));
+  const raw = Number(amountMajor) || 0;
   if (account === 'au') {
-    const inrPerAud = Number(displayFxRate) > 0 ? Number(displayFxRate) : 55;
-    const audMajor = Math.max(0.5, Math.round((safeInr / inrPerAud) * 100) / 100);
+    const audMajor = Math.max(0.5, Math.round(raw * 100) / 100);
     return { minorUnits: Math.round(audMajor * 100), currency: 'AUD', majorAmount: audMajor };
   }
-  return { minorUnits: safeInr * 100, currency: 'INR', majorAmount: safeInr };
+  const inrMajor = Math.max(0, Math.round(raw));
+  return { minorUnits: inrMajor * 100, currency: 'INR', majorAmount: inrMajor };
 }
 
 export function getRazorpayClient(account: RazorpayAccount): Razorpay {
