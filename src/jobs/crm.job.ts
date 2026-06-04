@@ -3,7 +3,7 @@ import { env } from '../config/env';
 type CrmSyncPayload = {
   bookingId: number;
   tourId: number;
-  departureId: number;
+  departureId?: number | null;
   totalPrice: number;
   travellerCount: number;
   primaryTravellerEmail?: string;
