@@ -1012,6 +1012,9 @@ export async function getPublishedTourLink(
   slug?: string;
   visibility_status?: TourVisibilityStatus;
   publicUrl?: string;
+  publicUrlIn?: string;
+  publicUrlAu?: string;
+  market_audience?: TourCmsMeta['market_audience'];
   directUrl?: string;
 }> {
   const tourId = await findExistingTourForItinerary(itineraryId);
