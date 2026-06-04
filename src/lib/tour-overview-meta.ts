@@ -10,6 +10,15 @@ export type TourCmsMeta = {
   crm_itinerary_id?: number;
   /** CRM itinerary `display_currency` when published (e.g. AUD). */
   crm_source_currency?: string;
+  /** CRM trip total in `crm_source_currency` (e.g. A$ 18,000 for 30 pax). */
+  crm_costing_snapshot?: {
+    currency?: string;
+    per_person?: number | null;
+    total?: number | null;
+    adults?: number | null;
+    children?: number | null;
+    sharing_label?: string | null;
+  };
   /** Raw per-person rates from CRM manual costing (same currency as `crm_source_currency`). */
   crm_display_prices?: {
     currency?: string;

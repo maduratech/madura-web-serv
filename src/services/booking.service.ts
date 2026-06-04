@@ -1290,10 +1290,61 @@ function crmStorefrontUsesUsd(cmsMeta: TourCmsMeta): boolean {
   return false;
 }
 
-export function resolveStorefrontPricingCurrency(cmsMeta: TourCmsMeta): 'INR' | 'USD' {
+export function resolveStorefrontPricingCurrency(cmsMeta: TourCmsMeta): 'INR' | 'USD' | 'AUD' {
+  const src = String(cmsMeta.crm_source_currency || '').toUpperCase().trim();
+  if (crmMetaHasCrmItinerary(cmsMeta)) {
+    if (src === 'INR') return 'INR';
+    if (src === 'AUD') return 'AUD';
+    if (src) return 'USD';
+  }
   if (crmStorefrontUsesUsd(cmsMeta)) return 'USD';
   if (cmsMeta.market_audience === 'global') return 'USD';
   return 'INR';
+}
+
+function crmDisplayBandsFromMeta(
+  cmsMeta: TourCmsMeta,
+  row: {
+    twin_sharing_price?: number | null;
+    triple_sharing_price?: number | null;
+    single_sharing_price?: number | null;
+    quad_sharing_price?: number | null;
+    infant_price?: number | null;
+    child_price?: number | null;
+    youth_price?: number | null;
+  }
+) {
+  const snap = cmsMeta.crm_costing_snapshot;
+  const dp = cmsMeta.crm_display_prices as
+    | {
+        twin_sharing_price?: number | null;
+        triple_sharing_price?: number | null;
+        single_sharing_price?: number | null;
+        quad_sharing_price?: number | null;
+        child_price?: number | null;
+        infant_price?: number | null;
+      }
+    | undefined;
+  const pick = (key: keyof NonNullable<typeof dp>): number | null => {
+    const fromDisplay = Number(dp?.[key]);
+    if (Number.isFinite(fromDisplay) && fromDisplay > 0) return fromDisplay;
+    if (key === 'twin_sharing_price') {
+      const per = Number(snap?.per_person);
+      if (Number.isFinite(per) && per > 0) return per;
+    }
+    return null;
+  };
+  const bands = childPricesFromDb(row);
+  return {
+    twin: pick('twin_sharing_price'),
+    triple: pick('triple_sharing_price'),
+    single: pick('single_sharing_price'),
+    quad: pick('quad_sharing_price'),
+    infant: pick('infant_price') ?? bands.infant_price,
+    child: pick('child_price') ?? bands.child_price,
+    youth: bands.youth_price,
+    displayUsd: false,
+  };
 }
 
 function usdFromInrColumn(inr: number | null | undefined): number | null {
@@ -1312,6 +1363,9 @@ function saneStoredUsd(
   if (Number.isFinite(stored) && stored > 0) {
     if (Number.isFinite(inr) && inr > 0 && stored >= inr * 0.85) {
       return usdFromInrColumn(inr);
+    }
+    if ((!Number.isFinite(inr) || inr <= 0) && stored >= 15000) {
+      return usdFromInrColumn(stored);
     }
     return Math.round(stored);
   }
@@ -1358,6 +1412,10 @@ function resolveMarketPriceBands(
 ) {
   const bands = childPricesFromDb(row);
   const isGlobalMarket = marketCountry.toLowerCase() !== 'in';
+  const crmSrc = String(cmsMeta.crm_source_currency || '').toUpperCase().trim();
+  if (crmMetaHasCrmItinerary(cmsMeta) && crmSrc === 'AUD') {
+    return crmDisplayBandsFromMeta(cmsMeta, row);
+  }
   const crmUsd = crmStorefrontUsesUsd(cmsMeta);
 
   if (crmUsd) {
@@ -1712,8 +1770,13 @@ export type TourDetail = {
   min_age: number | null;
   starting_city: string | null;
   visibility_status: TourVisibilityStatus;
-  /** CRM-published: INR or USD on all storefronts (/in/, /au/). */
-  storefront_pricing_currency?: 'INR' | 'USD';
+  /** CRM-published: INR, AUD (native CRM currency), or USD on storefronts. */
+  storefront_pricing_currency?: 'INR' | 'USD' | 'AUD';
+  /** Fixed CRM trip total in `crm_display_currency` (unlisted / quote tours). */
+  crm_display_total?: number | null;
+  crm_display_per_person?: number | null;
+  crm_display_currency?: string | null;
+  crm_display_adults?: number | null;
 };
 
 export async function getTourBySlug(slug: string, marketCountry = 'in'): Promise<TourDetail | null> {
@@ -1823,6 +1886,7 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
   const marketBands = resolveMarketPriceBands(row, cmsMeta, marketCountry);
   const storefrontCurrency = resolveStorefrontPricingCurrency(cmsMeta);
   const crmUsdStorefront = storefrontCurrency === 'USD';
+  const crmSnap = cmsMeta.crm_costing_snapshot;
   const discountPercent = inferDiscountPercent(
     marketBands.twin ?? row.twin_sharing_price,
     row.discounted_price,
@@ -1924,6 +1988,10 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
     starting_city: row.starting_city || 'Sydney',
     visibility_status: visibility,
     storefront_pricing_currency: storefrontCurrency,
+    crm_display_currency: crmSnap?.currency ?? cmsMeta.crm_source_currency ?? null,
+    crm_display_per_person: crmSnap?.per_person ?? null,
+    crm_display_total: crmSnap?.total ?? null,
+    crm_display_adults: crmSnap?.adults ?? null,
   };
 }
 

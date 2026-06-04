@@ -615,6 +615,10 @@ async function uniqueSlug(base: string, excludeTourId?: number): Promise<string>
   return `${base}-${Date.now()}`;
 }
 
+function storefrontMarketPrefix(marketAudience: TourCmsMeta['market_audience']): 'in' | 'au' {
+  return marketAudience === 'global' ? 'au' : 'in';
+}
+
 function buildPublicTourUrl(
   baseUrl: string,
   tourId: number,
@@ -624,7 +628,8 @@ function buildPublicTourUrl(
     destination_ref?: { slug?: string | null } | { slug?: string | null }[] | null;
     destinations?: { slug?: string | null } | { slug?: string | null }[] | null;
   } | null,
-  destSlugFallback?: string | null
+  destSlugFallback: string | null | undefined,
+  marketPrefix: 'in' | 'au'
 ): string {
   const base = String(baseUrl || 'https://web.maduratravel.com').replace(/\/$/, '');
   const embed = tourRow?.destination_ref ?? tourRow?.destinations;
@@ -632,9 +637,65 @@ function buildPublicTourUrl(
   const destSlug = embedSlug || destSlugFallback || slugify(String(tourRow?.destination || ''));
   const titleSlug = tourRow?.slug;
   if (destSlug && titleSlug) {
-    return `${base}/in/${destSlug}/${titleSlug}`;
+    return `${base}/${marketPrefix}/${destSlug}/${titleSlug}`;
   }
   return `${base}/tours/${tourId}`;
+}
+
+function mapDefaultRoomsForPublish(
+  input: PublishItineraryPayload,
+  sourceTwin: number | null
+): CrmDefaultRoom[] | undefined {
+  const fromLead = mapLeadRequirementsToDefaultRooms(
+    input.lead_requirements,
+    input.adults,
+    input.children
+  );
+  if (fromLead?.length) return fromLead;
+
+  const opts = Array.isArray(input.costing_options) ? input.costing_options : [];
+  const opt = opts[0] as Record<string, unknown> | undefined;
+  const doubleAlloc = Number(opt?.manualAdultsDouble) || 0;
+  const tripleAlloc = Number(opt?.manualAdultsTriple) || 0;
+  const singleAlloc = Number(opt?.manualAdultsSingle) || 0;
+  const quadAlloc = Number(opt?.manualAdultsQuad) || 0;
+  const totalAlloc = doubleAlloc + tripleAlloc + singleAlloc + quadAlloc;
+
+  if (doubleAlloc >= 2) {
+    const roomCount = Math.max(1, Math.ceil(doubleAlloc / 2));
+    const rooms: CrmDefaultRoom[] = [];
+    let remaining = doubleAlloc;
+    for (let i = 0; i < roomCount; i++) {
+      const a = Math.min(2, remaining);
+      rooms.push({ adults: a, children: 0, child_ages: [] });
+      remaining -= a;
+    }
+    return rooms;
+  }
+
+  if (tripleAlloc >= 3) {
+    const roomCount = Math.max(1, Math.ceil(tripleAlloc / 3));
+    const rooms: CrmDefaultRoom[] = [];
+    let remaining = tripleAlloc;
+    for (let i = 0; i < roomCount; i++) {
+      const a = Math.min(3, remaining);
+      rooms.push({ adults: a, children: 0, child_ages: [] });
+      remaining -= a;
+    }
+    return rooms;
+  }
+
+  const adults = totalAlloc || Math.max(1, Number(input.adults) || 1);
+  const perRoom = sourceTwin && sourceTwin > 0 ? Math.min(4, Math.max(1, adults)) : 2;
+  const roomCount = Math.max(1, Math.ceil(adults / perRoom));
+  const rooms: CrmDefaultRoom[] = [];
+  let remaining = adults;
+  for (let i = 0; i < roomCount; i++) {
+    const a = Math.min(perRoom, remaining);
+    rooms.push({ adults: a, children: 0, child_ages: [] });
+    remaining -= a;
+  }
+  return rooms;
 }
 
 function mapLeadRequirementsToDefaultRooms(
@@ -751,6 +812,9 @@ export async function publishItineraryToTour(
   tourId: number;
   slug: string;
   publicUrl: string;
+  publicUrlIn: string;
+  publicUrlAu: string;
+  market_audience: TourCmsMeta['market_audience'];
   directUrl: string;
   visibility_status: TourVisibilityStatus;
   updated: boolean;
@@ -797,12 +861,6 @@ export async function publishItineraryToTour(
     priorMeta = splitOverviewWithMeta(existingRow?.overview).meta;
   }
 
-  const defaultRooms = mapLeadRequirementsToDefaultRooms(
-    input.lead_requirements,
-    input.adults,
-    input.children
-  );
-
   const displayCurrency = normalizeDisplayCurrency(input.display_currency);
   const sourceSharingPrices = deriveCrmSharingPrices({
     costing_options: input.costing_options,
@@ -811,6 +869,24 @@ export async function publishItineraryToTour(
     infants: input.infants,
     grand_total: input.grand_total,
   });
+  const defaultRooms = mapDefaultRoomsForPublish(input, sourceSharingPrices.twin_sharing_price);
+  const costingOpt = Array.isArray(input.costing_options)
+    ? (input.costing_options[0] as Record<string, unknown> | undefined)
+    : undefined;
+  const snapshotAdults =
+    Number(costingOpt?.manualAdultsDouble) ||
+    Number(costingOpt?.manualAdultsTriple) ||
+    Number(costingOpt?.manualAdultsSingle) ||
+    Number(costingOpt?.manualAdultsQuad) ||
+    Math.max(1, Number(input.adults) || 1);
+  const snapshotPerPerson = sourceSharingPrices.twin_sharing_price;
+  const snapshotTotal =
+    Number(input.grand_total) > 0
+      ? Number(input.grand_total)
+      : snapshotPerPerson && snapshotAdults > 0
+        ? Math.round(snapshotPerPerson * snapshotAdults * 100) / 100
+        : null;
+
   const { inr: sharingPrices, usd: pricingUsd } = await convertCrmSharingPricesForWeb(
     sourceSharingPrices,
     displayCurrency
@@ -829,6 +905,14 @@ export async function publishItineraryToTour(
       quad_sharing_price: sourceSharingPrices.quad_sharing_price,
       child_price: sourceSharingPrices.child_price,
       infant_price: sourceSharingPrices.infant_price,
+    },
+    crm_costing_snapshot: {
+      currency: displayCurrency,
+      per_person: snapshotPerPerson,
+      total: snapshotTotal,
+      adults: snapshotAdults,
+      children: Math.max(0, Number(input.children) || 0),
+      sharing_label: 'Twin sharing',
     },
     market_audience: marketAudience,
     tour_program_type: 'flexible',
@@ -899,17 +983,19 @@ export async function publishItineraryToTour(
     .eq('id', tourId)
     .maybeSingle();
 
-  const canonicalUrl = buildPublicTourUrl(
-    webPublicBaseUrl,
-    tourId,
-    tourRow as Parameters<typeof buildPublicTourUrl>[2],
-    dest.slug
-  );
+  const tourForUrl = tourRow as Parameters<typeof buildPublicTourUrl>[2];
+  const publicUrlIn = buildPublicTourUrl(webPublicBaseUrl, tourId, tourForUrl, dest.slug, 'in');
+  const publicUrlAu = buildPublicTourUrl(webPublicBaseUrl, tourId, tourForUrl, dest.slug, 'au');
+  const canonicalUrl =
+    marketAudience === 'global' ? publicUrlAu : publicUrlIn;
 
   return {
     tourId,
     slug,
     publicUrl: canonicalUrl,
+    publicUrlIn,
+    publicUrlAu,
+    market_audience: marketAudience,
     directUrl: `${webPublicBaseUrl.replace(/\/$/, '')}/tours/${tourId}`,
     visibility_status,
     updated,
@@ -934,11 +1020,16 @@ export async function getPublishedTourLink(
   const { data: tour } = await supabase
     .from('tours')
     .select(
-      'id,slug,visibility_status,destination,destination_id,destination_ref:destinations(slug),destinations(slug)'
+      'id,slug,visibility_status,overview,destination,destination_id,destination_ref:destinations(slug),destinations(slug)'
     )
     .eq('id', tourId)
     .maybeSingle();
   if (!tour?.id) return { published: false };
+
+  const linkMeta = splitOverviewWithMeta(
+    (tour as { overview?: string | null }).overview
+  ).meta;
+  const marketPrefix = storefrontMarketPrefix(linkMeta.market_audience);
 
   let destSlug: string | null = null;
   if (tour.destination_id) {
@@ -950,17 +1041,31 @@ export async function getPublishedTourLink(
     destSlug = d?.slug ?? null;
   }
 
+  const tourForUrl = tour as Parameters<typeof buildPublicTourUrl>[2];
+  const publicUrlIn = buildPublicTourUrl(
+    webPublicBaseUrl,
+    Number(tour.id),
+    tourForUrl,
+    destSlug,
+    'in'
+  );
+  const publicUrlAu = buildPublicTourUrl(
+    webPublicBaseUrl,
+    Number(tour.id),
+    tourForUrl,
+    destSlug,
+    'au'
+  );
+
   return {
     published: true,
     tourId: Number(tour.id),
     slug: tour.slug,
     visibility_status: (tour.visibility_status as TourVisibilityStatus) || 'unlisted',
-    publicUrl: buildPublicTourUrl(
-      webPublicBaseUrl,
-      Number(tour.id),
-      tour as Parameters<typeof buildPublicTourUrl>[2],
-      destSlug
-    ),
+    publicUrl: marketPrefix === 'au' ? publicUrlAu : publicUrlIn,
+    publicUrlIn,
+    publicUrlAu,
+    market_audience: linkMeta.market_audience,
     directUrl: `${webPublicBaseUrl.replace(/\/$/, '')}/tours/${tour.id}`,
   };
 }
