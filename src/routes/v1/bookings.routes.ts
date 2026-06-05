@@ -74,9 +74,12 @@ bookingsRouter.post('/bookings/:bookingId/payment-verify', async (req, res, next
     const bookingId = Number(req.params.bookingId || req.body.booking_id || 0);
     const result = await verifyBookingPayment({
       booking_id: bookingId,
+      gateway: req.body.gateway === 'square' ? 'square' : req.body.gateway === 'razorpay' ? 'razorpay' : undefined,
       razorpay_order_id: String(req.body.razorpay_order_id || ''),
       razorpay_payment_id: String(req.body.razorpay_payment_id || ''),
       razorpay_signature: String(req.body.razorpay_signature || ''),
+      square_payment_token: String(req.body.square_payment_token || ''),
+      square_idempotency_key: String(req.body.square_idempotency_key || ''),
       purpose: req.body.purpose === 'balance' ? 'balance' : undefined,
     });
     return res.status(200).json({

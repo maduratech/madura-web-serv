@@ -10,10 +10,12 @@ export const env = {
     process.env.RAZORPAY_IN_KEY_SECRET || process.env.RAZORPAY_KEY_SECRET || '',
   RAZORPAY_IN_WEBHOOK_SECRET:
     process.env.RAZORPAY_IN_WEBHOOK_SECRET || process.env.RAZORPAY_WEBHOOK_SECRET || '',
-  /** Australia AUD — separate Razorpay account for /au/ bookings. */
-  RAZORPAY_AU_KEY_ID: process.env.RAZORPAY_AU_KEY_ID || '',
-  RAZORPAY_AU_KEY_SECRET: process.env.RAZORPAY_AU_KEY_SECRET || '',
-  RAZORPAY_AU_WEBHOOK_SECRET: process.env.RAZORPAY_AU_WEBHOOK_SECRET || '',
+  /** Australia (/au/) — Square Web Payments (AUD). */
+  SQUARE_APPLICATION_ID: process.env.SQUARE_APPLICATION_ID || '',
+  SQUARE_ACCESS_TOKEN: process.env.SQUARE_ACCESS_TOKEN || '',
+  SQUARE_LOCATION_ID: process.env.SQUARE_LOCATION_ID || '',
+  /** `sandbox` or `production` — inferred from application id when omitted. */
+  SQUARE_ENVIRONMENT: (process.env.SQUARE_ENVIRONMENT || '').toLowerCase(),
   CORS_ORIGINS: process.env.CORS_ORIGINS || '',
   PEXELS_API_KEY: process.env.PEXELS_API_KEY || '',
   CMS_MEDIA_BUCKET: process.env.CMS_MEDIA_BUCKET || 'cms-media',
