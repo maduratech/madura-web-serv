@@ -37,7 +37,10 @@ export async function listHeaderMarqueeAll(): Promise<HeaderMarqueeRow[]> {
 
 export async function listHeaderMarqueePublic(): Promise<string[]> {
   const rows = await listHeaderMarqueeAll();
-  return rows.filter((r) => r.is_active).map((r) => r.text);
+  return rows
+    .filter((r) => r.is_active)
+    .map((r) => normalizeText(r.text))
+    .filter(Boolean);
 }
 
 export async function createHeaderMarquee(text: string): Promise<HeaderMarqueeRow> {
