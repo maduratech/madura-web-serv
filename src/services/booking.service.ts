@@ -316,14 +316,32 @@ function resolveTourRegionFromData(tourRegion: string, destination: string, cont
   return 'international' as const;
 }
 
+/** India storefront (/in/): fixed booking fee — ₹1k domestic, ₹5k international. */
+function getInrBookingFee(resolvedRegion: AdvanceRegion): number {
+  return resolvedRegion === 'domestic' ? 1000 : 5000;
+}
+
 function getAdvanceAmountForCurrency(
   resolvedRegion: AdvanceRegion,
   currency: 'INR' | 'USD' | 'AUD'
 ): number {
+  if (currency === 'INR') return getInrBookingFee(resolvedRegion);
   const table = ADVANCE_AMOUNTS[currency];
   if (resolvedRegion === 'domestic') return table.domestic;
   if (resolvedRegion === 'sea_middle_east') return table.sea_middle_east;
   return table.international;
+}
+
+function advancePaymentDescription(
+  razorpayAccount: RazorpayAccount,
+  resolvedRegion: AdvanceRegion,
+  tourTitle: string,
+  destination: string
+): string {
+  const label = tourTitle || destination || 'your tour';
+  if (razorpayAccount === 'au') return `50% advance payment — ${label}`;
+  if (resolvedRegion === 'domestic') return `Booking fee (domestic) — ${label}`;
+  return `Booking fee (international) — ${label}`;
 }
 
 function marketCountryForDisplayCurrency(currency: string): string {
@@ -637,10 +655,23 @@ async function getSuccessfulBookingTransactionTotal(bookingId: number): Promise<
   }, 0);
 }
 
-async function getPaidAmountForBooking(booking: { id: number; payment_amount?: number | null }) {
-  const bookingPaid = Number(booking.payment_amount || 0);
+async function getPaidAmountForBooking(booking: {
+  id: number;
+  payment_amount?: number | null;
+  payment_status?: string | null;
+  payment_id?: string | null;
+}) {
   const transactionPaid = await getSuccessfulBookingTransactionTotal(booking.id);
-  return Math.max(bookingPaid, Number(transactionPaid || 0));
+  if (transactionPaid != null && transactionPaid > 0) return transactionPaid;
+
+  const status = String(booking.payment_status || '').toLowerCase();
+  const hasGatewayPaymentId = Boolean(String(booking.payment_id || '').trim());
+  const isSettled =
+    hasGatewayPaymentId &&
+    ['paid', 'partial_paid', 'success', 'captured'].some((key) => status.includes(key));
+  if (!isSettled) return 0;
+
+  return Math.max(0, Number(booking.payment_amount || 0));
 }
 
 export type DestinationListItem = {
@@ -2561,6 +2592,10 @@ async function resolvePaymentChargeAmount(
   if (purpose === 'balance') {
     return Math.max(0, Math.round(packageTotal - paid));
   }
+  /** Australia storefront (/au/): 50% of package total as advance. */
+  if (razorpayAccount === 'au') {
+    return Math.max(0, Math.round(packageTotal * 0.5));
+  }
   return getAdvanceAmountForCurrency(region, chargeCur);
 }
 
@@ -2799,13 +2834,23 @@ export async function createBookingPaymentOrder(input: CreateBookingPaymentOrder
     },
   });
 
+  const paymentDescription = advancePaymentDescription(
+    razorpayAccount,
+    resolvedRegion,
+    context.tourTitle || '',
+    context.destination || ''
+  );
+
   try {
     await upsertBookingPaymentFields(context.booking.id, {
       payment_status: 'pending',
       payment_order_id: order.id,
-      payment_amount: charge.majorAmount,
+      payment_id: null,
+      payment_amount: 0,
       payment_currency: currency,
-      payment_notes: `Payment initiated via Razorpay (${razorpayAccount}) order ${order.id}; ${charge.currency} ${charge.majorAmount}`,
+      payment_notes:
+        `Payment initiated via Razorpay (${razorpayAccount}) order ${order.id}; ` +
+        `amount due ${charge.currency} ${charge.majorAmount}; ${paymentDescription}`,
     });
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -2819,7 +2864,8 @@ export async function createBookingPaymentOrder(input: CreateBookingPaymentOrder
     amount: charge.minorUnits,
     currency,
     slab_region: resolvedRegion,
-    description: `Advance payment for ${context.tourTitle || context.destination || 'your tour'}`,
+    advance_mode: razorpayAccount === 'au' ? 'percent_50' : 'booking_fee',
+    description: paymentDescription,
   };
 }
 
@@ -3130,12 +3176,17 @@ export async function updateBookingPaymentStatus(input: UpdateBookingPaymentStat
     customerCurrencyLine +
     (context.travellersRoomsNote || '');
 
+  const unsettledStatus = ['cancelled', 'failed', 'pending', 'verification_failed'].includes(
+    String(input.payment_status).toLowerCase()
+  );
+
   try {
     await upsertBookingPaymentFields(context.booking.id, {
       status: 'pending',
       payment_status: input.payment_status,
       payment_order_id: input.razorpay_order_id || null,
-      payment_id: input.razorpay_payment_id || null,
+      payment_id: unsettledStatus ? null : input.razorpay_payment_id || null,
+      payment_amount: unsettledStatus ? 0 : Number((context.booking as { payment_amount?: number | null })?.payment_amount || 0),
       payment_notes: detailsNote,
     });
   } catch (err) {
@@ -3147,7 +3198,7 @@ export async function updateBookingPaymentStatus(input: UpdateBookingPaymentStat
     await createBookingTransaction({
       booking_id: context.booking.id,
       payment_status: input.payment_status,
-      amount: Number((context.booking as { payment_amount?: number | null })?.payment_amount || 0),
+      amount: unsettledStatus ? 0 : Number((context.booking as { payment_amount?: number | null })?.payment_amount || 0),
       currency: 'INR',
       payment_order_id: input.razorpay_order_id,
       payment_id: input.razorpay_payment_id,
