@@ -496,7 +496,7 @@ function mapDestinationRow(row: DestinationRaw, allRows: DestinationRaw[] = []):
     destination_type = 'country';
   }
 
-  const hierarchyRowWithType: DestinationHierarchyRow = {
+  let hierarchyRowWithType: DestinationHierarchyRow = {
     ...hierarchyRow,
     destination_type,
     parent_id,
@@ -505,18 +505,40 @@ function mapDestinationRow(row: DestinationRaw, allRows: DestinationRaw[] = []):
   const country_id = parents.country_id ?? metaHierarchy.country_id ?? null;
   const state_id = parents.state_id ?? metaHierarchy.state_id ?? null;
 
+  let effectiveParentId = parent_id;
+  if (effectiveParentId == null && country_id != null) {
+    if (destination_type === 'state') {
+      effectiveParentId = country_id;
+    } else if (destination_type === 'city') {
+      effectiveParentId = state_id ?? country_id;
+    }
+  }
+
+  hierarchyRowWithType = {
+    ...hierarchyRowWithType,
+    parent_id: effectiveParentId,
+  };
+
+  const countryRow = country_id ? byId.get(country_id) : undefined;
+  const countryName =
+    String(row.country ?? row.country_region ?? '').trim() ||
+    countryRow?.name?.trim() ||
+    null;
+
   const display_label =
     allRows.length > 0
-      ? buildDestinationDisplayLabel({ ...hierarchyRowWithType, parent_id }, byId)
-      : String(row.name || '').trim() || null;
+      ? buildDestinationDisplayLabel(hierarchyRowWithType, byId)
+      : countryName && destination_type !== 'country'
+        ? `${String(row.name || '').trim()}, ${countryName}`
+        : String(row.name || '').trim() || null;
 
   return {
     id: Number(row.id),
     name: String(row.name || '').trim(),
     slug: row.slug != null ? String(row.slug).trim() || null : null,
-    country: (row.country ?? row.country_region ?? null) as string | null,
+    country: countryName,
     destination_type,
-    parent_id,
+    parent_id: effectiveParentId,
     country_id,
     state_id,
     display_label,
