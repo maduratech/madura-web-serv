@@ -661,12 +661,18 @@ async function resolveCountryNameById(countryId: number | null | undefined): Pro
   return row?.name?.trim() || null;
 }
 
+type DestinationHierarchyWrite = {
+  destination_type: CmsDestinationType;
+  parent_id: number | null;
+  country_region: string | null;
+};
+
 async function resolveDestinationWriteFields(
   input: Partial<CmsDestination> & {
     country_id?: number | null;
     state_id?: number | null;
   },
-): Promise<Record<string, unknown>> {
+): Promise<DestinationHierarchyWrite> {
   const destination_type = normalizeCmsDestinationType(input.destination_type) || 'country';
   const countryIdRaw = input.country_id;
   const stateIdRaw = input.state_id;
@@ -767,7 +773,7 @@ async function insertDestinationWithFallback(payload: Record<string, unknown>): 
       await tryPersistDestinationHierarchy(
         createdId,
         {
-          destination_type: hierarchy.destination_type as CmsDestinationType,
+          destination_type: hierarchy.destination_type,
           parent_id: hierarchy.parent_id,
           country_region: hierarchy.country_region,
           country_id:
@@ -857,7 +863,7 @@ export async function updateDestination(id: number, input: Partial<CmsDestinatio
     await tryPersistDestinationHierarchy(
       id,
       {
-        destination_type: resolvedHierarchy.destination_type as CmsDestinationType,
+        destination_type: resolvedHierarchy.destination_type,
         parent_id: resolvedHierarchy.parent_id,
         country_region: resolvedHierarchy.country_region,
         country_id: input.country_id ?? null,
