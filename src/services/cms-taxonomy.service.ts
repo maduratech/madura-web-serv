@@ -35,6 +35,11 @@ const LEGACY_TOUR_TYPE_MAP: Record<string, string> = {
   'Group Tour': 'Group Tours',
 };
 
+function taxonomyRowRecord(row: unknown): Record<string, unknown> {
+  if (row && typeof row === 'object') return row as Record<string, unknown>;
+  return {};
+}
+
 function isMissingTaxonomyTable(message: string): boolean {
   const m = String(message || '').toLowerCase();
   return (
@@ -116,7 +121,7 @@ async function listTourTaxonomyRows(kind: TourTaxonomyKind): Promise<TourTaxonom
   }
 
   return (data || []).map((row) => {
-    const typed = row as Record<string, unknown>;
+    const typed = taxonomyRowRecord(row);
     return {
       id: Number(typed.id),
       kind: typed.kind as TourTaxonomyKind,
@@ -203,7 +208,7 @@ export async function getTourTaxonomyById(id: number): Promise<TourTaxonomyRow |
       throw new Error(error.message);
     }
     if (!data) return null;
-    const row = data as Record<string, unknown>;
+    const row = taxonomyRowRecord(data);
     return {
       id: Number(row.id),
       kind: row.kind as TourTaxonomyKind,
