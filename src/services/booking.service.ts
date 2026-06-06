@@ -1835,6 +1835,7 @@ export async function getToursListingByIds(tourIds: number[], marketCountry = 'i
 
 export type TourItineraryDay = {
   day: string;
+  city?: string;
   title: string;
   details: string;
 };
@@ -2046,11 +2047,15 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
 
   const itineraryDays = Array.isArray(row.itinerary_days)
     ? row.itinerary_days
-        .map((entry) => ({
-          day: String(entry?.day || '').trim(),
-          title: String(entry?.title || '').trim(),
-          details: String(entry?.details || '').trim(),
-        }))
+        .map((entry) => {
+          const city = String(entry?.city || '').trim();
+          return {
+            day: String(entry?.day || '').trim(),
+            ...(city ? { city } : {}),
+            title: String(entry?.title || '').trim(),
+            details: String(entry?.details || '').trim(),
+          };
+        })
         .filter((entry) => entry.day && entry.title)
     : [];
 

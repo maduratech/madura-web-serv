@@ -1021,6 +1021,7 @@ export async function deleteDestination(id: number): Promise<void> {
 
 export type CmsTourItineraryDay = {
   day: string;
+  city?: string;
   title: string;
   details: string;
 };
@@ -1113,9 +1114,11 @@ function parseItineraryDays(value: unknown): CmsTourItineraryDay[] {
   if (!Array.isArray(value)) return [];
   return value
     .map((entry) => {
-      const row = entry as { day?: string; title?: string; details?: string };
+      const row = entry as { day?: string; city?: string; title?: string; details?: string };
+      const city = String(row?.city || '').trim();
       return {
         day: String(row?.day || '').trim(),
+        ...(city ? { city } : {}),
         title: String(row?.title || '').trim(),
         details: String(row?.details || '').trim(),
       };
