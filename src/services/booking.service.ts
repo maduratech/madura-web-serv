@@ -710,6 +710,8 @@ export type DestinationListItem = {
   flag_iso: string | null;
   /** Optional absolute URL for flag art in Supabase (PNG/JPEG/GIF…) */
   flag_image_url?: string | null;
+  destination_type?: 'country' | 'state' | 'city' | 'continent' | 'other';
+  parent_id?: number | null;
 };
 
 type DestinationListRawRow = {
@@ -967,6 +969,8 @@ function buildDestinationListItems(rows: DestinationListRawRow[]): DestinationLi
       slug,
       flag_iso,
       flag_image_url: normalizeHttpImageUrl(r.flag_image_url),
+      destination_type: kind,
+      parent_id: r.parent_id != null ? Number(r.parent_id) : null,
     });
   }
 
