@@ -260,7 +260,7 @@ export async function updateTourTaxonomy(id: number, input: UpdateTourTaxonomyIn
     throw new Error(error.message);
   }
 
-  const row = data as Record<string, unknown>;
+  const row = taxonomyRowRecord(data);
   return {
     id: Number(row.id),
     kind: row.kind as TourTaxonomyKind,
