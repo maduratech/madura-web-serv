@@ -46,6 +46,12 @@ import crypto from 'node:crypto';
 import {resolveIso2FromCountryHint} from '../lib/country-name-to-iso2';
 import { destinationSlugVariants, normalizeDestinationSlug } from '../lib/destination-slug';
 import {
+  buildDestinationDisplayLabel,
+  destinationKind,
+  isExcludedMacroRegion,
+  resolveParentCountryRow,
+} from '../lib/destination-hierarchy';
+import {
   isTourListedPublicly,
   parseTourVisibility,
   type TourVisibilityStatus,
@@ -696,8 +702,9 @@ async function getPaidAmountForBooking(booking: {
 export type DestinationListItem = {
   id: number;
   name: string;
-  /** Display line: "City, Country" or country/region name only */
+  /** Display line: "City, State, Country" / "State, Country" / country name */
   label: string;
+  slug: string | null;
   /** ISO 3166-1 alpha-2 fallback when no `flag_image_url` */
   flag_iso: string | null;
   /** Optional absolute URL for flag art in Supabase (PNG/JPEG/GIF…) */
@@ -707,6 +714,7 @@ export type DestinationListItem = {
 type DestinationListRawRow = {
   id: number;
   name: string;
+  slug?: string | null;
   destination_type?: string | null;
   parent_id?: number | null;
   country_region?: string | null;
@@ -893,61 +901,62 @@ type ListingTourRow = {
   }> | null;
 };
 
-function destinationKind(row: DestinationListRawRow): 'city' | 'country' | 'continent' | 'other' {
-  const raw = row.destination_type;
-  if (raw == null || String(raw).trim() === '') {
-    return 'other';
+function buildDestinationListItems(rows: DestinationListRawRow[]): DestinationListItem[] {
+  const byId = new Map<number, DestinationListRawRow>();
+  for (const r of rows) {
+    byId.set(Number(r.id), r);
   }
-  const t = String(raw).toLowerCase().trim();
-  if (t === 'city') return 'city';
-  if (t === 'country') return 'country';
-  if (t === 'continent') return 'continent';
-  return 'other';
-}
 
-/** Broad regions (not individual countries) — hidden from searchable "where to go". */
-function isExcludedMacroRegion(name: string): boolean {
-  const key = String(name || '').trim().toLowerCase();
-  if (!key) return false;
-  const exclusions = new Set([
-    'africa',
-    'asia',
-    'europe',
-    'antarctica',
-    'oceania',
-    'north america',
-    'south america',
-    'latin america',
-    'middle east',
-    'arab world',
-    'caribbean',
-    'central america',
-    'scandinavia',
-    'balkans',
-    'south east asia',
-    'southeast asia',
-  ]);
-  return exclusions.has(key);
-}
+  const items: DestinationListItem[] = [];
+  for (const r of rows) {
+    const kind = destinationKind(r);
+    if (kind === 'continent') {
+      continue;
+    }
 
-function resolveParentCountryRow(
-  row: DestinationListRawRow,
-  byId: Map<number, DestinationListRawRow>,
-): DestinationListRawRow | null {
-  let current: DestinationListRawRow | undefined = row;
-  const seen = new Set<number>();
-  while (current?.parent_id != null && !seen.has(Number(current.id))) {
-    seen.add(Number(current.id));
-    const parent = byId.get(Number(current.parent_id));
-    if (!parent) {
-      return null;
+    const name = String(r.name || '').trim();
+    if (isExcludedMacroRegion(name)) {
+      continue;
     }
-    if (destinationKind(parent) === 'country') {
-      return parent;
+
+    const label = buildDestinationDisplayLabel(r, byId);
+    if (!label) continue;
+
+    let flagHint = r.country_region ? String(r.country_region).trim() : '';
+
+    if (kind === 'city' || kind === 'state' || kind === 'other') {
+      const parentCountry = resolveParentCountryRow(r, byId);
+      flagHint = parentCountry?.name?.trim()
+        ? parentCountry.name.trim()
+        : flagHint || (label.includes(',') ? label.split(',').pop()!.trim() : label);
+    } else if (kind === 'country') {
+      flagHint = flagHint || name;
     }
-    current = parent;
+
+    const countryPartComma = label.includes(',') ? label.slice(label.lastIndexOf(',') + 1).trim() : '';
+
+    const flag_iso =
+      normalizeFlagIsoStored(r.flag_iso) ||
+      resolveIso2FromCountryHint(flagHint) ||
+      resolveIso2FromCountryHint(r.country_region ? String(r.country_region) : null) ||
+      resolveIso2FromCountryHint(countryPartComma) ||
+      resolveIso2FromCountryHint(label);
+
+    const slugRaw = r.slug != null ? String(r.slug).trim() : '';
+    const slug = slugRaw ? normalizeDestinationSlug(slugRaw) : normalizeDestinationSlug(name) || null;
+
+    items.push({
+      id: Number(r.id),
+      name,
+      label,
+      slug,
+      flag_iso,
+      flag_image_url: normalizeHttpImageUrl(r.flag_image_url),
+    });
   }
-  return null;
+
+  items.sort((a, b) => a.label.localeCompare(b.label));
+  return items;
 }
 
 function normalizeFlagIsoStored(value: unknown): string | null {
@@ -969,71 +978,15 @@ function normalizeHttpImageUrl(value: unknown): string | null {
   }
 }
 
-function buildDestinationListItems(rows: DestinationListRawRow[]): DestinationListItem[] {
-  const byId = new Map<number, DestinationListRawRow>();
-  for (const r of rows) {
-    byId.set(Number(r.id), r);
-  }
-
-  const items: DestinationListItem[] = [];
-  for (const r of rows) {
-    const kind = destinationKind(r);
-    if (kind === 'continent') {
-      continue;
-    }
-
-    let label = String(r.name || '').trim();
-    if (isExcludedMacroRegion(label)) {
-      continue;
-    }
-
-    let flagHint = r.country_region ? String(r.country_region).trim() : '';
-
-    /** City + untyped rows: attach country when known ("City, Country"). Countries stay single-line. */
-    if (kind === 'city' || kind === 'other') {
-      const parentCountry = resolveParentCountryRow(r, byId);
-      const countryLabel = parentCountry?.name?.trim()
-        ? parentCountry.name.trim()
-        : r.country_region
-          ? String(r.country_region).trim()
-          : '';
-      if (countryLabel && countryLabel.toLowerCase() !== label.toLowerCase()) {
-        label = `${label}, ${countryLabel}`;
-      }
-      flagHint = parentCountry?.name?.trim()
-        ? parentCountry.name.trim()
-        : flagHint || countryLabel || (label.includes(',') ? label.split(',').pop()!.trim() : label);
-    } else if (kind === 'country') {
-      flagHint = flagHint || label;
-    }
-
-    const countryPartComma = label.includes(',') ? label.slice(label.lastIndexOf(',') + 1).trim() : '';
-
-    const flag_iso =
-      normalizeFlagIsoStored(r.flag_iso) ||
-      resolveIso2FromCountryHint(flagHint) ||
-      resolveIso2FromCountryHint(r.country_region ? String(r.country_region) : null) ||
-      resolveIso2FromCountryHint(countryPartComma) ||
-      resolveIso2FromCountryHint(label);
-
-    items.push({
-      id: Number(r.id),
-      name: String(r.name || '').trim(),
-      label,
-      flag_iso,
-      flag_image_url: normalizeHttpImageUrl(r.flag_image_url),
-    });
-  }
-
-  items.sort((a, b) => a.label.localeCompare(b.label));
-  return items;
-}
-
 export async function getDestinations(): Promise<DestinationListItem[]> {
   const fullAttempts = [
+    'id,name,slug,destination_type,parent_id,country_region,flag_iso,flag_image_url',
+    'id,name,slug,destination_type,parent_id,country_region,flag_iso',
+    'id,name,slug,destination_type,parent_id,country_region',
     'id,name,destination_type,parent_id,country_region,flag_iso,flag_image_url',
     'id,name,destination_type,parent_id,country_region,flag_iso',
     'id,name,destination_type,parent_id,country_region',
+    'id,name,slug,flag_iso,flag_image_url',
     'id,name,flag_iso,flag_image_url',
     'id,name,flag_iso',
     'id,name,flag_image_url',
@@ -1051,10 +1004,13 @@ export async function getDestinations(): Promise<DestinationListItem[]> {
       return rows.map((row) => {
         const name = String(row.name || '').trim();
         const flagImg = normalizeHttpImageUrl(row.flag_image_url);
+        const slugRaw = row.slug != null ? String(row.slug).trim() : '';
+        const slug = slugRaw ? normalizeDestinationSlug(slugRaw) : normalizeDestinationSlug(name) || null;
         return {
           id: Number(row.id),
           name,
           label: name,
+          slug,
           flag_iso:
             normalizeFlagIsoStored(row.flag_iso) ||
             resolveIso2FromCountryHint(name),
@@ -1229,7 +1185,12 @@ export async function getHeroSearchOptions() {
   const dedupedDepartureFrom = Array.from(new Set(departureFrom)).sort((a, b) => a.localeCompare(b));
   return {
     departureFrom: dedupedDepartureFrom,
-    goingTo: destinations.map((d) => d.name),
+    goingTo: destinations.map((d) => d.label),
+    goingToOptions: destinations.map((d) => ({
+      label: d.label,
+      slug: d.slug,
+      name: d.name,
+    })),
   };
 }
 
@@ -1323,7 +1284,10 @@ export async function getDestinationShowcase() {
   }
 
   const cards = allDestinations
-    .filter((d) => (d.destination_type || 'country') !== 'continent')
+    .filter((d) => {
+      const kind = destinationKind(d);
+      return kind === 'country' || kind === 'other';
+    })
     .map((d) => {
       const parent = d.parent_id ? destinationById.get(Number(d.parent_id)) : undefined;
       const continent =

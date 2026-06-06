@@ -1,6 +1,12 @@
 import { supabase } from '../lib/supabase';
 import { childPricesFromDb, childPricesToDb } from '../lib/tour-price-db';
 import { normalizeDestinationSlug } from '../lib/destination-slug';
+import {
+  buildDestinationDisplayLabel,
+  destinationKind,
+  resolveDestinationParentSelection,
+  type DestinationHierarchyRow,
+} from '../lib/destination-hierarchy';
 import { parseTourVisibility, type TourVisibilityStatus } from '../lib/tour-visibility';
 import { parseTourCmsMeta } from '../lib/tour-meta';
 import { splitOverviewWithMeta } from '../lib/tour-overview-meta';
@@ -426,11 +432,18 @@ export async function removeCmsStaff(userId: string): Promise<void> {
   if (error) throw new Error(error.message);
 }
 
+export type CmsDestinationType = 'country' | 'city' | 'state';
+
 export type CmsDestination = {
   id: number;
   name: string;
   slug: string | null;
   country: string | null;
+  destination_type: CmsDestinationType | null;
+  parent_id: number | null;
+  country_id: number | null;
+  state_id: number | null;
+  display_label: string | null;
   description: string | null;
   is_active: boolean | null;
   flag_image_url: string | null;
@@ -443,18 +456,47 @@ type DestinationRaw = {
   slug?: string | null;
   country?: string | null;
   country_region?: string | null;
+  destination_type?: string | null;
+  parent_id?: number | null;
   description?: string | null;
   is_active?: boolean | null;
   flag_image_url?: string | null;
   created_at?: string | null;
 };
 
-function mapDestinationRow(row: DestinationRaw): CmsDestination {
+function normalizeCmsDestinationType(value: unknown): CmsDestinationType | null {
+  const t = String(value || '').trim().toLowerCase();
+  if (t === 'country' || t === 'city' || t === 'state') return t;
+  return null;
+}
+
+function mapDestinationRow(row: DestinationRaw, allRows: DestinationRaw[] = []): CmsDestination {
+  const byId = new Map<number, DestinationHierarchyRow>();
+  for (const item of allRows) {
+    byId.set(Number(item.id), item as DestinationHierarchyRow);
+  }
+  const hierarchyRow = row as DestinationHierarchyRow;
+  const parents = resolveDestinationParentSelection(hierarchyRow, byId);
+  const display_label =
+    allRows.length > 0
+      ? buildDestinationDisplayLabel(hierarchyRow, byId)
+      : String(row.name || '').trim() || null;
+
+  const rawType = normalizeCmsDestinationType(row.destination_type);
+  const destination_type =
+    rawType ||
+    (row.parent_id == null ? 'country' : null);
+
   return {
     id: Number(row.id),
     name: String(row.name || '').trim(),
     slug: row.slug != null ? String(row.slug).trim() || null : null,
     country: (row.country ?? row.country_region ?? null) as string | null,
+    destination_type,
+    parent_id: row.parent_id != null ? Number(row.parent_id) : null,
+    country_id: parents.country_id,
+    state_id: parents.state_id,
+    display_label,
     description: row.description ?? null,
     is_active: row.is_active ?? true,
     flag_image_url: row.flag_image_url ?? null,
@@ -492,6 +534,9 @@ async function selectDestinations(cols: string) {
 
 export async function listDestinations(): Promise<CmsDestination[]> {
   const tries = [
+    'id,name,slug,destination_type,parent_id,country_region,flag_image_url,description,is_active,created_at',
+    'id,name,slug,destination_type,parent_id,country_region,flag_image_url,description,created_at',
+    'id,name,slug,destination_type,parent_id,country_region,flag_image_url,created_at',
     'id,name,slug,country_region,flag_image_url,description,created_at',
     'id,name,slug,flag_image_url,description,created_at',
     'id,name,slug,country_region,flag_image_url,created_at',
@@ -505,7 +550,8 @@ export async function listDestinations(): Promise<CmsDestination[]> {
   for (const cols of tries) {
     const { data, error } = await selectDestinations(cols);
     if (!error && data) {
-      return (data as unknown as DestinationRaw[]).map(mapDestinationRow);
+      const rows = data as unknown as DestinationRaw[];
+      return rows.map((row) => mapDestinationRow(row, rows));
     }
     lastErr = String(error?.message || '');
     if (!/column .* does not exist/i.test(lastErr)) break;
@@ -515,6 +561,9 @@ export async function listDestinations(): Promise<CmsDestination[]> {
 
 export async function getDestination(id: number): Promise<CmsDestination | null> {
   const tries = [
+    'id,name,slug,destination_type,parent_id,country_region,flag_image_url,description,is_active,created_at',
+    'id,name,slug,destination_type,parent_id,country_region,flag_image_url,description,created_at',
+    'id,name,slug,destination_type,parent_id,country_region,flag_image_url,created_at',
     'id,name,slug,country_region,flag_image_url,description,created_at',
     'id,name,slug,flag_image_url,description,created_at',
     'id,name,slug,country_region,flag_image_url,created_at',
@@ -526,7 +575,18 @@ export async function getDestination(id: number): Promise<CmsDestination | null>
   let lastErr = '';
   for (const cols of tries) {
     const { data, error } = await supabase.from('destinations').select(cols).eq('id', id).maybeSingle();
-    if (!error && data) return mapDestinationRow(data as unknown as DestinationRaw);
+    if (!error && data) {
+      const all = await listDestinations().catch(() => [] as CmsDestination[]);
+      const rawRows = all.map((d) => ({
+        id: d.id,
+        name: d.name,
+        slug: d.slug,
+        destination_type: d.destination_type,
+        parent_id: d.parent_id,
+        country_region: d.country,
+      })) as DestinationRaw[];
+      return mapDestinationRow(data as unknown as DestinationRaw, rawRows);
+    }
     lastErr = String(error?.message || '');
     if (!/column .* does not exist/i.test(lastErr)) break;
   }
@@ -538,8 +598,85 @@ function slugify(name: string): string {
   return normalizeDestinationSlug(name);
 }
 
+async function resolveCountryNameById(countryId: number | null | undefined): Promise<string | null> {
+  if (!Number.isFinite(Number(countryId)) || Number(countryId) <= 0) return null;
+  const row = await getDestination(Number(countryId));
+  return row?.name?.trim() || null;
+}
+
+async function resolveDestinationWriteFields(
+  input: Partial<CmsDestination> & {
+    country_id?: number | null;
+    state_id?: number | null;
+  },
+): Promise<Record<string, unknown>> {
+  const destination_type = normalizeCmsDestinationType(input.destination_type) || 'country';
+  const countryIdRaw = input.country_id;
+  const stateIdRaw = input.state_id;
+
+  let parent_id: number | null = null;
+  let country_region: string | null = input.country?.trim() || null;
+
+  if (destination_type === 'state') {
+    const countryId = Number(countryIdRaw);
+    if (!Number.isFinite(countryId) || countryId <= 0) {
+      throw new Error('Select a country for this state.');
+    }
+    parent_id = countryId;
+    country_region = (await resolveCountryNameById(countryId)) || country_region;
+  } else if (destination_type === 'city') {
+    const countryId = Number(countryIdRaw);
+    if (!Number.isFinite(countryId) || countryId <= 0) {
+      throw new Error('Select a country for this city.');
+    }
+    const stateId = Number(stateIdRaw);
+    if (Number.isFinite(stateId) && stateId > 0) {
+      parent_id = stateId;
+    } else {
+      parent_id = countryId;
+    }
+    country_region = (await resolveCountryNameById(countryId)) || country_region;
+  } else {
+    parent_id = null;
+    country_region = country_region || String(input.name || '').trim() || null;
+  }
+
+  return {
+    destination_type,
+    parent_id,
+    country_region,
+  };
+}
+
 async function insertDestinationWithFallback(payload: Record<string, unknown>): Promise<CmsDestination> {
+  const hierarchy = await resolveDestinationWriteFields(payload as Partial<CmsDestination>);
   const insertTries: Record<string, unknown>[] = [
+    {
+      name: payload.name,
+      slug: payload.slug,
+      destination_type: hierarchy.destination_type,
+      parent_id: hierarchy.parent_id,
+      country_region: hierarchy.country_region,
+      flag_image_url: payload.flag_image_url,
+      description: payload.description,
+      is_active: payload.is_active,
+    },
+    {
+      name: payload.name,
+      slug: payload.slug,
+      destination_type: hierarchy.destination_type,
+      parent_id: hierarchy.parent_id,
+      country_region: hierarchy.country_region,
+      flag_image_url: payload.flag_image_url,
+      description: payload.description,
+    },
+    {
+      name: payload.name,
+      slug: payload.slug,
+      country_region: hierarchy.country_region,
+      flag_image_url: payload.flag_image_url,
+      description: payload.description,
+    },
     { name: payload.name, slug: payload.slug },
     { name: payload.name, slug: payload.slug, description: payload.description },
     {
@@ -585,12 +722,18 @@ export async function createDestination(input: Partial<CmsDestination>): Promise
   const name = String(input.name || '').trim();
   if (!name) throw new Error('Destination name is required.');
   const slug = normalizeDestinationSlug((input.slug || slugify(name)).trim() || slugify(name));
+  const destination_type = normalizeCmsDestinationType(input.destination_type) || 'country';
   return insertDestinationWithFallback({
     name,
     slug,
     country: input.country?.trim() || null,
+    destination_type,
+    country_id: input.country_id ?? null,
+    state_id: input.state_id ?? null,
+    parent_id: input.parent_id ?? null,
     flag_image_url: input.flag_image_url?.trim() || null,
     description: input.description?.trim() || null,
+    is_active: input.is_active !== false,
   });
 }
 
@@ -608,6 +751,26 @@ export async function updateDestination(id: number, input: Partial<CmsDestinatio
   if (input.country !== undefined) basePatch.country_region = input.country?.trim() || null;
   if (input.flag_image_url !== undefined) basePatch.flag_image_url = input.flag_image_url?.trim() || null;
   if (input.is_active !== undefined) basePatch.is_active = Boolean(input.is_active);
+
+  const hierarchyTouched =
+    input.destination_type !== undefined ||
+    input.parent_id !== undefined ||
+    input.country_id !== undefined ||
+    input.state_id !== undefined;
+
+  if (hierarchyTouched) {
+    const existing = await getDestination(id);
+    const hierarchy = await resolveDestinationWriteFields({
+      destination_type: input.destination_type ?? existing?.destination_type ?? 'country',
+      country_id: input.country_id ?? existing?.country_id ?? null,
+      state_id: input.state_id ?? existing?.state_id ?? null,
+      country: input.country ?? existing?.country ?? null,
+      name: input.name ?? existing?.name ?? '',
+    });
+    basePatch.destination_type = hierarchy.destination_type;
+    basePatch.parent_id = hierarchy.parent_id;
+    basePatch.country_region = hierarchy.country_region;
+  }
 
   if (input.description !== undefined) {
     await persistDestinationDescription(id, input.description?.trim() || null);
@@ -1174,6 +1337,10 @@ export async function duplicateDestination(id: number): Promise<CmsDestination> 
     name: `${src.name} (Copy)`,
     slug: uniqueCopySlug(src.slug, `copy-${stamp}`),
     country: src.country,
+    destination_type: src.destination_type,
+    country_id: src.country_id,
+    state_id: src.state_id,
+    parent_id: src.parent_id,
     description: src.description,
     flag_image_url: src.flag_image_url,
     is_active: false,
