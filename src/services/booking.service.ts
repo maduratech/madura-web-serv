@@ -824,7 +824,22 @@ type DestinationShowcaseRow = {
   image_url?: string | null;
   /** CRM-style column when present */
   cover_image_url?: string | null;
+  description?: string | null;
 };
+
+const DESTINATION_SHOWCASE_FALLBACK_IMAGE =
+  'https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=900&q=80';
+
+function resolveDestinationShowcaseImage(row: DestinationShowcaseRow): string {
+  const fromColumns =
+    normalizeMediaUrl(row.image_url) || normalizeMediaUrl(row.cover_image_url);
+  if (fromColumns) return fromColumns;
+
+  const banner = normalizeMediaUrl(parseDestinationPageMeta(row.description).banner_image_url);
+  if (banner) return banner;
+
+  return DESTINATION_SHOWCASE_FALLBACK_IMAGE;
+}
 type TourRow = {
   id: number;
   title: string;
@@ -1289,11 +1304,16 @@ export async function getHeroSearchOptions() {
 
 async function fetchDestinationRowsForShowcase(): Promise<DestinationShowcaseRow[]> {
   const tries = [
+    'id,name,slug,destination_type,parent_id,continent,image_url,cover_image_url,description',
+    'id,name,slug,destination_type,parent_id,continent,image_url,description',
     'id,name,slug,destination_type,parent_id,continent,image_url,cover_image_url',
     'id,name,slug,destination_type,parent_id,continent,image_url',
     'id,name,slug,destination_type,parent_id,continent,cover_image_url',
+    'id,name,slug,destination_type,parent_id,continent,description',
     'id,name,slug,destination_type,parent_id,continent',
+    'id,name,slug,image_url,description',
     'id,name,slug,image_url',
+    'id,name,slug,description',
     'id,name,slug',
   ];
   let lastError = '';
@@ -1395,10 +1415,7 @@ export async function getDestinationShowcase() {
           String(d.slug || d.name.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-'))
         ),
         continent,
-        image_url:
-          normalizeMediaUrl(d.image_url) ||
-          normalizeMediaUrl(d.cover_image_url) ||
-          'https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=900&q=80',
+        image_url: resolveDestinationShowcaseImage(d),
         starting_from: minPriceByDestinationId.get(Number(d.id)) ?? null,
       };
     });
