@@ -52,7 +52,8 @@ import {
   resolveDestinationParentSelection,
   resolveParentCountryRow,
 } from '../lib/destination-hierarchy';
-import { parseHierarchyFromDescription } from '../lib/destination-cms-meta';
+import { parseDestinationMetaJson, parseHierarchyFromDescription } from '../lib/destination-cms-meta';
+import { normalizeDestinationNavBadge, type DestinationNavBadgeId } from '../lib/destination-nav-badge';
 import {
   isTourListedPublicly,
   parseTourVisibility,
@@ -716,6 +717,8 @@ export type DestinationListItem = {
   country_id?: number | null;
   state_id?: number | null;
   country_region?: string | null;
+  /** Header mega-menu pill badge from CMS (dest-meta). */
+  nav_badge?: DestinationNavBadgeId | null;
 };
 
 type DestinationListRawRow = {
@@ -1021,6 +1024,8 @@ function buildDestinationListItems(rows: DestinationListRawRow[]): DestinationLi
     const slugRaw = r.slug != null ? String(r.slug).trim() : '';
     const slug = slugRaw ? normalizeDestinationSlug(slugRaw) : normalizeDestinationSlug(name) || null;
     const parents = resolveDestinationParentSelection(r, byId);
+    const navMeta = parseDestinationMetaJson(r.description);
+    const nav_badge = normalizeDestinationNavBadge(navMeta?.nav_badge);
 
     items.push({
       id: Number(r.id),
@@ -1034,6 +1039,7 @@ function buildDestinationListItems(rows: DestinationListRawRow[]): DestinationLi
       country_id: parents.country_id,
       state_id: parents.state_id,
       country_region: r.country_region ? String(r.country_region).trim() : null,
+      nav_badge,
     });
   }
 
