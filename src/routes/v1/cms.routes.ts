@@ -48,6 +48,14 @@ import {
   updateBlogPost,
 } from '../../services/cms-blog.service';
 import {
+  createVisaPage,
+  deleteVisaPage,
+  duplicateVisaPage,
+  getVisaPage,
+  listVisaPages,
+  updateVisaPage,
+} from '../../services/cms-visa.service';
+import {
   createHeaderMarquee,
   deleteHeaderMarquee,
   listHeaderMarqueeAll,
@@ -686,6 +694,77 @@ cmsRouter.delete('/blogs/:id', requireSuperAdmin, async (req, res, next) => {
       return;
     }
     await deleteBlogPost(id);
+    res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.get('/visas', async (_req, res, next) => {
+  try {
+    res.json({ items: await listVisaPages() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.get('/visas/:id', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const row = await getVisaPage(id);
+    if (!row) {
+      res.status(404).json({ message: 'Visa page not found.' });
+      return;
+    }
+    res.json(row);
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.post('/visas', async (req, res, next) => {
+  try {
+    const body = (req.body || {}) as Record<string, unknown>;
+    const row = await createVisaPage(body);
+    res.status(201).json(row);
+  } catch (err) {
+    clientError(res, err);
+  }
+});
+
+cmsRouter.patch('/visas/:id', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const body = (req.body || {}) as Record<string, unknown>;
+    const row = await updateVisaPage(id, body);
+    res.json(row);
+  } catch (err) {
+    clientError(res, err);
+  }
+});
+
+cmsRouter.post('/visas/:id/duplicate', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      clientError(res, new Error('Invalid visa page id.'));
+      return;
+    }
+    const row = await duplicateVisaPage(id);
+    res.status(201).json(row);
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.delete('/visas/:id', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      clientError(res, new Error('Invalid visa page id.'));
+      return;
+    }
+    await deleteVisaPage(id);
     res.status(204).send();
   } catch (err) {
     next(err);
