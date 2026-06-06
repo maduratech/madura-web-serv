@@ -51,6 +51,7 @@ import {
   isExcludedMacroRegion,
   resolveParentCountryRow,
 } from '../lib/destination-hierarchy';
+import { parseHierarchyFromDescription } from '../lib/destination-cms-meta';
 import {
   isTourListedPublicly,
   parseTourVisibility,
@@ -718,11 +719,24 @@ type DestinationListRawRow = {
   destination_type?: string | null;
   parent_id?: number | null;
   country_region?: string | null;
+  description?: string | null;
   /** Explicit ISO 3166-1 alpha-2 on website destinations (preferred for flags). */
   flag_iso?: string | null;
   /** Direct flag asset URL stored in Website Supabase */
   flag_image_url?: string | null;
 };
+
+function enrichDestinationHierarchyRow(row: DestinationListRawRow): DestinationListRawRow {
+  const meta = parseHierarchyFromDescription(row.description);
+  const next = { ...row };
+  if (!next.destination_type && meta.destination_type) {
+    next.destination_type = meta.destination_type;
+  }
+  if ((next.parent_id == null || next.parent_id === undefined) && meta.parent_id != null) {
+    next.parent_id = meta.parent_id;
+  }
+  return next;
+}
 type DepartureCityRow = { name: string };
 type DestinationShowcaseRow = {
   id: number;
@@ -902,13 +916,14 @@ type ListingTourRow = {
 };
 
 function buildDestinationListItems(rows: DestinationListRawRow[]): DestinationListItem[] {
+  const enriched = rows.map(enrichDestinationHierarchyRow);
   const byId = new Map<number, DestinationListRawRow>();
-  for (const r of rows) {
+  for (const r of enriched) {
     byId.set(Number(r.id), r);
   }
 
   const items: DestinationListItem[] = [];
-  for (const r of rows) {
+  for (const r of enriched) {
     const kind = destinationKind(r);
     if (kind === 'continent') {
       continue;
@@ -980,9 +995,11 @@ function normalizeHttpImageUrl(value: unknown): string | null {
 
 export async function getDestinations(): Promise<DestinationListItem[]> {
   const fullAttempts = [
+    'id,name,slug,destination_type,parent_id,country_region,flag_iso,flag_image_url,description',
     'id,name,slug,destination_type,parent_id,country_region,flag_iso,flag_image_url',
     'id,name,slug,destination_type,parent_id,country_region,flag_iso',
     'id,name,slug,destination_type,parent_id,country_region',
+    'id,name,destination_type,parent_id,country_region,flag_iso,flag_image_url,description',
     'id,name,destination_type,parent_id,country_region,flag_iso,flag_image_url',
     'id,name,destination_type,parent_id,country_region,flag_iso',
     'id,name,destination_type,parent_id,country_region',
@@ -1286,7 +1303,8 @@ export async function getDestinationShowcase() {
   const cards = allDestinations
     .filter((d) => {
       const kind = destinationKind(d);
-      return kind === 'country' || kind === 'other';
+      if (kind === 'city' || kind === 'state') return false;
+      return kind === 'country' || (kind === 'other' && d.parent_id == null);
     })
     .map((d) => {
       const parent = d.parent_id ? destinationById.get(Number(d.parent_id)) : undefined;

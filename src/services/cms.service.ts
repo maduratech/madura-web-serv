@@ -7,6 +7,7 @@ import {
   resolveDestinationParentSelection,
   type DestinationHierarchyRow,
 } from '../lib/destination-hierarchy';
+import { mergeHierarchyIntoDescription, parseHierarchyFromDescription } from '../lib/destination-cms-meta';
 import { parseTourVisibility, type TourVisibilityStatus } from '../lib/tour-visibility';
 import { parseTourCmsMeta } from '../lib/tour-meta';
 import { splitOverviewWithMeta } from '../lib/tour-overview-meta';
@@ -476,16 +477,38 @@ function mapDestinationRow(row: DestinationRaw, allRows: DestinationRaw[] = []):
     byId.set(Number(item.id), item as DestinationHierarchyRow);
   }
   const hierarchyRow = row as DestinationHierarchyRow;
-  const parents = resolveDestinationParentSelection(hierarchyRow, byId);
+  const metaHierarchy = parseHierarchyFromDescription(row.description);
+
+  let parent_id =
+    row.parent_id != null
+      ? Number(row.parent_id)
+      : metaHierarchy.parent_id != null
+        ? Number(metaHierarchy.parent_id)
+        : null;
+
+  const rawType = normalizeCmsDestinationType(row.destination_type) || metaHierarchy.destination_type || null;
+  let destination_type = rawType;
+  if (!destination_type && parent_id != null) {
+    const parent = byId.get(parent_id);
+    destination_type =
+      parent && destinationKind(parent) === 'country' ? 'state' : 'city';
+  } else if (!destination_type) {
+    destination_type = 'country';
+  }
+
+  const hierarchyRowWithType: DestinationHierarchyRow = {
+    ...hierarchyRow,
+    destination_type,
+    parent_id,
+  };
+  const parents = resolveDestinationParentSelection(hierarchyRowWithType, byId);
+  const country_id = parents.country_id ?? metaHierarchy.country_id ?? null;
+  const state_id = parents.state_id ?? metaHierarchy.state_id ?? null;
+
   const display_label =
     allRows.length > 0
-      ? buildDestinationDisplayLabel(hierarchyRow, byId)
+      ? buildDestinationDisplayLabel({ ...hierarchyRowWithType, parent_id }, byId)
       : String(row.name || '').trim() || null;
-
-  const rawType = normalizeCmsDestinationType(row.destination_type);
-  const destination_type =
-    rawType ||
-    (row.parent_id == null ? 'country' : null);
 
   return {
     id: Number(row.id),
@@ -493,9 +516,9 @@ function mapDestinationRow(row: DestinationRaw, allRows: DestinationRaw[] = []):
     slug: row.slug != null ? String(row.slug).trim() || null : null,
     country: (row.country ?? row.country_region ?? null) as string | null,
     destination_type,
-    parent_id: row.parent_id != null ? Number(row.parent_id) : null,
-    country_id: parents.country_id,
-    state_id: parents.state_id,
+    parent_id,
+    country_id,
+    state_id,
     display_label,
     description: row.description ?? null,
     is_active: row.is_active ?? true,
@@ -526,6 +549,40 @@ async function persistDestinationDescription(id: number, description: string | n
   // eslint-disable-next-line no-console
   console.error('[cms] destination description save failed:', msg);
   throw new Error(CMS_DESTINATION_PAGE_SAVE_FAILED);
+}
+
+async function tryPersistDestinationHierarchy(
+  id: number,
+  hierarchy: {
+    destination_type: CmsDestinationType;
+    parent_id: number | null;
+    country_region: string | null;
+    country_id?: number | null;
+    state_id?: number | null;
+  },
+  description: string | null | undefined,
+): Promise<void> {
+  const patch = {
+    destination_type: hierarchy.destination_type,
+    parent_id: hierarchy.parent_id,
+    country_region: hierarchy.country_region,
+  };
+  const { error } = await supabase.from('destinations').update(patch).eq('id', id);
+  if (!error) return;
+  if (!isSchemaColumnMismatch(String(error.message || ''))) {
+    // eslint-disable-next-line no-console
+    console.warn('[cms] destination hierarchy patch failed:', error.message);
+  }
+
+  const merged = mergeHierarchyIntoDescription(description ?? null, {
+    destination_type: hierarchy.destination_type,
+    parent_id: hierarchy.parent_id,
+    country_id: hierarchy.country_id ?? null,
+    state_id: hierarchy.state_id ?? null,
+  });
+  if (merged && merged !== description) {
+    await persistDestinationDescription(id, merged);
+  }
 }
 
 async function selectDestinations(cols: string) {
@@ -707,6 +764,23 @@ async function insertDestinationWithFallback(payload: Record<string, unknown>): 
         payload.description !== undefined && payload.description !== null
           ? String(payload.description).trim() || null
           : null;
+      await tryPersistDestinationHierarchy(
+        createdId,
+        {
+          destination_type: hierarchy.destination_type as CmsDestinationType,
+          parent_id: hierarchy.parent_id,
+          country_region: hierarchy.country_region,
+          country_id:
+            payload.country_id != null && payload.country_id !== ''
+              ? Number(payload.country_id)
+              : null,
+          state_id:
+            payload.state_id != null && payload.state_id !== ''
+              ? Number(payload.state_id)
+              : null,
+        },
+        description,
+      );
       if (description) {
         await persistDestinationDescription(createdId, description);
       }
@@ -758,22 +832,39 @@ export async function updateDestination(id: number, input: Partial<CmsDestinatio
     input.country_id !== undefined ||
     input.state_id !== undefined;
 
+  let resolvedHierarchy: Awaited<ReturnType<typeof resolveDestinationWriteFields>> | null = null;
   if (hierarchyTouched) {
     const existing = await getDestination(id);
-    const hierarchy = await resolveDestinationWriteFields({
+    resolvedHierarchy = await resolveDestinationWriteFields({
       destination_type: input.destination_type ?? existing?.destination_type ?? 'country',
       country_id: input.country_id ?? existing?.country_id ?? null,
       state_id: input.state_id ?? existing?.state_id ?? null,
       country: input.country ?? existing?.country ?? null,
       name: input.name ?? existing?.name ?? '',
     });
-    basePatch.destination_type = hierarchy.destination_type;
-    basePatch.parent_id = hierarchy.parent_id;
-    basePatch.country_region = hierarchy.country_region;
+    basePatch.destination_type = resolvedHierarchy.destination_type;
+    basePatch.parent_id = resolvedHierarchy.parent_id;
+    basePatch.country_region = resolvedHierarchy.country_region;
   }
 
   if (input.description !== undefined) {
     await persistDestinationDescription(id, input.description?.trim() || null);
+  }
+
+  if (resolvedHierarchy) {
+    const existingDesc =
+      input.description !== undefined ? input.description : (await getDestination(id))?.description;
+    await tryPersistDestinationHierarchy(
+      id,
+      {
+        destination_type: resolvedHierarchy.destination_type as CmsDestinationType,
+        parent_id: resolvedHierarchy.parent_id,
+        country_region: resolvedHierarchy.country_region,
+        country_id: input.country_id ?? null,
+        state_id: input.state_id ?? null,
+      },
+      existingDesc ?? null,
+    );
   }
 
   const patchVariants: Record<string, unknown>[] = [
