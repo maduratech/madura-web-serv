@@ -29,8 +29,10 @@ import {
 import {
   addTourTaxonomy,
   deleteTourTaxonomy,
+  getTourTaxonomyById,
   listTourTaxonomy,
   parseTourTaxonomyKindParam,
+  updateTourTaxonomy,
 } from '../../services/cms-taxonomy.service';
 import {
   addSidebarBadge,
@@ -479,6 +481,40 @@ cmsRouter.delete('/tour-taxonomy/:id', async (req, res, next) => {
     }
     await deleteTourTaxonomy(id);
     res.status(204).send();
+  } catch (err) {
+    clientError(res, err);
+  }
+});
+
+cmsRouter.get('/tour-taxonomy/item/:id', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) {
+      res.status(400).json({ message: 'Invalid id.' });
+      return;
+    }
+    const row = await getTourTaxonomyById(id);
+    if (!row) {
+      res.status(404).json({ message: 'Not found.' });
+      return;
+    }
+    res.json(row);
+  } catch (err) {
+    clientError(res, err);
+  }
+});
+
+cmsRouter.patch('/tour-taxonomy/:id', async (req, res, next) => {
+  try {
+    assertStaffMayMutate(req.cmsAuth!.role, req.body || {}, 'tour');
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) {
+      res.status(400).json({ message: 'Invalid id.' });
+      return;
+    }
+    const body = req.body as { meta?: { description_in?: string; description_au?: string; banner_image_url?: string } };
+    const row = await updateTourTaxonomy(id, { meta: body.meta });
+    res.json(row);
   } catch (err) {
     clientError(res, err);
   }

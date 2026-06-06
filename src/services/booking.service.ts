@@ -53,6 +53,7 @@ import {
   resolveParentCountryRow,
 } from '../lib/destination-hierarchy';
 import { parseDestinationMetaJson, parseHierarchyFromDescription } from '../lib/destination-cms-meta';
+import { normalizeMediaUrl } from '../lib/media-url';
 import { normalizeDestinationNavBadge, type DestinationNavBadgeId } from '../lib/destination-nav-badge';
 import {
   isTourListedPublicly,
@@ -762,10 +763,14 @@ function enrichAllDestinationHierarchyRows(rows: DestinationListRawRow[]): Desti
 
   return withMeta.map((row) => {
     const meta = parseHierarchyFromDescription(row.description);
-    let destination_type =
-      normalizeDestinationListType(row.destination_type) ||
-      meta.destination_type ||
-      null;
+    const columnType = normalizeDestinationListType(row.destination_type);
+    const metaType = meta.destination_type || null;
+    let destination_type = columnType || metaType || null;
+
+    if (destination_type === 'country' && metaType && metaType !== 'country') {
+      destination_type = metaType;
+    }
+
     let parent_id =
       row.parent_id != null
         ? Number(row.parent_id)
@@ -779,6 +784,12 @@ function enrichAllDestinationHierarchyRows(rows: DestinationListRawRow[]): Desti
         parent && destinationKind(parent) === 'country' ? 'state' : 'city';
     } else if (!destination_type) {
       destination_type = 'country';
+    }
+
+    if (destination_type === 'country' && parent_id != null) {
+      const parent = byId.get(parent_id);
+      destination_type =
+        parent && destinationKind(parent) === 'country' ? 'state' : 'city';
     }
 
     if (parent_id == null && destination_type === 'state' && meta.country_id != null) {
@@ -1054,16 +1065,7 @@ function normalizeFlagIsoStored(value: unknown): string | null {
 }
 
 function normalizeHttpImageUrl(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const t = value.trim();
-  if (!t) return null;
-  try {
-    const u = new URL(t);
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
-    return t;
-  } catch {
-    return null;
-  }
+  return normalizeMediaUrl(typeof value === 'string' ? value : null);
 }
 
 export async function getDestinations(): Promise<DestinationListItem[]> {
@@ -1220,12 +1222,12 @@ export async function getDestinationBySlug(slug: string) {
           name: String(row.name || '').trim(),
           slug: normalizeDestinationSlug(String(row.slug || normalized)),
           tagline: pageMeta.tagline,
-          banner_image_url:
-            pageMeta.banner_image_url ||
-            row.cover_image_url ||
-            row.image_url ||
+      banner_image_url:
+            normalizeMediaUrl(pageMeta.banner_image_url) ||
+            normalizeMediaUrl(row.cover_image_url) ||
+            normalizeMediaUrl(row.image_url) ||
             null,
-          flag_image_url: row.flag_image_url?.trim() || null,
+          flag_image_url: normalizeHttpImageUrl(row.flag_image_url),
           flag_iso:
             normalizeFlagIsoStored((row as { flag_iso?: string | null }).flag_iso) ||
             resolveIso2FromCountryHint(String(row.name || '')),
@@ -1394,8 +1396,8 @@ export async function getDestinationShowcase() {
         ),
         continent,
         image_url:
-          d.image_url ||
-          d.cover_image_url ||
+          normalizeMediaUrl(d.image_url) ||
+          normalizeMediaUrl(d.cover_image_url) ||
           'https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=900&q=80',
         starting_from: minPriceByDestinationId.get(Number(d.id)) ?? null,
       };
@@ -1855,9 +1857,11 @@ export async function getToursListing(marketCountry = 'in') {
     const startingChild = marketBands.child ?? bandPrices.child_price ?? null;
     const startingYouth = marketBands.youth ?? bandPrices.youth_price ?? null;
     const destination = row.destination_ref?.name || row.destination || 'Unknown';
-    const heroImage = String(row.hero_image_url || '').trim();
+    const heroImage = normalizeMediaUrl(row.hero_image_url);
     const gallery = Array.isArray(row.gallery_image_urls)
-      ? row.gallery_image_urls.map((u) => String(u || '').trim()).filter(Boolean)
+      ? row.gallery_image_urls
+          .map((u) => normalizeMediaUrl(String(u || '')))
+          .filter((u): u is string => Boolean(u))
       : [];
     const departureCities = Array.from(
       new Set(
@@ -1877,9 +1881,9 @@ export async function getToursListing(marketCountry = 'in') {
       image_url:
         heroImage ||
         gallery[0] ||
-        row.destination_ref?.image_url ||
+        normalizeMediaUrl(row.destination_ref?.image_url) ||
         'https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=900&q=80',
-      hero_image_url: heroImage || null,
+      hero_image_url: heroImage,
       gallery_image_urls: gallery,
       duration_nights: durationNights,
       tour_category: inferCategory(row.title),
@@ -2108,14 +2112,16 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
   const startingSharingNote = lowestAdult.note ?? twinSharingRateNote(detailSheet);
   const detailBand = childPricesFromDb(row);
   const destination = row.destination_ref?.name || row.destination || 'Unknown';
-  const heroImage = String(row.hero_image_url || '').trim() || null;
+  const heroImage = normalizeMediaUrl(row.hero_image_url);
   const gallery = Array.isArray(row.gallery_image_urls)
-    ? row.gallery_image_urls.map((u) => String(u || '').trim()).filter(Boolean)
+    ? row.gallery_image_urls
+        .map((u) => normalizeMediaUrl(String(u || '')))
+        .filter((u): u is string => Boolean(u))
     : [];
   const fallbackImage =
     heroImage ||
-    row.destination_ref?.image_url ||
-    row.destination_ref?.cover_image_url ||
+    normalizeMediaUrl(row.destination_ref?.image_url) ||
+    normalizeMediaUrl(row.destination_ref?.cover_image_url) ||
     gallery.find((url) => /\.(jpe?g|png|webp|avif)(\?|$)/i.test(url)) ||
     'https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=900&q=80';
 

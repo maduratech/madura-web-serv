@@ -486,7 +486,19 @@ function mapDestinationRow(row: DestinationRaw, allRows: DestinationRaw[] = []):
         ? Number(metaHierarchy.parent_id)
         : null;
 
-  const rawType = normalizeCmsDestinationType(row.destination_type) || metaHierarchy.destination_type || null;
+  const rawTypeFromColumn = normalizeCmsDestinationType(row.destination_type);
+  const rawTypeFromMeta = normalizeCmsDestinationType(metaHierarchy.destination_type);
+  let rawType = rawTypeFromColumn || rawTypeFromMeta || null;
+
+  // Column can stay `country` from an old default while CMS meta / parent link says city/state.
+  if (
+    rawType === 'country' &&
+    rawTypeFromMeta &&
+    rawTypeFromMeta !== 'country'
+  ) {
+    rawType = rawTypeFromMeta;
+  }
+
   let destination_type = rawType;
   if (!destination_type && parent_id != null) {
     const parent = byId.get(parent_id);
@@ -494,6 +506,12 @@ function mapDestinationRow(row: DestinationRaw, allRows: DestinationRaw[] = []):
       parent && destinationKind(parent) === 'country' ? 'state' : 'city';
   } else if (!destination_type) {
     destination_type = 'country';
+  }
+
+  if (destination_type === 'country' && parent_id != null) {
+    const parent = byId.get(parent_id);
+    destination_type =
+      parent && destinationKind(parent) === 'country' ? 'state' : 'city';
   }
 
   let hierarchyRowWithType: DestinationHierarchyRow = {
@@ -584,16 +602,33 @@ async function tryPersistDestinationHierarchy(
   },
   description: string | null | undefined,
 ): Promise<void> {
-  const patch = {
-    destination_type: hierarchy.destination_type,
-    parent_id: hierarchy.parent_id,
-    country_region: hierarchy.country_region,
-  };
-  const { error } = await supabase.from('destinations').update(patch).eq('id', id);
-  if (!error) return;
-  if (!isSchemaColumnMismatch(String(error.message || ''))) {
-    // eslint-disable-next-line no-console
-    console.warn('[cms] destination hierarchy patch failed:', error.message);
+  const patchAttempts: Record<string, unknown>[] = [
+    {
+      destination_type: hierarchy.destination_type,
+      parent_id: hierarchy.parent_id,
+      country_region: hierarchy.country_region,
+    },
+    {
+      destination_type: hierarchy.destination_type,
+      parent_id: hierarchy.parent_id,
+    },
+    { destination_type: hierarchy.destination_type },
+    { parent_id: hierarchy.parent_id },
+    { country_region: hierarchy.country_region },
+  ];
+
+  for (const patch of patchAttempts) {
+    const cleaned = Object.fromEntries(
+      Object.entries(patch).filter(([, value]) => value !== undefined)
+    );
+    if (!Object.keys(cleaned).length) continue;
+    const { error } = await supabase.from('destinations').update(cleaned).eq('id', id);
+    if (!error) return;
+    if (!isSchemaColumnMismatch(String(error.message || ''))) {
+      // eslint-disable-next-line no-console
+      console.warn('[cms] destination hierarchy patch failed:', error.message);
+      break;
+    }
   }
 
   const merged = mergeHierarchyIntoDescription(description ?? null, {

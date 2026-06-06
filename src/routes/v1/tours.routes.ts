@@ -9,6 +9,7 @@ import {
   getTours,
   getToursListing,
 } from '../../services/booking.service';
+import { getTourThemePageByLabel } from '../../services/cms-taxonomy.service';
 
 const toursRouter = Router();
 
@@ -45,6 +46,20 @@ toursRouter.get('/destinations/:slug', async (req, res, next) => {
   try {
     const row = await getDestinationBySlug(String(req.params.slug || ''));
     if (!row) return res.status(404).json({ message: 'Destination not found.' });
+    return res.json({ data: row });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+toursRouter.get('/tour-themes/:label', async (req, res, next) => {
+  try {
+    const label = decodeURIComponent(String(req.params.label || '')).trim();
+    if (!label) return res.status(400).json({ message: 'Invalid theme label.' });
+    const rawMarket = String(req.query.market || 'in').trim().toLowerCase();
+    const market = (rawMarket.split('-')[0] || 'in') as 'in' | 'au';
+    const row = await getTourThemePageByLabel(label, market === 'au' ? 'au' : 'in');
+    if (!row) return res.status(404).json({ message: 'Tour theme not found.' });
     return res.json({ data: row });
   } catch (error) {
     return next(error);
