@@ -49,6 +49,7 @@ import {
   buildDestinationDisplayLabel,
   destinationKind,
   isExcludedMacroRegion,
+  resolveDestinationParentSelection,
   resolveParentCountryRow,
 } from '../lib/destination-hierarchy';
 import { parseHierarchyFromDescription } from '../lib/destination-cms-meta';
@@ -712,6 +713,9 @@ export type DestinationListItem = {
   flag_image_url?: string | null;
   destination_type?: 'country' | 'state' | 'city' | 'continent' | 'other';
   parent_id?: number | null;
+  country_id?: number | null;
+  state_id?: number | null;
+  country_region?: string | null;
 };
 
 type DestinationListRawRow = {
@@ -739,6 +743,61 @@ function enrichDestinationHierarchyRow(row: DestinationListRawRow): DestinationL
   }
   return next;
 }
+
+function normalizeDestinationListType(value: unknown): string | null {
+  const t = String(value || '').trim().toLowerCase();
+  if (t === 'country' || t === 'city' || t === 'state') return t;
+  return null;
+}
+
+function enrichAllDestinationHierarchyRows(rows: DestinationListRawRow[]): DestinationListRawRow[] {
+  const withMeta = rows.map(enrichDestinationHierarchyRow);
+  const byId = new Map<number, DestinationListRawRow>();
+  for (const row of withMeta) {
+    byId.set(Number(row.id), row);
+  }
+
+  return withMeta.map((row) => {
+    const meta = parseHierarchyFromDescription(row.description);
+    let destination_type =
+      normalizeDestinationListType(row.destination_type) ||
+      meta.destination_type ||
+      null;
+    let parent_id =
+      row.parent_id != null
+        ? Number(row.parent_id)
+        : meta.parent_id != null
+          ? Number(meta.parent_id)
+          : null;
+
+    if (!destination_type && parent_id != null) {
+      const parent = byId.get(parent_id);
+      destination_type =
+        parent && destinationKind(parent) === 'country' ? 'state' : 'city';
+    } else if (!destination_type) {
+      destination_type = 'country';
+    }
+
+    if (parent_id == null && destination_type === 'state' && meta.country_id != null) {
+      parent_id = Number(meta.country_id);
+    }
+    if (parent_id == null && destination_type === 'city') {
+      parent_id =
+        meta.state_id != null
+          ? Number(meta.state_id)
+          : meta.country_id != null
+            ? Number(meta.country_id)
+            : null;
+    }
+
+    return {
+      ...row,
+      destination_type,
+      parent_id: Number.isFinite(parent_id) && parent_id! > 0 ? parent_id : null,
+    };
+  });
+}
+
 type DepartureCityRow = { name: string };
 type DestinationShowcaseRow = {
   id: number;
@@ -918,7 +977,7 @@ type ListingTourRow = {
 };
 
 function buildDestinationListItems(rows: DestinationListRawRow[]): DestinationListItem[] {
-  const enriched = rows.map(enrichDestinationHierarchyRow);
+  const enriched = enrichAllDestinationHierarchyRows(rows);
   const byId = new Map<number, DestinationListRawRow>();
   for (const r of enriched) {
     byId.set(Number(r.id), r);
@@ -961,6 +1020,7 @@ function buildDestinationListItems(rows: DestinationListRawRow[]): DestinationLi
 
     const slugRaw = r.slug != null ? String(r.slug).trim() : '';
     const slug = slugRaw ? normalizeDestinationSlug(slugRaw) : normalizeDestinationSlug(name) || null;
+    const parents = resolveDestinationParentSelection(r, byId);
 
     items.push({
       id: Number(r.id),
@@ -971,6 +1031,9 @@ function buildDestinationListItems(rows: DestinationListRawRow[]): DestinationLi
       flag_image_url: normalizeHttpImageUrl(r.flag_image_url),
       destination_type: kind,
       parent_id: r.parent_id != null ? Number(r.parent_id) : null,
+      country_id: parents.country_id,
+      state_id: parents.state_id,
+      country_region: r.country_region ? String(r.country_region).trim() : null,
     });
   }
 
@@ -1007,8 +1070,9 @@ export async function getDestinations(): Promise<DestinationListItem[]> {
     'id,name,destination_type,parent_id,country_region,flag_iso,flag_image_url',
     'id,name,destination_type,parent_id,country_region,flag_iso',
     'id,name,destination_type,parent_id,country_region',
+    'id,name,slug,country_region,flag_iso,flag_image_url,description',
+    'id,name,slug,flag_iso,flag_image_url,description',
     'id,name,slug,flag_iso,flag_image_url',
-    'id,name,flag_iso,flag_image_url',
     'id,name,flag_iso',
     'id,name,flag_image_url',
     'id,name',
@@ -1019,7 +1083,7 @@ export async function getDestinations(): Promise<DestinationListItem[]> {
     const full = await supabase.from('destinations').select(cols).order('name', { ascending: true });
     if (!full.error && full.data) {
       const rows = full.data as unknown as DestinationListRawRow[];
-      if (cols.includes('destination_type')) {
+      if (cols.includes('destination_type') || cols.includes('description')) {
         return buildDestinationListItems(rows);
       }
       return rows.map((row) => {
