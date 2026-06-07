@@ -51,6 +51,7 @@ visasRouter.get('/visas', async (req, res, next) => {
         filter_visa_type: row.filter_visa_type,
         filter_document_level: row.filter_document_level,
         filter_delivery_bucket: row.filter_delivery_bucket,
+        processing_days: row.processing_days,
       })),
       facets,
     });
