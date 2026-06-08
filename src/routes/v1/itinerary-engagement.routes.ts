@@ -111,25 +111,38 @@ itineraryEngagementRouter.post('/itinerary-engagement/verify-code', async (req, 
   }
 });
 
+function resolveTrackingSessionId(
+  req: { body?: { clientSessionId?: string; accessCodeVersion?: number }; cookies?: Record<string, string>; headers: { cookie?: string } },
+  itineraryId: number
+): string | null {
+  const cookieRaw = readSessionFromCookie(req, itineraryId);
+  const parsed = parseSessionCookieValue(cookieRaw);
+  const accessCodeVersion = Number(req.body?.accessCodeVersion) || 1;
+  if (
+    parsed?.sessionId &&
+    verifySessionCookie(itineraryId, parsed.sessionId, parsed.sig, accessCodeVersion)
+  ) {
+    return parsed.sessionId;
+  }
+  const clientSid = String(req.body?.clientSessionId || '').trim();
+  if (clientSid.length >= 8) return clientSid;
+  return null;
+}
+
 itineraryEngagementRouter.post('/itinerary-engagement/view', async (req, res, next) => {
   try {
     const itineraryId = Number(req.body?.itineraryId);
     if (!itineraryId) {
       return res.status(400).json({ message: 'itineraryId is required.' });
     }
-    const cookieRaw = readSessionFromCookie(req, itineraryId);
-    const parsed = parseSessionCookieValue(cookieRaw);
-    if (!parsed?.sessionId) {
-      return res.status(401).json({ message: 'Access not verified.' });
-    }
-    const accessCodeVersion = Number(req.body?.accessCodeVersion) || 1;
-    if (!verifySessionCookie(itineraryId, parsed.sessionId, parsed.sig, accessCodeVersion)) {
-      return res.status(401).json({ message: 'Access session expired.' });
+    const sessionId = resolveTrackingSessionId(req, itineraryId);
+    if (!sessionId) {
+      return res.status(400).json({ message: 'clientSessionId is required.' });
     }
 
     const result = await recordItineraryView({
       itineraryId,
-      sessionId: parsed.sessionId,
+      sessionId,
       viewerUserId: req.body?.viewerUserId || null,
       userAgent: req.get('user-agent') || undefined,
       isStaffPreview: Boolean(req.body?.isStaffPreview),
@@ -146,19 +159,14 @@ itineraryEngagementRouter.post('/itinerary-engagement/heartbeat', async (req, re
     if (!itineraryId) {
       return res.status(400).json({ message: 'itineraryId is required.' });
     }
-    const cookieRaw = readSessionFromCookie(req, itineraryId);
-    const parsed = parseSessionCookieValue(cookieRaw);
-    if (!parsed?.sessionId) {
-      return res.status(401).json({ message: 'Access not verified.' });
-    }
-    const accessCodeVersion = Number(req.body?.accessCodeVersion) || 1;
-    if (!verifySessionCookie(itineraryId, parsed.sessionId, parsed.sig, accessCodeVersion)) {
-      return res.status(401).json({ message: 'Access session expired.' });
+    const sessionId = resolveTrackingSessionId(req, itineraryId);
+    if (!sessionId) {
+      return res.status(400).json({ message: 'clientSessionId is required.' });
     }
 
     const result = await recordItineraryHeartbeat({
       itineraryId,
-      sessionId: parsed.sessionId,
+      sessionId,
       activeSeconds: Number(req.body?.activeSeconds) || 0,
       isStaffPreview: Boolean(req.body?.isStaffPreview),
     });
@@ -174,12 +182,6 @@ itineraryEngagementRouter.post('/itinerary-engagement/approve', requireAuth, asy
     if (!itineraryId) {
       return res.status(400).json({ message: 'itineraryId is required.' });
     }
-    const cookieRaw = readSessionFromCookie(req, itineraryId);
-    const parsed = parseSessionCookieValue(cookieRaw);
-    if (!parsed?.sessionId) {
-      return res.status(401).json({ message: 'Access not verified.' });
-    }
-
     const result = await approveItineraryEngagement({
       itineraryId,
       userId: req.auth!.userId,
@@ -201,12 +203,6 @@ itineraryEngagementRouter.post('/itinerary-engagement/request-changes', requireA
     if (!text) {
       return res.status(400).json({ message: 'Please describe the changes you need.' });
     }
-    const cookieRaw = readSessionFromCookie(req, itineraryId);
-    const parsed = parseSessionCookieValue(cookieRaw);
-    if (!parsed?.sessionId) {
-      return res.status(401).json({ message: 'Access not verified.' });
-    }
-
     const result = await requestItineraryChanges({
       itineraryId,
       userId: req.auth!.userId,
