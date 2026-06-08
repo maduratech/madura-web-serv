@@ -8,6 +8,8 @@ export type CrmDefaultRoom = {
 
 export type TourCmsMeta = {
   crm_itinerary_id?: number;
+  /** Smart itinerary tracking + access gate enabled for CRM-published links. */
+  crm_engagement_enabled?: boolean;
   /** CRM itinerary `display_currency` when published (e.g. AUD). */
   crm_source_currency?: string;
   /** CRM trip total in `crm_source_currency` (e.g. A$ 18,000 for 30 pax). */

@@ -9,6 +9,7 @@ import { visasRouter } from './visas.routes';
 import { integrationRouter } from './integration.routes';
 import { pricingRouter } from './pricing.routes';
 import { siteRouter } from './site.routes';
+import { itineraryEngagementRouter } from './itinerary-engagement.routes';
 
 const v1Router = Router();
 v1Router.use(pricingRouter);
@@ -20,6 +21,7 @@ v1Router.use(bookingsRouter);
 v1Router.use(accountRouter);
 v1Router.use('/cms', cmsRouter);
 v1Router.use('/integration', integrationRouter);
+v1Router.use(itineraryEngagementRouter);
 v1Router.use(healthRouter);
 
 export { v1Router };

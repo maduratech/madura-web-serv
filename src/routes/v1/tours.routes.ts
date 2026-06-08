@@ -10,6 +10,7 @@ import {
   getToursListing,
 } from '../../services/booking.service';
 import { getTourThemePageByLabel } from '../../services/cms-taxonomy.service';
+import { splitOverviewWithMeta } from '../../lib/tour-overview-meta';
 
 const toursRouter = Router();
 
@@ -98,6 +99,13 @@ toursRouter.get('/tours/:idOrSlug', async (req, res, next) => {
     const tour = await getTourByKey(key, market);
     if (!tour) {
       return res.status(404).json({ message: 'Tour not found.' });
+    }
+
+    const cmsMeta = splitOverviewWithMeta(
+      (tour as { overview?: string | null }).overview
+    ).meta;
+    if (Number(cmsMeta.crm_itinerary_id) > 0) {
+      res.setHeader('X-Robots-Tag', 'noindex, nofollow');
     }
 
     return res.json({ data: tour });

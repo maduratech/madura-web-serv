@@ -896,6 +896,7 @@ export async function publishItineraryToTour(
   const cmsMeta: TourCmsMeta = {
     ...priorMeta,
     crm_itinerary_id: itineraryId,
+    crm_engagement_enabled: true,
     crm_source_currency: displayCurrency,
     crm_display_prices: {
       currency: displayCurrency,
