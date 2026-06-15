@@ -22,7 +22,28 @@ export function destinationKind(row: DestinationHierarchyRow): DestinationKind {
   return 'other';
 }
 
-export function isExcludedMacroRegion(name: string): boolean {
+/** Seeded header region parents — must not be filtered as generic macro regions. */
+const HEADER_REGION_PARENT_SLUGS = new Set([
+  'india',
+  'mainland-europe',
+  'australasia',
+  'east-asia',
+  'eastern-europe',
+  'middle-east',
+  'south-east-asia',
+  'africa',
+  'north-america',
+  'central-asia',
+]);
+
+export function isExcludedMacroRegion(name: string, slug?: string | null): boolean {
+  const slugKey = String(slug || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^\/+|\/+$/g, '')
+    .replace(/\s+/g, '-');
+  if (slugKey && HEADER_REGION_PARENT_SLUGS.has(slugKey)) return false;
+
   const key = String(name || '').trim().toLowerCase();
   if (!key) return false;
   const exclusions = new Set([

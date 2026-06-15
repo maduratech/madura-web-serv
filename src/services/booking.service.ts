@@ -1020,7 +1020,7 @@ function buildDestinationListItems(rows: DestinationListRawRow[]): DestinationLi
     }
 
     const name = String(r.name || '').trim();
-    if (isExcludedMacroRegion(name)) {
+    if (isExcludedMacroRegion(name, r.slug)) {
       continue;
     }
 
