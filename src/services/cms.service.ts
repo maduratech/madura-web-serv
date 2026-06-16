@@ -697,8 +697,18 @@ async function fetchPackageCountsByDestination(
   const counts = new Map<number, number>();
   for (const d of destinations) counts.set(d.id, 0);
 
-  const tries = ['id,destination_id,destination', 'id,destination_id', 'id,destination'];
-  let tours: Array<{ id: number; destination_id?: number | null; destination?: string | null }> = [];
+  const tries = [
+    'id,destination_id,destination,overview',
+    'id,destination_id,destination',
+    'id,destination_id',
+    'id,destination',
+  ];
+  let tours: Array<{
+    id: number;
+    destination_id?: number | null;
+    destination?: string | null;
+    overview?: string | null;
+  }> = [];
   for (const cols of tries) {
     const { data, error } = await supabase.from('tours').select(cols);
     if (!error && data) {
@@ -715,16 +725,22 @@ async function fetchPackageCountsByDestination(
   }
 
   for (const tour of tours) {
-    let destId: number | null = null;
-    const rawId = tour.destination_id;
-    if (rawId != null && Number.isFinite(Number(rawId))) {
-      destId = Number(rawId);
-    } else {
-      const key = String(tour.destination || '').trim().toLowerCase();
-      if (key) destId = nameToId.get(key) ?? null;
+    const linkedIds = new Set<number>();
+    for (const id of readTourDestinationIds(tour)) {
+      if (counts.has(id)) linkedIds.add(id);
     }
-    if (destId == null || !counts.has(destId)) continue;
-    counts.set(destId, (counts.get(destId) ?? 0) + 1);
+
+    if (!linkedIds.size && tour.destination) {
+      for (const part of String(tour.destination).split(',')) {
+        const key = part.trim().toLowerCase();
+        const id = nameToId.get(key);
+        if (id != null && counts.has(id)) linkedIds.add(id);
+      }
+    }
+
+    for (const destId of linkedIds) {
+      counts.set(destId, (counts.get(destId) ?? 0) + 1);
+    }
   }
 
   return counts;
