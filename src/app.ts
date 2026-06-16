@@ -1,5 +1,6 @@
 import express, { type Request } from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import { apiRouter } from './routes';
 import { errorMiddleware } from './middlewares/error.middleware';
 import { loggerMiddleware } from './middlewares/logger.middleware';
@@ -30,6 +31,8 @@ const PUBLIC_GET_PATHS = [
   '/api/v1/guide',
   '/api/v1/pricing',
   '/api/v1/pricing/forex-rates',
+  '/api/v1/visas',
+  '/api/v1/site',
 ];
 
 const isPublicGet = (req: Request): boolean => {
@@ -99,6 +102,15 @@ const publicCors = cors({
 const strictCors = cors(strictCorsOptions);
 
 const app = express();
+
+app.set('trust proxy', 1);
+
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    contentSecurityPolicy: false,
+  })
+);
 
 app.use((req, res, next) => {
   if (isPublicGet(req)) return publicCors(req, res, next);

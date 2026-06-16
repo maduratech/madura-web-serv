@@ -11,11 +11,13 @@ import {
   updateBookingPaymentStatus,
   verifyBookingPayment
 } from '../../services/booking.service';
+import { requireBookingAccess } from '../../middlewares/booking-access.middleware';
 import { attachAuthIfPresent, requireAuth } from '../../middlewares/auth.middleware';
+import { bookingCreateRateLimit, paymentRateLimit } from '../../middlewares/rate-limit.middleware';
 
 const bookingsRouter = Router();
 
-bookingsRouter.post('/bookings', attachAuthIfPresent, async (req, res, next) => {
+bookingsRouter.post('/bookings', attachAuthIfPresent, bookingCreateRateLimit, async (req, res, next) => {
   try {
     const result = await createBooking({
       ...req.body,
@@ -30,7 +32,12 @@ bookingsRouter.post('/bookings', attachAuthIfPresent, async (req, res, next) => 
   }
 });
 
-bookingsRouter.post('/bookings/:bookingId/payment-order', async (req, res, next) => {
+bookingsRouter.post(
+  '/bookings/:bookingId/payment-order',
+  requireAuth,
+  paymentRateLimit,
+  requireBookingAccess,
+  async (req, res, next) => {
   try {
     const bookingId = Number(req.params.bookingId || req.body.booking_id || 0);
     const result = await createBookingPaymentOrder({ booking_id: bookingId });
@@ -43,7 +50,11 @@ bookingsRouter.post('/bookings/:bookingId/payment-order', async (req, res, next)
   }
 });
 
-bookingsRouter.get('/bookings/:bookingId/payment-summary', async (req, res, next) => {
+bookingsRouter.get(
+  '/bookings/:bookingId/payment-summary',
+  requireAuth,
+  requireBookingAccess,
+  async (req, res, next) => {
   try {
     const bookingId = Number(req.params.bookingId || 0);
     const result = await getBookingPaymentSummary({ booking_id: bookingId });
@@ -56,7 +67,12 @@ bookingsRouter.get('/bookings/:bookingId/payment-summary', async (req, res, next
   }
 });
 
-bookingsRouter.post('/bookings/:bookingId/balance-payment-order', async (req, res, next) => {
+bookingsRouter.post(
+  '/bookings/:bookingId/balance-payment-order',
+  requireAuth,
+  paymentRateLimit,
+  requireBookingAccess,
+  async (req, res, next) => {
   try {
     const bookingId = Number(req.params.bookingId || req.body.booking_id || 0);
     const result = await createBookingBalancePaymentOrder({ booking_id: bookingId });
@@ -69,7 +85,12 @@ bookingsRouter.post('/bookings/:bookingId/balance-payment-order', async (req, re
   }
 });
 
-bookingsRouter.post('/bookings/:bookingId/payment-verify', async (req, res, next) => {
+bookingsRouter.post(
+  '/bookings/:bookingId/payment-verify',
+  requireAuth,
+  paymentRateLimit,
+  requireBookingAccess,
+  async (req, res, next) => {
   try {
     const bookingId = Number(req.params.bookingId || req.body.booking_id || 0);
     const result = await verifyBookingPayment({
@@ -91,7 +112,12 @@ bookingsRouter.post('/bookings/:bookingId/payment-verify', async (req, res, next
   }
 });
 
-bookingsRouter.post('/bookings/:bookingId/payment-status', async (req, res, next) => {
+bookingsRouter.post(
+  '/bookings/:bookingId/payment-status',
+  requireAuth,
+  paymentRateLimit,
+  requireBookingAccess,
+  async (req, res, next) => {
   try {
     const bookingId = Number(req.params.bookingId || req.body.booking_id || 0);
     const result = await updateBookingPaymentStatus({

@@ -3411,8 +3411,10 @@ export async function getBookingPaymentSummary(input: CreateBookingPaymentOrderI
   const remainingAmountInInr = Math.max(0, totalAmountInInr - paidAmountInInr);
   return {
     booking_id: context.booking.id,
+    tour_id: Number(context.booking.tour_id) > 0 ? Number(context.booking.tour_id) : null,
     mts_id: context.booking.mts_id ?? null,
     payment_status: context.booking.payment_status ?? null,
+    payment_order_id: context.booking.payment_order_id ?? null,
     total_amount: totalAmountInInr,
     paid_amount: paidAmountInInr,
     remaining_amount: remainingAmountInInr,
