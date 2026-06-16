@@ -6,6 +6,7 @@ import {
   createEnquiry,
   createPlannerLead,
   createWebsiteLead,
+  getBookingActivity,
   getBookingPaymentSummary,
   handleRazorpayWebhook,
   updateBookingPaymentStatus,
@@ -60,6 +61,23 @@ bookingsRouter.get(
     const result = await getBookingPaymentSummary({ booking_id: bookingId });
     return res.status(200).json({
       message: 'Payment summary loaded.',
+      data: result,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+bookingsRouter.get(
+  '/bookings/:bookingId/activity',
+  requireAuth,
+  requireBookingAccess,
+  async (req, res, next) => {
+  try {
+    const bookingId = Number(req.params.bookingId || 0);
+    const result = await getBookingActivity({ booking_id: bookingId });
+    return res.status(200).json({
+      message: 'Activity loaded.',
       data: result,
     });
   } catch (error) {

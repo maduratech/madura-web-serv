@@ -3402,6 +3402,38 @@ export async function createBookingPaymentOrder(input: CreateBookingPaymentOrder
   };
 }
 
+export async function getBookingActivity(input: { booking_id: number }): Promise<{
+  id: number;
+  payment_status: string;
+  amount: number;
+  currency: string;
+  note: string | null;
+  created_at: string;
+}[]> {
+  if (!input.booking_id) return [];
+
+  const { data, error } = await supabase
+    .from('booking_transactions')
+    .select('id,payment_status,amount,currency,note,created_at')
+    .eq('booking_id', input.booking_id)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    if (/relation .* does not exist/i.test(String(error.message || ''))) return [];
+    console.warn('[booking-activity] query failed:', error.message);
+    return [];
+  }
+
+  return (data || []) as {
+    id: number;
+    payment_status: string;
+    amount: number;
+    currency: string;
+    note: string | null;
+    created_at: string;
+  }[];
+}
+
 export async function getBookingPaymentSummary(input: CreateBookingPaymentOrderInput) {
   if (!input.booking_id) throw new Error('booking_id is required.');
   const context = await getBookingPaymentContext(input.booking_id);
