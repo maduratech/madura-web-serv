@@ -32,6 +32,18 @@ blogsRouter.get('/blogs', async (_req, res, next) => {
   }
 });
 
+blogsRouter.get('/guides', async (_req, res, next) => {
+  try {
+    const items = await listBlogPosts({ publishedOnly: true, contentType: 'guide' });
+    res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=120');
+    res.json({
+      items: items.map((row) => mapPublicBlogListItem(row)),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 blogsRouter.get('/blogs/:slug', async (req, res, next) => {
   try {
     const row = await getPublishedBlogPostBySlug(String(req.params.slug || ''), 'blog');
