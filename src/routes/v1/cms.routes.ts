@@ -201,7 +201,7 @@ cmsRouter.get('/tours', async (_req, res, next) => {
   }
 });
 
-cmsRouter.get('/orders', async (_req, res, next) => {
+cmsRouter.get('/orders', requireSuperAdmin, async (_req, res, next) => {
   try {
     res.json(await listCmsOrders());
   } catch (err) {
