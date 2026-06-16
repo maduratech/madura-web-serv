@@ -3153,7 +3153,7 @@ async function getBookingPaymentContext(bookingId: number) {
   let bookingError: { message?: string } | null = null;
 
   const bookingSelectWide =
-    'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id,rooms,room_details,display_currency,display_fx_rate,mts_id,crm_lead_id';
+    'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id,rooms,room_details,display_currency,display_fx_rate,mts_id,crm_lead_id,created_at,updated_at,payment_verified_at';
   const bookingSelectMid =
     'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id,rooms,room_details';
   const bookingSelectNarrow =
@@ -3420,6 +3420,13 @@ export async function getBookingPaymentSummary(input: CreateBookingPaymentOrderI
     remaining_amount: remainingAmountInInr,
     display_currency: context.displayCurrency,
     display_fx_rate: context.displayFxRate,
+    payment_updated_at:
+      String(
+        (context.booking as { payment_verified_at?: string | null }).payment_verified_at ||
+          (context.booking as { updated_at?: string | null }).updated_at ||
+          (context.booking as { created_at?: string | null }).created_at ||
+          ''
+      ).trim() || null,
   };
 }
 

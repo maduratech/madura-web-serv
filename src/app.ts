@@ -1,9 +1,9 @@
 import express, { type Request } from 'express';
 import cors from 'cors';
-import helmet from 'helmet';
 import { apiRouter } from './routes';
 import { errorMiddleware } from './middlewares/error.middleware';
 import { loggerMiddleware } from './middlewares/logger.middleware';
+import { securityHeadersMiddleware } from './middlewares/security-headers.middleware';
 import { env } from './config/env';
 
 const parseAllowedOrigins = (): string[] | null => {
@@ -105,12 +105,7 @@ const app = express();
 
 app.set('trust proxy', 1);
 
-app.use(
-  helmet({
-    crossOriginResourcePolicy: { policy: 'cross-origin' },
-    contentSecurityPolicy: false,
-  })
-);
+app.use(securityHeadersMiddleware);
 
 app.use((req, res, next) => {
   if (isPublicGet(req)) return publicCors(req, res, next);
