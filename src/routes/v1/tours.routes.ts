@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   getDestinationShowcase,
+  getDestinationsDirectory,
   getDestinationBySlug,
   getDestinations,
   getHeroSearchOptions,
@@ -84,6 +85,18 @@ toursRouter.get('/destination-showcase', async (req, res, next) => {
     const showcase = await getDestinationShowcase(market);
     res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
     return res.json({ data: showcase });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+toursRouter.get('/destinations-directory', async (req, res, next) => {
+  try {
+    const rawMarket = String(req.query.market || 'in').trim().toLowerCase();
+    const market = rawMarket.split('-')[0] || 'in';
+    const sections = await getDestinationsDirectory(market);
+    res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
+    return res.json({ data: sections });
   } catch (error) {
     return next(error);
   }

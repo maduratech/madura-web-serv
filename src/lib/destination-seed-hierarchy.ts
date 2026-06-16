@@ -5,7 +5,33 @@ import { normalizeDestinationSlug } from './destination-slug';
  * Mirrors madura-web `header-destinations-nav-static.ts` (same nav seed).
  * Used at read time by cms.service when DB parent links are missing or wrong.
  */
-const STATIC_HEADER_DESTINATION_ITEMS: Record<string, readonly string[]> = {
+export const HEADER_DESTINATIONS_NAV_REGION_ORDER = [
+  'india',
+  'mainland-europe',
+  'australasia',
+  'east-asia',
+  'eastern-europe',
+  'middle-east',
+  'south-east-asia',
+  'africa',
+  'north-america',
+  'central-asia',
+] as const;
+
+export const STATIC_HEADER_REGION_TITLES: Record<string, string> = {
+  india: 'India',
+  'mainland-europe': 'Mainland Europe',
+  australasia: 'Australasia',
+  'east-asia': 'East Asia',
+  'eastern-europe': 'Eastern Europe',
+  'middle-east': 'Middle East',
+  'south-east-asia': 'South East Asia',
+  africa: 'Africa',
+  'north-america': 'North America',
+  'central-asia': 'Central Asia',
+};
+
+export const STATIC_HEADER_DESTINATION_ITEMS: Record<string, readonly string[]> = {
   india: [
     'Andaman',
     'Assam',

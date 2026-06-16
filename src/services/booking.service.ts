@@ -44,6 +44,11 @@ import {
 } from '../lib/square-payments';
 import crypto from 'node:crypto';
 import {resolveIso2FromCountryHint} from '../lib/country-name-to-iso2';
+import {
+  HEADER_DESTINATIONS_NAV_REGION_ORDER,
+  STATIC_HEADER_DESTINATION_ITEMS,
+  STATIC_HEADER_REGION_TITLES,
+} from '../lib/destination-seed-hierarchy';
 import { destinationSlugVariants, normalizeDestinationSlug } from '../lib/destination-slug';
 import {
   buildDestinationDisplayLabel,
@@ -1553,6 +1558,110 @@ export async function getDestinationShowcase(marketCountry = 'in') {
       }
       return { continent, destinations };
     });
+}
+
+export type DestinationsDirectoryCard = {
+  id: number;
+  name: string;
+  slug: string;
+  image_url: string;
+  starting_from: number | null;
+  package_count: number;
+};
+
+export type DestinationsDirectorySection = {
+  title: string;
+  slug: string;
+  destinations: DestinationsDirectoryCard[];
+};
+
+/** All header destinations grouped by region (India, Mainland Europe, …) for /destination index. */
+export async function getDestinationsDirectory(marketCountry = 'in'): Promise<DestinationsDirectorySection[]> {
+  const market = marketCountry.toLowerCase() === 'au' ? 'au' : 'in';
+  const [allDestinations, toursRaw, departuresRaw, bookingCountsByTourId] = await Promise.all([
+    fetchDestinationRowsForShowcase(),
+    fetchShowcaseTourRows(),
+    fetchShowcaseDepartures(),
+    fetchBookingCountsByTourId(market),
+  ]);
+
+  const tours = (toursRaw as unknown as ShowcaseTourRow[]).filter((t) => {
+    if (!isTourListedPublicly(parseTourVisibility(t))) return false;
+    const meta = parseTourCmsMeta(t.overview);
+    if (crmMetaHasCrmItinerary(meta)) return true;
+    return tourVisibleForMarket(meta.market_audience, market);
+  });
+
+  const departuresByTourId = new Map<number, NonNullable<ListingTourRow['departures']>>();
+  for (const dep of departuresRaw) {
+    const tourId = Number((dep as { tour_id?: number }).tour_id);
+    if (!Number.isFinite(tourId)) continue;
+    const list = departuresByTourId.get(tourId) || [];
+    list.push(dep as NonNullable<ListingTourRow['departures']>[number]);
+    departuresByTourId.set(tourId, list);
+  }
+
+  const destinationById = new Map<number, DestinationShowcaseRow>();
+  const destinationBySlug = new Map<string, DestinationShowcaseRow>();
+  const destinationByName = new Map<string, DestinationShowcaseRow>();
+  for (const d of allDestinations) {
+    destinationById.set(Number(d.id), d);
+    destinationByName.set(String(d.name), d);
+    const slug = normalizeDestinationSlug(String(d.slug || d.name || ''));
+    if (slug) destinationBySlug.set(slug, d);
+  }
+
+  const packageCountByDestinationId = new Map<number, number>();
+  const minPriceByDestinationId = new Map<number, number>();
+
+  for (const tour of tours) {
+    const destinationId = resolveShowcaseTourDestinationId(tour, destinationById, destinationByName);
+    if (destinationId == null) continue;
+
+    packageCountByDestinationId.set(
+      destinationId,
+      (packageCountByDestinationId.get(destinationId) ?? 0) + 1,
+    );
+
+    const listPrice = resolveTourListingStartingTwin(
+      tour,
+      departuresByTourId.get(Number(tour.id)) || [],
+      market,
+    );
+    if (listPrice == null) continue;
+    const existing = minPriceByDestinationId.get(destinationId);
+    if (existing === undefined || listPrice < existing) {
+      minPriceByDestinationId.set(destinationId, listPrice);
+    }
+  }
+
+  let syntheticId = -1;
+  const sections: DestinationsDirectorySection[] = [];
+
+  for (const regionSlug of HEADER_DESTINATIONS_NAV_REGION_ORDER) {
+    const names = STATIC_HEADER_DESTINATION_ITEMS[regionSlug] || [];
+    const destinations: DestinationsDirectoryCard[] = names.map((name) => {
+      const slug = normalizeDestinationSlug(name);
+      const row = destinationBySlug.get(slug);
+      const destId = row ? Number(row.id) : syntheticId--;
+      return {
+        id: destId,
+        name: row?.name?.trim() || name,
+        slug,
+        image_url: row ? resolveDestinationShowcaseImage(row) : DESTINATION_SHOWCASE_FALLBACK_IMAGE,
+        starting_from: row ? (minPriceByDestinationId.get(Number(row.id)) ?? null) : null,
+        package_count: row ? (packageCountByDestinationId.get(Number(row.id)) ?? 0) : 0,
+      };
+    });
+
+    sections.push({
+      title: STATIC_HEADER_REGION_TITLES[regionSlug] || regionSlug,
+      slug: regionSlug,
+      destinations,
+    });
+  }
+
+  return sections;
 }
 
 export async function getTours() {
