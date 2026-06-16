@@ -23,7 +23,7 @@ export function destinationKind(row: DestinationHierarchyRow): DestinationKind {
 }
 
 /** Seeded header region parents — must not be filtered as generic macro regions. */
-const HEADER_REGION_PARENT_SLUGS = new Set([
+export const HEADER_REGION_PARENT_SLUGS = new Set([
   'india',
   'mainland-europe',
   'australasia',
@@ -67,6 +67,24 @@ export function isExcludedMacroRegion(name: string, slug?: string | null): boole
   return exclusions.has(key);
 }
 
+export function isHeaderRegionParentRow(row: DestinationHierarchyRow): boolean {
+  const slugKey = normalizeHeaderRegionSlug(row.slug);
+  if (slugKey && HEADER_REGION_PARENT_SLUGS.has(slugKey)) return true;
+  const nameKey = String(row.name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-');
+  return HEADER_REGION_PARENT_SLUGS.has(nameKey);
+}
+
+function normalizeHeaderRegionSlug(slug?: string | null): string {
+  return String(slug || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^\/+|\/+$/g, '')
+    .replace(/\s+/g, '-');
+}
+
 function rowById(rows: DestinationHierarchyRow[]): Map<number, DestinationHierarchyRow> {
   const byId = new Map<number, DestinationHierarchyRow>();
   for (const row of rows) {
@@ -85,7 +103,7 @@ export function resolveParentCountryRow(
     seen.add(Number(current.id));
     const parent = byId.get(Number(current.parent_id));
     if (!parent) return null;
-    if (destinationKind(parent) === 'country') return parent;
+    if (destinationKind(parent) === 'country' && !isHeaderRegionParentRow(parent)) return parent;
     current = parent;
   }
   return null;

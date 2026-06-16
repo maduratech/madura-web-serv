@@ -4,10 +4,15 @@ import { normalizeDestinationSlug } from '../lib/destination-slug';
 import {
   buildDestinationDisplayLabel,
   destinationKind,
+  isHeaderRegionParentRow,
   resolveDestinationParentSelection,
   type DestinationHierarchyRow,
 } from '../lib/destination-hierarchy';
 import { mergeHierarchyIntoDescription, parseHierarchyFromDescription } from '../lib/destination-cms-meta';
+import {
+  resolveSeedCountryName,
+  resolveSeedHierarchyHint,
+} from '../lib/destination-seed-hierarchy';
 import { parseTourVisibility, type TourVisibilityStatus } from '../lib/tour-visibility';
 import { parseTourCmsMeta } from '../lib/tour-meta';
 import { splitOverviewWithMeta } from '../lib/tour-overview-meta';
@@ -448,6 +453,7 @@ export type CmsDestination = {
   description: string | null;
   is_active: boolean | null;
   flag_image_url: string | null;
+  package_count: number;
   created_at?: string;
 };
 
@@ -500,6 +506,13 @@ function mapDestinationRow(row: DestinationRaw, allRows: DestinationRaw[] = []):
   }
 
   let destination_type = rawType;
+  const seedHint = resolveSeedHierarchyHint(
+    row.slug != null ? String(row.slug) : null,
+    row.name,
+  );
+  if (seedHint?.destination_type) {
+    destination_type = seedHint.destination_type;
+  }
   if (!destination_type && parent_id != null) {
     const parent = byId.get(parent_id);
     destination_type =
@@ -510,8 +523,13 @@ function mapDestinationRow(row: DestinationRaw, allRows: DestinationRaw[] = []):
 
   if (destination_type === 'country' && parent_id != null) {
     const parent = byId.get(parent_id);
-    destination_type =
-      parent && destinationKind(parent) === 'country' ? 'state' : 'city';
+    if (parent && isHeaderRegionParentRow(parent)) {
+      parent_id = null;
+    } else if (parent && destinationKind(parent) === 'country') {
+      destination_type = 'state';
+    } else if (parent) {
+      destination_type = 'city';
+    }
   }
 
   let hierarchyRowWithType: DestinationHierarchyRow = {
@@ -538,10 +556,35 @@ function mapDestinationRow(row: DestinationRaw, allRows: DestinationRaw[] = []):
   };
 
   const countryRow = country_id ? byId.get(country_id) : undefined;
-  const countryName =
+  let countryName =
     String(row.country ?? row.country_region ?? '').trim() ||
     countryRow?.name?.trim() ||
     null;
+
+  if (!countryName && seedHint?.country_name) {
+    countryName = seedHint.country_name;
+  } else if (!countryName) {
+    const seedCountry = resolveSeedCountryName(
+      row.slug != null ? String(row.slug) : null,
+      row.name,
+    );
+    if (seedCountry) countryName = seedCountry;
+  }
+
+  if (destination_type === 'country') {
+    countryName = null;
+  }
+
+  let resolvedCountryId = country_id;
+  if (!resolvedCountryId && countryName && allRows.length > 0) {
+    const needle = countryName.toLowerCase();
+    const match = allRows.find(
+      (item) =>
+        String(item.name || '').trim().toLowerCase() === needle &&
+        normalizeCmsDestinationType(item.destination_type) === 'country',
+    );
+    if (match) resolvedCountryId = Number(match.id);
+  }
 
   const display_label =
     allRows.length > 0
@@ -557,12 +600,13 @@ function mapDestinationRow(row: DestinationRaw, allRows: DestinationRaw[] = []):
     country: countryName,
     destination_type,
     parent_id: effectiveParentId,
-    country_id,
+    country_id: resolvedCountryId ?? country_id,
     state_id,
     display_label,
     description: row.description ?? null,
     is_active: row.is_active ?? true,
     flag_image_url: row.flag_image_url ?? null,
+    package_count: 0,
     created_at: row.created_at ?? undefined,
   };
 }
@@ -646,6 +690,55 @@ async function selectDestinations(cols: string) {
   return supabase.from('destinations').select(cols).order('name');
 }
 
+async function fetchPackageCountsByDestination(
+  destinations: CmsDestination[],
+): Promise<Map<number, number>> {
+  const counts = new Map<number, number>();
+  for (const d of destinations) counts.set(d.id, 0);
+
+  const tries = ['id,destination_id,destination', 'id,destination_id', 'id,destination'];
+  let tours: Array<{ id: number; destination_id?: number | null; destination?: string | null }> = [];
+  for (const cols of tries) {
+    const { data, error } = await supabase.from('tours').select(cols);
+    if (!error && data) {
+      tours = data as unknown as typeof tours;
+      break;
+    }
+    if (!/column .* does not exist/i.test(String(error?.message || ''))) break;
+  }
+
+  const nameToId = new Map<string, number>();
+  for (const d of destinations) {
+    const key = String(d.name || '').trim().toLowerCase();
+    if (key) nameToId.set(key, d.id);
+  }
+
+  for (const tour of tours) {
+    let destId: number | null = null;
+    const rawId = tour.destination_id;
+    if (rawId != null && Number.isFinite(Number(rawId))) {
+      destId = Number(rawId);
+    } else {
+      const key = String(tour.destination || '').trim().toLowerCase();
+      if (key) destId = nameToId.get(key) ?? null;
+    }
+    if (destId == null || !counts.has(destId)) continue;
+    counts.set(destId, (counts.get(destId) ?? 0) + 1);
+  }
+
+  return counts;
+}
+
+function attachPackageCounts(
+  destinations: CmsDestination[],
+  counts: Map<number, number>,
+): CmsDestination[] {
+  return destinations.map((d) => ({
+    ...d,
+    package_count: counts.get(d.id) ?? 0,
+  }));
+}
+
 export async function listDestinations(): Promise<CmsDestination[]> {
   const tries = [
     'id,name,slug,destination_type,parent_id,country_region,flag_image_url,description,is_active,created_at',
@@ -665,7 +758,9 @@ export async function listDestinations(): Promise<CmsDestination[]> {
     const { data, error } = await selectDestinations(cols);
     if (!error && data) {
       const rows = data as unknown as DestinationRaw[];
-      return rows.map((row) => mapDestinationRow(row, rows));
+      const mapped = rows.map((row) => mapDestinationRow(row, rows));
+      const counts = await fetchPackageCountsByDestination(mapped);
+      return attachPackageCounts(mapped, counts);
     }
     lastErr = String(error?.message || '');
     if (!/column .* does not exist/i.test(lastErr)) break;
@@ -674,6 +769,10 @@ export async function listDestinations(): Promise<CmsDestination[]> {
 }
 
 export async function getDestination(id: number): Promise<CmsDestination | null> {
+  const all = await listDestinations().catch(() => [] as CmsDestination[]);
+  const fromList = all.find((d) => d.id === id);
+  if (fromList) return fromList;
+
   const tries = [
     'id,name,slug,destination_type,parent_id,country_region,flag_image_url,description,is_active,created_at',
     'id,name,slug,destination_type,parent_id,country_region,flag_image_url,description,created_at',
@@ -690,7 +789,6 @@ export async function getDestination(id: number): Promise<CmsDestination | null>
   for (const cols of tries) {
     const { data, error } = await supabase.from('destinations').select(cols).eq('id', id).maybeSingle();
     if (!error && data) {
-      const all = await listDestinations().catch(() => [] as CmsDestination[]);
       const rawRows = all.map((d) => ({
         id: d.id,
         name: d.name,
@@ -699,7 +797,9 @@ export async function getDestination(id: number): Promise<CmsDestination | null>
         parent_id: d.parent_id,
         country_region: d.country,
       })) as DestinationRaw[];
-      return mapDestinationRow(data as unknown as DestinationRaw, rawRows);
+      const mapped = mapDestinationRow(data as unknown as DestinationRaw, rawRows);
+      const counts = await fetchPackageCountsByDestination(all.length ? all : [mapped]);
+      return attachPackageCounts([mapped], counts)[0];
     }
     lastErr = String(error?.message || '');
     if (!/column .* does not exist/i.test(lastErr)) break;
