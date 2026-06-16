@@ -15,6 +15,7 @@ import {
 } from '../lib/destination-seed-hierarchy';
 import { parseTourVisibility, type TourVisibilityStatus } from '../lib/tour-visibility';
 import { parseTourCmsMeta } from '../lib/tour-meta';
+import { readTourDestinationIds } from '../lib/tour-destinations';
 import { splitOverviewWithMeta } from '../lib/tour-overview-meta';
 import { ensureTourTaxonomyFromMeta } from './cms-taxonomy.service';
 import { normalizeTourMarketAudience, type TourMarketAudience } from '../lib/tour-market-audience';
@@ -1168,6 +1169,7 @@ export type CmsTour = {
   /** Denormalized destination name (required on insert in `tours.destination`). */
   destination?: string | null;
   destination_id: number | null;
+  destination_ids?: number[];
   duration_days: number | null;
   flow_type: 'enquiry' | 'booking' | 'both' | null;
   tour_region: string | null;
@@ -1272,6 +1274,10 @@ function mapTourRow(row: TourRaw): CmsTour {
     title: String(row.title || '').trim(),
     slug,
     destination_id: row.destination_id ?? null,
+    destination_ids: readTourDestinationIds({
+      destination_id: row.destination_id,
+      overview: row.overview,
+    }),
     destination: String(row.destination || embed?.name || '').trim() || null,
     duration_days: row.duration_days ?? null,
     flow_type: row.flow_type ?? null,
@@ -1315,16 +1321,29 @@ function mapTourRow(row: TourRaw): CmsTour {
 
 async function resolveTourDestinationName(input: Partial<CmsTour>): Promise<string> {
   const explicit = String(input.destination || '').trim();
+  const ids = readTourDestinationIds({
+    destination_id: input.destination_id,
+    overview: input.overview,
+  });
+  if (!ids.length && input.destination_ids?.length) {
+    ids.push(...input.destination_ids.filter((id) => Number(id) > 0));
+  }
+
+  const names: string[] = [];
+  const seen = new Set<number>();
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const dest = await getDestination(id);
+    const name = String(dest?.name || '').trim();
+    if (name) names.push(name);
+  }
+  if (names.length) return names.join(', ');
+
   if (explicit) return explicit;
   const fromEmbed = String(input.destinations?.name || '').trim();
   if (fromEmbed) return fromEmbed;
-  const destId = input.destination_id;
-  if (destId != null && Number(destId) > 0) {
-    const dest = await getDestination(Number(destId));
-    const name = String(dest?.name || '').trim();
-    if (name) return name;
-  }
-  throw new Error('Destination is required.');
+  throw new Error('At least one destination is required.');
 }
 
 function tourInputToDb(input: Partial<CmsTour>, destinationName: string): Record<string, unknown> {

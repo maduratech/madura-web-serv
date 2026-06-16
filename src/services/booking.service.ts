@@ -51,6 +51,11 @@ import {
 } from '../lib/destination-seed-hierarchy';
 import { destinationSlugVariants, normalizeDestinationSlug } from '../lib/destination-slug';
 import {
+  expandDestinationSlugs,
+  readTourDestinationIds,
+  type DestinationHierarchyRow,
+} from '../lib/tour-destinations';
+import {
   buildDestinationDisplayLabel,
   destinationKind,
   HEADER_REGION_PARENT_SLUGS,
@@ -1393,15 +1398,53 @@ function resolveShowcaseTourDestinationId(
   destinationById: Map<number, DestinationShowcaseRow>,
   destinationByName: Map<string, DestinationShowcaseRow>,
 ): number | null {
-  const destinationIdRaw = tour.destination_id;
-  let destinationId = destinationIdRaw ? Number(destinationIdRaw) : NaN;
-  if (!Number.isFinite(destinationId)) {
-    const fallbackName = String(tour.destination || '').trim();
-    const fallbackDestination = destinationByName.get(fallbackName);
-    destinationId = fallbackDestination ? Number(fallbackDestination.id) : NaN;
+  const ids = resolveShowcaseTourDestinationIds(tour, destinationById, destinationByName);
+  return ids[0] ?? null;
+}
+
+function resolveShowcaseTourDestinationIds(
+  tour: ShowcaseTourRow,
+  destinationById: Map<number, DestinationShowcaseRow>,
+  destinationByName: Map<string, DestinationShowcaseRow>,
+): number[] {
+  const linked = readTourDestinationIds(tour);
+  const resolved: number[] = [];
+  for (const rawId of linked) {
+    if (destinationById.has(rawId)) {
+      resolved.push(rawId);
+      continue;
+    }
   }
-  if (!Number.isFinite(destinationId) || !destinationById.has(destinationId)) return null;
-  return destinationId;
+  if (resolved.length) return [...new Set(resolved)];
+
+  const fallbackName = String(tour.destination || '').trim();
+  const fallbackDestination = destinationByName.get(fallbackName);
+  if (fallbackDestination) return [Number(fallbackDestination.id)];
+  return [];
+}
+
+async function fetchDestinationHierarchyIndex(): Promise<Map<number, DestinationHierarchyRow>> {
+  const tries = ['id,slug,parent_id', 'id,slug'];
+  let lastErr = '';
+  for (const cols of tries) {
+    const { data, error } = await supabase.from('destinations').select(cols);
+    if (!error) {
+      const map = new Map<number, DestinationHierarchyRow>();
+      for (const row of data || []) {
+        const id = Number((row as { id?: number }).id);
+        if (!Number.isFinite(id)) continue;
+        map.set(id, {
+          id,
+          slug: (row as { slug?: string | null }).slug ?? null,
+          parent_id: (row as { parent_id?: number | null }).parent_id ?? null,
+        });
+      }
+      return map;
+    }
+    lastErr = String(error.message || '');
+    if (!/column .* does not exist/i.test(lastErr)) break;
+  }
+  throw new Error(`Failed to fetch destination hierarchy: ${lastErr || 'Unknown error'}`);
 }
 
 function resolveBookingMarketFromRow(row: {
@@ -1475,31 +1518,34 @@ export async function getDestinationShowcase(marketCountry = 'in') {
   const minPriceByDestinationId = new Map<number, number>();
 
   for (const tour of tours) {
-    const destinationId = resolveShowcaseTourDestinationId(tour, destinationById, destinationByName);
-    if (destinationId == null) continue;
-
-    packageCountByDestinationId.set(
-      destinationId,
-      (packageCountByDestinationId.get(destinationId) ?? 0) + 1,
-    );
-
-    const bookings = bookingCountsByTourId.get(Number(tour.id)) ?? 0;
-    if (bookings > 0) {
-      visitorCountByDestinationId.set(
-        destinationId,
-        (visitorCountByDestinationId.get(destinationId) ?? 0) + bookings,
-      );
-    }
+    const destinationIds = resolveShowcaseTourDestinationIds(tour, destinationById, destinationByName);
+    if (!destinationIds.length) continue;
 
     const listPrice = resolveTourListingStartingTwin(
       tour,
       departuresByTourId.get(Number(tour.id)) || [],
       market,
     );
-    if (listPrice == null) continue;
-    const existing = minPriceByDestinationId.get(destinationId);
-    if (existing === undefined || listPrice < existing) {
-      minPriceByDestinationId.set(destinationId, listPrice);
+    const bookings = bookingCountsByTourId.get(Number(tour.id)) ?? 0;
+
+    for (const destinationId of destinationIds) {
+      packageCountByDestinationId.set(
+        destinationId,
+        (packageCountByDestinationId.get(destinationId) ?? 0) + 1,
+      );
+
+      if (bookings > 0) {
+        visitorCountByDestinationId.set(
+          destinationId,
+          (visitorCountByDestinationId.get(destinationId) ?? 0) + bookings,
+        );
+      }
+
+      if (listPrice == null) continue;
+      const existing = minPriceByDestinationId.get(destinationId);
+      if (existing === undefined || listPrice < existing) {
+        minPriceByDestinationId.set(destinationId, listPrice);
+      }
     }
   }
 
@@ -1615,23 +1661,26 @@ export async function getDestinationsDirectory(marketCountry = 'in'): Promise<De
   const minPriceByDestinationId = new Map<number, number>();
 
   for (const tour of tours) {
-    const destinationId = resolveShowcaseTourDestinationId(tour, destinationById, destinationByName);
-    if (destinationId == null) continue;
-
-    packageCountByDestinationId.set(
-      destinationId,
-      (packageCountByDestinationId.get(destinationId) ?? 0) + 1,
-    );
+    const destinationIds = resolveShowcaseTourDestinationIds(tour, destinationById, destinationByName);
+    if (!destinationIds.length) continue;
 
     const listPrice = resolveTourListingStartingTwin(
       tour,
       departuresByTourId.get(Number(tour.id)) || [],
       market,
     );
-    if (listPrice == null) continue;
-    const existing = minPriceByDestinationId.get(destinationId);
-    if (existing === undefined || listPrice < existing) {
-      minPriceByDestinationId.set(destinationId, listPrice);
+
+    for (const destinationId of destinationIds) {
+      packageCountByDestinationId.set(
+        destinationId,
+        (packageCountByDestinationId.get(destinationId) ?? 0) + 1,
+      );
+
+      if (listPrice == null) continue;
+      const existing = minPriceByDestinationId.get(destinationId);
+      if (existing === undefined || listPrice < existing) {
+        minPriceByDestinationId.set(destinationId, listPrice);
+      }
     }
   }
 
@@ -2088,6 +2137,8 @@ export async function getToursListing(marketCountry = 'in') {
     throw new Error(`Failed to fetch tours listing: ${error.message}`);
   }
 
+  const destinationHierarchy = await fetchDestinationHierarchyIndex().catch(() => new Map());
+
   const rows = ((data || []) as ListingTourRow[])
     .filter((row) => isTourListedPublicly(parseTourVisibility(row)))
     .filter((row) => {
@@ -2123,6 +2174,13 @@ export async function getToursListing(marketCountry = 'in') {
     const startingChild = marketBands.child ?? bandPrices.child_price ?? null;
     const startingYouth = marketBands.youth ?? bandPrices.youth_price ?? null;
     const destination = row.destination_ref?.name || row.destination || 'Unknown';
+    const primarySlug = row.destination_ref?.slug || toSlug(destination);
+    const linkedDestinationIds = readTourDestinationIds({
+      destination_id: (row as { destination_id?: number | null }).destination_id,
+      overview: (row as { overview?: string | null }).overview,
+    });
+    const destination_slugs = expandDestinationSlugs(linkedDestinationIds, destinationHierarchy);
+    if (!destination_slugs.length && primarySlug) destination_slugs.push(primarySlug);
     const heroImage = normalizeMediaUrl(row.hero_image_url);
     const gallery = Array.isArray(row.gallery_image_urls)
       ? row.gallery_image_urls
@@ -2143,7 +2201,8 @@ export async function getToursListing(marketCountry = 'in') {
       slug: row.slug || null,
       flow_type: row.flow_type,
       destination,
-      destination_slug: row.destination_ref?.slug || toSlug(destination),
+      destination_slug: primarySlug,
+      destination_slugs,
       image_url:
         heroImage ||
         gallery[0] ||

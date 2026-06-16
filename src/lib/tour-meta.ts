@@ -43,6 +43,8 @@ export type TourCmsMeta = {
   /** Per-departure USD overrides (key = city|start_date). Group tours with scheduled departures. */
   departure_pricing_usd?: Record<string, TourMarketPricing>;
   departure_usd_manual?: string[];
+  /** CMS multi-destination links (city/state/country). */
+  destination_ids?: number[];
 };
 
 export function parseTourCmsMeta(raw: string | null | undefined): TourCmsMeta {
