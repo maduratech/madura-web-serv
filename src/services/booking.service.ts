@@ -48,6 +48,7 @@ import { destinationSlugVariants, normalizeDestinationSlug } from '../lib/destin
 import {
   buildDestinationDisplayLabel,
   destinationKind,
+  HEADER_REGION_PARENT_SLUGS,
   isExcludedMacroRegion,
   resolveDestinationParentSelection,
   resolveParentCountryRow,
@@ -1329,6 +1330,8 @@ async function fetchDestinationRowsForShowcase(): Promise<DestinationShowcaseRow
 
 async function fetchShowcaseTourRows() {
   const tries = [
+    'id,destination_id,destination,title,visibility_status,twin_sharing_price,discounted_price',
+    'id,destination_id,destination,title,twin_sharing_price,discounted_price',
     'id,destination_id,destination,title,visibility_status',
     'id,destination_id,destination,title',
   ];
@@ -1342,11 +1345,58 @@ async function fetchShowcaseTourRows() {
   throw new Error(`Failed to fetch tours for showcase: ${lastErr || 'Unknown error'}`);
 }
 
+type ShowcaseTourRow = {
+  id: number;
+  destination_id?: number | null;
+  destination?: string | null;
+  visibility_status?: string | null;
+  is_active?: boolean | null;
+  twin_sharing_price?: number | null;
+  discounted_price?: number | null;
+};
+
+function resolveShowcaseTourDestinationId(
+  tour: ShowcaseTourRow,
+  destinationById: Map<number, DestinationShowcaseRow>,
+  destinationByName: Map<string, DestinationShowcaseRow>,
+): number | null {
+  const destinationIdRaw = tour.destination_id;
+  let destinationId = destinationIdRaw ? Number(destinationIdRaw) : NaN;
+  if (!Number.isFinite(destinationId)) {
+    const fallbackName = String(tour.destination || '').trim();
+    const fallbackDestination = destinationByName.get(fallbackName);
+    destinationId = fallbackDestination ? Number(fallbackDestination.id) : NaN;
+  }
+  if (!Number.isFinite(destinationId) || !destinationById.has(destinationId)) return null;
+  return destinationId;
+}
+
+function readShowcaseTourListPrice(tour: ShowcaseTourRow): number | null {
+  const twin = Number(tour.twin_sharing_price);
+  const discounted = Number(tour.discounted_price);
+  const candidates = [twin, discounted].filter((n) => Number.isFinite(n) && n > 0);
+  if (!candidates.length) return null;
+  return Math.min(...candidates);
+}
+
+async function fetchBookingCountsByTourId(): Promise<Map<number, number>> {
+  const counts = new Map<number, number>();
+  const { data, error } = await supabase.from('bookings').select('tour_id');
+  if (error) return counts;
+  for (const row of data || []) {
+    const tourId = Number((row as { tour_id?: number | null }).tour_id);
+    if (!Number.isFinite(tourId)) continue;
+    counts.set(tourId, (counts.get(tourId) ?? 0) + 1);
+  }
+  return counts;
+}
+
 export async function getDestinationShowcase() {
-  const [allDestinations, toursRaw, departuresRes] = await Promise.all([
+  const [allDestinations, toursRaw, departuresRes, bookingCountsByTourId] = await Promise.all([
     fetchDestinationRowsForShowcase(),
     fetchShowcaseTourRows(),
     supabase.from('departures').select('tour_id,price'),
+    fetchBookingCountsByTourId(),
   ]);
 
   const departuresError = departuresRes.error;
@@ -1354,13 +1404,9 @@ export async function getDestinationShowcase() {
     throw new Error(`Failed to fetch departures for showcase: ${departuresError.message}`);
   }
 
-  const tours = (toursRaw as unknown as Array<{
-    id: number;
-    destination_id?: number | null;
-    destination?: string | null;
-    visibility_status?: string | null;
-    is_active?: boolean | null;
-  }>).filter((t) => isTourListedPublicly(parseTourVisibility(t)));
+  const tours = (toursRaw as unknown as ShowcaseTourRow[]).filter((t) =>
+    isTourListedPublicly(parseTourVisibility(t)),
+  );
   const departures = (departuresRes.data || []) as Array<{ tour_id: number; price: number }>;
 
   const destinationById = new Map<number, DestinationShowcaseRow>();
@@ -1379,21 +1425,34 @@ export async function getDestinationShowcase() {
     if (existing === undefined || price < existing) minPriceByTourId.set(tourId, price);
   }
 
+  const packageCountByDestinationId = new Map<number, number>();
+  const visitorCountByDestinationId = new Map<number, number>();
   const minPriceByDestinationId = new Map<number, number>();
-  for (const t of tours || []) {
-    const destinationIdRaw = (t as { destination_id?: number | null; destination?: string | null }).destination_id;
-    let destinationId = destinationIdRaw ? Number(destinationIdRaw) : NaN;
-    if (!Number.isFinite(destinationId)) {
-      const fallbackName = String((t as { destination?: string | null }).destination || '');
-      const fallbackDestination = destinationByName.get(fallbackName);
-      destinationId = fallbackDestination ? Number(fallbackDestination.id) : NaN;
-    }
-    if (!Number.isFinite(destinationId)) continue;
 
-    const minTourPrice = minPriceByTourId.get(Number((t as { id: number }).id));
-    if (minTourPrice === undefined) continue;
+  for (const tour of tours) {
+    const destinationId = resolveShowcaseTourDestinationId(tour, destinationById, destinationByName);
+    if (destinationId == null) continue;
+
+    packageCountByDestinationId.set(
+      destinationId,
+      (packageCountByDestinationId.get(destinationId) ?? 0) + 1,
+    );
+
+    const bookings = bookingCountsByTourId.get(Number(tour.id)) ?? 0;
+    if (bookings > 0) {
+      visitorCountByDestinationId.set(
+        destinationId,
+        (visitorCountByDestinationId.get(destinationId) ?? 0) + bookings,
+      );
+    }
+
+    const departurePrice = minPriceByTourId.get(Number(tour.id));
+    const listPrice = departurePrice ?? readShowcaseTourListPrice(tour);
+    if (listPrice == null) continue;
     const existing = minPriceByDestinationId.get(destinationId);
-    if (existing === undefined || minTourPrice < existing) minPriceByDestinationId.set(destinationId, minTourPrice);
+    if (existing === undefined || listPrice < existing) {
+      minPriceByDestinationId.set(destinationId, listPrice);
+    }
   }
 
   const cards = allDestinations
@@ -1403,20 +1462,24 @@ export async function getDestinationShowcase() {
       return kind === 'country' || (kind === 'other' && d.parent_id == null);
     })
     .map((d) => {
+      const destId = Number(d.id);
       const parent = d.parent_id ? destinationById.get(Number(d.parent_id)) : undefined;
       const continent =
         d.continent ||
         (parent?.destination_type === 'continent' ? parent.name : parent?.continent) ||
         'Other';
+      const slug = normalizeDestinationSlug(
+        String(d.slug || d.name.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-')),
+      );
       return {
-        id: Number(d.id),
+        id: destId,
         name: d.name,
-        slug: normalizeDestinationSlug(
-          String(d.slug || d.name.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-'))
-        ),
+        slug,
         continent,
         image_url: resolveDestinationShowcaseImage(d),
-        starting_from: minPriceByDestinationId.get(Number(d.id)) ?? null,
+        starting_from: minPriceByDestinationId.get(destId) ?? null,
+        package_count: packageCountByDestinationId.get(destId) ?? 0,
+        visitor_count: visitorCountByDestinationId.get(destId) ?? 0,
       };
     });
 
@@ -1429,10 +1492,24 @@ export async function getDestinationShowcase() {
 
   return Object.entries(grouped)
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([continent, items]) => ({
-      continent,
-      destinations: items.sort((a, b) => a.name.localeCompare(b.name)),
-    }));
+    .map(([continent, items]) => {
+      let destinations = items;
+      if (continent === 'Other') {
+        destinations = items
+          .filter((item) => {
+            if (item.package_count <= 0) return false;
+            return !HEADER_REGION_PARENT_SLUGS.has(item.slug);
+          })
+          .sort((a, b) => {
+            if (b.visitor_count !== a.visitor_count) return b.visitor_count - a.visitor_count;
+            if (b.package_count !== a.package_count) return b.package_count - a.package_count;
+            return a.name.localeCompare(b.name);
+          });
+      } else {
+        destinations = [...items].sort((a, b) => a.name.localeCompare(b.name));
+      }
+      return { continent, destinations };
+    });
 }
 
 export async function getTours() {
