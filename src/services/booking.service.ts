@@ -1606,6 +1606,94 @@ export async function getDestinationShowcase(marketCountry = 'in') {
     });
 }
 
+export type TopDestinationItem = {
+  id: number;
+  name: string;
+  slug: string;
+};
+
+/** Top destinations for header drawer / quick links — ranked by bookings then package count (market-specific). */
+export async function getTopDestinations(marketCountry = 'in', limit = 5): Promise<TopDestinationItem[]> {
+  const safeLimit = Math.min(Math.max(Number(limit) || 5, 1), 20);
+  const market = marketCountry.toLowerCase() === 'au' ? 'au' : 'in';
+  const [allDestinations, toursRaw, departuresRaw, bookingCountsByTourId] = await Promise.all([
+    fetchDestinationRowsForShowcase(),
+    fetchShowcaseTourRows(),
+    fetchShowcaseDepartures(),
+    fetchBookingCountsByTourId(market),
+  ]);
+
+  const tours = (toursRaw as unknown as ShowcaseTourRow[]).filter((t) => {
+    if (!isTourListedPublicly(parseTourVisibility(t))) return false;
+    const meta = parseTourCmsMeta(t.overview);
+    if (crmMetaHasCrmItinerary(meta)) return true;
+    return tourVisibleForMarket(meta.market_audience, market);
+  });
+
+  const departuresByTourId = new Map<number, NonNullable<ListingTourRow['departures']>>();
+  for (const dep of departuresRaw) {
+    const tourId = Number((dep as { tour_id?: number }).tour_id);
+    if (!Number.isFinite(tourId)) continue;
+    const list = departuresByTourId.get(tourId) || [];
+    list.push(dep as NonNullable<ListingTourRow['departures']>[number]);
+    departuresByTourId.set(tourId, list);
+  }
+
+  const destinationById = new Map<number, DestinationShowcaseRow>();
+  const destinationByName = new Map<string, DestinationShowcaseRow>();
+  for (const d of allDestinations) {
+    destinationById.set(Number(d.id), d);
+    destinationByName.set(String(d.name), d);
+  }
+
+  const packageCountByDestinationId = new Map<number, number>();
+  const visitorCountByDestinationId = new Map<number, number>();
+
+  for (const tour of tours) {
+    const destinationIds = resolveShowcaseTourDestinationIds(tour, destinationById, destinationByName);
+    if (!destinationIds.length) continue;
+
+    const bookings = bookingCountsByTourId.get(Number(tour.id)) ?? 0;
+
+    for (const destinationId of destinationIds) {
+      packageCountByDestinationId.set(
+        destinationId,
+        (packageCountByDestinationId.get(destinationId) ?? 0) + 1,
+      );
+
+      if (bookings > 0) {
+        visitorCountByDestinationId.set(
+          destinationId,
+          (visitorCountByDestinationId.get(destinationId) ?? 0) + bookings,
+        );
+      }
+    }
+  }
+
+  return allDestinations
+    .map((d) => {
+      const destId = Number(d.id);
+      const slug = normalizeDestinationSlug(
+        String(d.slug || d.name.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-')),
+      );
+      return {
+        id: destId,
+        name: d.name,
+        slug,
+        package_count: packageCountByDestinationId.get(destId) ?? 0,
+        visitor_count: visitorCountByDestinationId.get(destId) ?? 0,
+      };
+    })
+    .filter((d) => d.package_count > 0 && !HEADER_REGION_PARENT_SLUGS.has(d.slug))
+    .sort((a, b) => {
+      if (b.visitor_count !== a.visitor_count) return b.visitor_count - a.visitor_count;
+      if (b.package_count !== a.package_count) return b.package_count - a.package_count;
+      return a.name.localeCompare(b.name);
+    })
+    .slice(0, safeLimit)
+    .map(({ id, name, slug }) => ({ id, name, slug }));
+}
+
 export type DestinationsDirectoryCard = {
   id: number;
   name: string;

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   getDestinationShowcase,
+  getTopDestinations,
   getDestinationsDirectory,
   getDestinationBySlug,
   getDestinations,
@@ -85,6 +86,20 @@ toursRouter.get('/destination-showcase', async (req, res, next) => {
     const showcase = await getDestinationShowcase(market);
     res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
     return res.json({ data: showcase });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+toursRouter.get('/destinations-top', async (req, res, next) => {
+  try {
+    const rawMarket = String(req.query.market || 'in').trim().toLowerCase();
+    const market = rawMarket.split('-')[0] || 'in';
+    const rawLimit = Number(req.query.limit);
+    const limit = Number.isFinite(rawLimit) ? rawLimit : 5;
+    const destinations = await getTopDestinations(market, limit);
+    res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
+    return res.json({ data: destinations });
   } catch (error) {
     return next(error);
   }
