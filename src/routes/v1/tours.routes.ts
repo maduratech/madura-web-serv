@@ -77,9 +77,11 @@ toursRouter.get('/search-options', async (_req, res, next) => {
   }
 });
 
-toursRouter.get('/destination-showcase', async (_req, res, next) => {
+toursRouter.get('/destination-showcase', async (req, res, next) => {
   try {
-    const showcase = await getDestinationShowcase();
+    const rawMarket = String(req.query.market || 'in').trim().toLowerCase();
+    const market = rawMarket.split('-')[0] || 'in';
+    const showcase = await getDestinationShowcase(market);
     res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
     return res.json({ data: showcase });
   } catch (error) {

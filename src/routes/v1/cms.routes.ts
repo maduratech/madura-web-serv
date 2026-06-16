@@ -67,6 +67,7 @@ function clientError(res: import('express').Response, err: unknown) {
   const message = err instanceof Error ? err.message : 'Request failed.';
   res.status(400).json({ message, error: message });
 }
+import { listCmsOrders } from '../../services/cms-orders.service';
 import { searchStockImages, uploadCmsMedia } from '../../services/cms-media.service';
 import { listTourDepartures, replaceTourDepartures } from '../../services/cms-departures.service';
 import { parseTourSupplierContentForCms } from '../../services/cms-ai.service';
@@ -195,6 +196,14 @@ cmsRouter.delete('/destinations/:id', requireSuperAdmin, async (req, res, next) 
 cmsRouter.get('/tours', async (_req, res, next) => {
   try {
     res.json({ items: await listTours() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.get('/orders', async (_req, res, next) => {
+  try {
+    res.json(await listCmsOrders());
   } catch (err) {
     next(err);
   }

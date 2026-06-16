@@ -1330,7 +1330,9 @@ async function fetchDestinationRowsForShowcase(): Promise<DestinationShowcaseRow
 
 async function fetchShowcaseTourRows() {
   const tries = [
+    'id,destination_id,destination,title,visibility_status,twin_sharing_price,discounted_price,overview',
     'id,destination_id,destination,title,visibility_status,twin_sharing_price,discounted_price',
+    'id,destination_id,destination,title,twin_sharing_price,discounted_price,overview',
     'id,destination_id,destination,title,twin_sharing_price,discounted_price',
     'id,destination_id,destination,title,visibility_status',
     'id,destination_id,destination,title',
@@ -1353,6 +1355,7 @@ type ShowcaseTourRow = {
   is_active?: boolean | null;
   twin_sharing_price?: number | null;
   discounted_price?: number | null;
+  overview?: string | null;
 };
 
 function resolveShowcaseTourDestinationId(
@@ -1379,34 +1382,59 @@ function readShowcaseTourListPrice(tour: ShowcaseTourRow): number | null {
   return Math.min(...candidates);
 }
 
-async function fetchBookingCountsByTourId(): Promise<Map<number, number>> {
+function resolveBookingMarketFromRow(row: {
+  display_currency?: string | null;
+  payment_currency?: string | null;
+}): PaymentStorefront {
+  const currency = String(row.payment_currency || row.display_currency || '').toUpperCase().trim();
+  return resolveStorefront(currency === 'AUD' ? 'AUD' : currency || 'INR');
+}
+
+async function fetchBookingCountsByTourId(marketCountry = 'in'): Promise<Map<number, number>> {
+  const market = marketCountry.toLowerCase() === 'au' ? 'au' : 'in';
   const counts = new Map<number, number>();
-  const { data, error } = await supabase.from('bookings').select('tour_id');
-  if (error) return counts;
-  for (const row of data || []) {
-    const tourId = Number((row as { tour_id?: number | null }).tour_id);
-    if (!Number.isFinite(tourId)) continue;
-    counts.set(tourId, (counts.get(tourId) ?? 0) + 1);
+  const tries = [
+    'tour_id,display_currency,payment_currency',
+    'tour_id,display_currency',
+    'tour_id',
+  ];
+  for (const cols of tries) {
+    const { data, error } = await supabase.from('bookings').select(cols);
+    if (!error) {
+      for (const row of data || []) {
+        if (resolveBookingMarketFromRow(row as { display_currency?: string; payment_currency?: string }) !== market) {
+          continue;
+        }
+        const tourId = Number((row as { tour_id?: number | null }).tour_id);
+        if (!Number.isFinite(tourId)) continue;
+        counts.set(tourId, (counts.get(tourId) ?? 0) + 1);
+      }
+      return counts;
+    }
+    if (!/column .* does not exist|schema cache/i.test(String(error.message || ''))) break;
   }
   return counts;
 }
 
-export async function getDestinationShowcase() {
+export async function getDestinationShowcase(marketCountry = 'in') {
+  const market = marketCountry.toLowerCase() === 'au' ? 'au' : 'in';
   const [allDestinations, toursRaw, departuresRes, bookingCountsByTourId] = await Promise.all([
     fetchDestinationRowsForShowcase(),
     fetchShowcaseTourRows(),
     supabase.from('departures').select('tour_id,price'),
-    fetchBookingCountsByTourId(),
+    fetchBookingCountsByTourId(market),
   ]);
-
   const departuresError = departuresRes.error;
   if (departuresError) {
     throw new Error(`Failed to fetch departures for showcase: ${departuresError.message}`);
   }
 
-  const tours = (toursRaw as unknown as ShowcaseTourRow[]).filter((t) =>
-    isTourListedPublicly(parseTourVisibility(t)),
-  );
+  const tours = (toursRaw as unknown as ShowcaseTourRow[]).filter((t) => {
+    if (!isTourListedPublicly(parseTourVisibility(t))) return false;
+    const meta = parseTourCmsMeta(t.overview);
+    if (crmMetaHasCrmItinerary(meta)) return true;
+    return tourVisibleForMarket(meta.market_audience, market);
+  });
   const departures = (departuresRes.data || []) as Array<{ tour_id: number; price: number }>;
 
   const destinationById = new Map<number, DestinationShowcaseRow>();
