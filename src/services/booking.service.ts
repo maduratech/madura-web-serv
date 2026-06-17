@@ -841,13 +841,44 @@ type DestinationShowcaseRow = {
 const DESTINATION_SHOWCASE_FALLBACK_IMAGE =
   'https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=900&q=80';
 
-function resolveDestinationShowcaseImage(row: DestinationShowcaseRow): string {
-  const fromColumns =
-    normalizeMediaUrl(row.image_url) || normalizeMediaUrl(row.cover_image_url);
-  if (fromColumns) return fromColumns;
+function isGenericDestinationFallbackUrl(url: string | null | undefined): boolean {
+  const normalized = normalizeMediaUrl(url);
+  if (!normalized) return false;
+  return (
+    normalized === DESTINATION_SHOWCASE_FALLBACK_IMAGE ||
+    normalized.includes('photo-1488646953014-85cb44e25828')
+  );
+}
 
+function resolveShowcaseTourImage(tour: {
+  hero_image_url?: string | null;
+  gallery_image_urls?: string[] | null;
+}): string | null {
+  const hero = normalizeMediaUrl(tour.hero_image_url);
+  if (hero) return hero;
+  const gallery = Array.isArray(tour.gallery_image_urls) ? tour.gallery_image_urls : [];
+  for (const raw of gallery) {
+    const url = normalizeMediaUrl(raw);
+    if (url) return url;
+  }
+  return null;
+}
+
+function resolveDestinationShowcaseImage(
+  row: DestinationShowcaseRow,
+  tourImage?: string | null,
+): string {
   const banner = normalizeMediaUrl(parseDestinationPageMeta(row.description).banner_image_url);
   if (banner) return banner;
+
+  const fromTour = normalizeMediaUrl(tourImage);
+  if (fromTour) return fromTour;
+
+  const columnCandidates = [
+    normalizeMediaUrl(row.cover_image_url),
+    normalizeMediaUrl(row.image_url),
+  ].filter((url): url is string => Boolean(url) && !isGenericDestinationFallbackUrl(url));
+  if (columnCandidates[0]) return columnCandidates[0];
 
   return DESTINATION_SHOWCASE_FALLBACK_IMAGE;
 }
@@ -1340,6 +1371,8 @@ async function fetchDestinationRowsForShowcase(): Promise<DestinationShowcaseRow
 
 async function fetchShowcaseTourRows() {
   const tries = [
+    'id,destination_id,destination,title,visibility_status,hero_image_url,gallery_image_urls,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
+    'id,destination_id,destination,title,hero_image_url,gallery_image_urls,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
     'id,destination_id,destination,title,visibility_status,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
     'id,destination_id,destination,title,visibility_status,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price',
     'id,destination_id,destination,title,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
@@ -1391,6 +1424,8 @@ type ShowcaseTourRow = {
   youth_price?: number | null;
   discounted_price?: number | null;
   overview?: string | null;
+  hero_image_url?: string | null;
+  gallery_image_urls?: string[] | null;
 };
 
 function resolveShowcaseTourDestinationId(
@@ -1516,6 +1551,7 @@ export async function getDestinationShowcase(marketCountry = 'in') {
   const packageCountByDestinationId = new Map<number, number>();
   const visitorCountByDestinationId = new Map<number, number>();
   const minPriceByDestinationId = new Map<number, number>();
+  const tourImageByDestinationId = new Map<number, string>();
 
   for (const tour of tours) {
     const destinationIds = resolveShowcaseTourDestinationIds(tour, destinationById, destinationByName);
@@ -1527,12 +1563,17 @@ export async function getDestinationShowcase(marketCountry = 'in') {
       market,
     );
     const bookings = bookingCountsByTourId.get(Number(tour.id)) ?? 0;
+    const tourImage = resolveShowcaseTourImage(tour);
 
     for (const destinationId of destinationIds) {
       packageCountByDestinationId.set(
         destinationId,
         (packageCountByDestinationId.get(destinationId) ?? 0) + 1,
       );
+
+      if (tourImage && !tourImageByDestinationId.has(destinationId)) {
+        tourImageByDestinationId.set(destinationId, tourImage);
+      }
 
       if (bookings > 0) {
         visitorCountByDestinationId.set(
@@ -1570,7 +1611,7 @@ export async function getDestinationShowcase(marketCountry = 'in') {
         name: d.name,
         slug,
         continent,
-        image_url: resolveDestinationShowcaseImage(d),
+        image_url: resolveDestinationShowcaseImage(d, tourImageByDestinationId.get(destId)),
         starting_from: minPriceByDestinationId.get(destId) ?? null,
         package_count: packageCountByDestinationId.get(destId) ?? 0,
         visitor_count: visitorCountByDestinationId.get(destId) ?? 0,
@@ -1747,6 +1788,7 @@ export async function getDestinationsDirectory(marketCountry = 'in'): Promise<De
 
   const packageCountByDestinationId = new Map<number, number>();
   const minPriceByDestinationId = new Map<number, number>();
+  const tourImageByDestinationId = new Map<number, string>();
 
   for (const tour of tours) {
     const destinationIds = resolveShowcaseTourDestinationIds(tour, destinationById, destinationByName);
@@ -1757,12 +1799,17 @@ export async function getDestinationsDirectory(marketCountry = 'in'): Promise<De
       departuresByTourId.get(Number(tour.id)) || [],
       market,
     );
+    const tourImage = resolveShowcaseTourImage(tour);
 
     for (const destinationId of destinationIds) {
       packageCountByDestinationId.set(
         destinationId,
         (packageCountByDestinationId.get(destinationId) ?? 0) + 1,
       );
+
+      if (tourImage && !tourImageByDestinationId.has(destinationId)) {
+        tourImageByDestinationId.set(destinationId, tourImage);
+      }
 
       if (listPrice == null) continue;
       const existing = minPriceByDestinationId.get(destinationId);
@@ -1785,7 +1832,9 @@ export async function getDestinationsDirectory(marketCountry = 'in'): Promise<De
         id: destId,
         name: row?.name?.trim() || name,
         slug,
-        image_url: row ? resolveDestinationShowcaseImage(row) : DESTINATION_SHOWCASE_FALLBACK_IMAGE,
+        image_url: row
+          ? resolveDestinationShowcaseImage(row, tourImageByDestinationId.get(Number(row.id)))
+          : DESTINATION_SHOWCASE_FALLBACK_IMAGE,
         starting_from: row ? (minPriceByDestinationId.get(Number(row.id)) ?? null) : null,
         package_count: row ? (packageCountByDestinationId.get(Number(row.id)) ?? 0) : 0,
       };
