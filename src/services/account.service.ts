@@ -613,6 +613,117 @@ export async function updateProfileAndSyncToCrm(
   return finishProfileSync(ctx, updated as ProfileRow);
 }
 
+export const CUSTOMER_DOCUMENT_TYPES = [
+  'passports',
+  'visas',
+  'aadhaarCards',
+  'panCards',
+  'bankStatements',
+  'otherDocuments',
+] as const;
+
+export type CustomerDocumentType = (typeof CUSTOMER_DOCUMENT_TYPES)[number];
+
+export type AccountDocumentSummary = {
+  id: number | null;
+  doc_type: CustomerDocumentType;
+  file_name: string;
+  file_type: string;
+  file_size: number;
+  label: string;
+  person_name: string | null;
+  notes: string | null;
+  uploaded_via: string | null;
+};
+
+/** Ensure the signed-in user is linked to a CRM customer (sync profile if needed). */
+export async function ensureCrmCustomerId(ctx: AuthContext): Promise<number> {
+  if (ctx.crmCustomerId != null && ctx.crmCustomerId > 0) {
+    return ctx.crmCustomerId;
+  }
+  const profile = await fetchProfileRowForUser(ctx.userId);
+  const linkedId = profile?.crm_customer_id;
+  if (linkedId != null && linkedId > 0) {
+    return linkedId;
+  }
+  const sync = await syncProfileToCrm(
+    {
+      ...ctx,
+      crmCustomerId: linkedId ?? ctx.crmCustomerId,
+    },
+    {
+      full_name: profile?.full_name ?? ctx.fullName,
+      phone: profile?.phone ?? ctx.phone,
+      email: profile?.email ?? ctx.email,
+      avatar_url: profile?.avatar_url ?? ctx.avatarUrl,
+    }
+  );
+  if (!sync?.crm_customer_id) {
+    throw new Error(
+      'Could not link your account to CRM. Add your phone or email on your profile first.'
+    );
+  }
+  return sync.crm_customer_id;
+}
+
+export async function fetchAccountDocuments(
+  ctx: AuthContext
+): Promise<AccountDocumentSummary[]> {
+  const customerId = await ensureCrmCustomerId(ctx);
+  const { base, secret } = requireCrmIntegration();
+  const response = await crmFetch(`${base}/api/customer/${customerId}/documents`, {
+    method: 'GET',
+    headers: { 'x-integration-secret': secret },
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Failed to load documents: ${response.status} ${text}`.trim());
+  }
+  const payload = (await response.json()) as { documents?: AccountDocumentSummary[] };
+  return Array.isArray(payload.documents) ? payload.documents : [];
+}
+
+export async function uploadAccountDocument(
+  ctx: AuthContext,
+  input: {
+    doc_type: CustomerDocumentType;
+    file: { name: string; type: string; size: number; content: string };
+    label?: string;
+    notes?: string;
+  }
+): Promise<AccountDocumentSummary> {
+  if (!CUSTOMER_DOCUMENT_TYPES.includes(input.doc_type)) {
+    throw new Error('Invalid document type.');
+  }
+  const customerId = await ensureCrmCustomerId(ctx);
+  const { base, secret } = requireCrmIntegration();
+  const response = await crmFetch(`${base}/api/customer/${customerId}/documents`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-integration-secret': secret,
+    },
+    body: JSON.stringify({
+      doc_type: input.doc_type,
+      file: input.file,
+      label: input.label,
+      notes: input.notes,
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(
+      (payload as { message?: string })?.message ||
+        `Failed to upload document (${response.status}).`
+    );
+  }
+  const doc = (payload as { document?: AccountDocumentSummary }).document;
+  if (!doc) {
+    throw new Error('Document upload succeeded but no document was returned.');
+  }
+  return doc;
+}
+
 async function finishProfileSync(ctx: AuthContext, u: ProfileRow) {
   const snapshotCtx: AuthContext = {
     ...ctx,

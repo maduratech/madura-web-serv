@@ -2,10 +2,14 @@ import { Router } from 'express';
 import { requireAuth } from '../../middlewares/auth.middleware';
 import {
   buildAccountMeForUser,
+  CUSTOMER_DOCUMENT_TYPES,
+  fetchAccountDocuments,
   fetchBookingsForUser,
   fetchCrmHistoryForProfile,
   fetchEnquiriesForUser,
   updateProfileAndSyncToCrm,
+  uploadAccountDocument,
+  type CustomerDocumentType,
 } from '../../services/account.service';
 
 const accountRouter = Router();
@@ -51,6 +55,44 @@ accountRouter.get('/account/crm-history', requireAuth, async (req, res, next) =>
         ? 'Add a phone on your profile for the strongest match. We also search by your login email.'
         : undefined;
     return res.status(200).json({ data, message });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+/** GET /api/v1/account/documents — CRM customer documents (metadata only). */
+accountRouter.get('/account/documents', requireAuth, async (req, res, next) => {
+  try {
+    const data = await fetchAccountDocuments(req.auth!);
+    return res.status(200).json({ data });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+/** POST /api/v1/account/documents — upload a document to the linked CRM customer. */
+accountRouter.post('/account/documents', requireAuth, async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const docType = String(body.doc_type || '').trim() as CustomerDocumentType;
+    if (!CUSTOMER_DOCUMENT_TYPES.includes(docType)) {
+      return res.status(400).json({ message: 'Invalid document type.' });
+    }
+    const file = body.file || {};
+    const name = typeof file.name === 'string' ? file.name.trim() : '';
+    const type = typeof file.type === 'string' ? file.type.trim() : '';
+    const size = Number(file.size) || 0;
+    const content = typeof file.content === 'string' ? file.content.trim() : '';
+    if (!name || !content) {
+      return res.status(400).json({ message: 'File name and content are required.' });
+    }
+    const data = await uploadAccountDocument(req.auth!, {
+      doc_type: docType,
+      file: { name, type, size, content },
+      label: typeof body.label === 'string' ? body.label.trim() : undefined,
+      notes: typeof body.notes === 'string' ? body.notes.trim() : undefined,
+    });
+    return res.status(201).json({ data });
   } catch (err) {
     return next(err);
   }
