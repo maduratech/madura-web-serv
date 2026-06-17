@@ -445,7 +445,7 @@ export async function syncProfileToCrm(
   });
   if (!response.ok) {
     const text = await response.text().catch(() => '');
-    throw new Error(`CRM customer sync failed: ${response.status} ${text}`.trim());
+    throw new Error(`Profile sync failed: ${response.status} ${text}`.trim());
   }
   const payload = (await response.json()) as {
     customer_id?: number;
@@ -660,7 +660,7 @@ export async function ensureCrmCustomerId(ctx: AuthContext): Promise<number> {
   );
   if (!sync?.crm_customer_id) {
     throw new Error(
-      'Could not link your account to CRM. Add your phone or email on your profile first.'
+      'We could not match your account yet. Add your phone or email on your profile first.'
     );
   }
   return sync.crm_customer_id;
