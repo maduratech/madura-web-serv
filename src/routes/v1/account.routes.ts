@@ -3,6 +3,8 @@ import { requireAuth } from '../../middlewares/auth.middleware';
 import {
   buildAccountMeForUser,
   CUSTOMER_DOCUMENT_TYPES,
+  deleteAccountDocument,
+  fetchAccountDocumentFile,
   fetchAccountDocuments,
   fetchBookingsForUser,
   fetchCrmHistoryForProfile,
@@ -93,6 +95,42 @@ accountRouter.post('/account/documents', requireAuth, async (req, res, next) => 
       notes: typeof body.notes === 'string' ? body.notes.trim() : undefined,
     });
     return res.status(201).json({ data });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+/** GET /api/v1/account/documents/:docType/:docId/view — stream document for in-app preview. */
+accountRouter.get('/account/documents/:docType/:docId/view', requireAuth, async (req, res, next) => {
+  try {
+    const docType = String(req.params.docType || '').trim() as CustomerDocumentType;
+    const docId = String(req.params.docId || '').trim();
+    if (!CUSTOMER_DOCUMENT_TYPES.includes(docType) || !docId) {
+      return res.status(400).json({ message: 'Invalid document reference.' });
+    }
+    const file = await fetchAccountDocumentFile(req.auth!, docType, docId);
+    res.setHeader('Content-Type', file.contentType);
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${encodeURIComponent(file.fileName)}"`
+    );
+    res.setHeader('Cache-Control', 'private, no-store');
+    return res.status(200).send(file.buffer);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+/** DELETE /api/v1/account/documents/:docType/:docId — remove a website-uploaded document. */
+accountRouter.delete('/account/documents/:docType/:docId', requireAuth, async (req, res, next) => {
+  try {
+    const docType = String(req.params.docType || '').trim() as CustomerDocumentType;
+    const docId = String(req.params.docId || '').trim();
+    if (!CUSTOMER_DOCUMENT_TYPES.includes(docType) || !docId) {
+      return res.status(400).json({ message: 'Invalid document reference.' });
+    }
+    await deleteAccountDocument(req.auth!, docType, docId);
+    return res.status(200).json({ ok: true });
   } catch (err) {
     return next(err);
   }

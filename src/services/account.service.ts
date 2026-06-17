@@ -265,7 +265,7 @@ function requireCrmIntegration(): { base: string; secret: string } {
   const secret = String(env.CRM_WEB_INTEGRATION_SECRET || '').trim();
   if (!base || !secret) {
     throw new Error(
-      'CRM web integration not configured (set CRM_API_URL and CRM_WEB_INTEGRATION_SECRET).'
+      'Travel account services are temporarily unavailable. Please try again later.'
     );
   }
   return { base, secret };
@@ -445,7 +445,7 @@ export async function syncProfileToCrm(
   });
   if (!response.ok) {
     const text = await response.text().catch(() => '');
-    throw new Error(`Profile sync failed: ${response.status} ${text}`.trim());
+    throw new Error('Could not update your profile. Please try again.');
   }
   const payload = (await response.json()) as {
     customer_id?: number;
@@ -631,9 +631,11 @@ export type AccountDocumentSummary = {
   file_type: string;
   file_size: number;
   label: string;
+  type_label: string;
   person_name: string | null;
   notes: string | null;
   uploaded_via: string | null;
+  can_delete: boolean;
 };
 
 /** Ensure the signed-in user is linked to a CRM customer (sync profile if needed). */
@@ -676,8 +678,7 @@ export async function fetchAccountDocuments(
     headers: { 'x-integration-secret': secret },
   });
   if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new Error(`Failed to load documents: ${response.status} ${text}`.trim());
+    throw new Error('Could not load your documents. Please try again.');
   }
   const payload = (await response.json()) as { documents?: AccountDocumentSummary[] };
   return Array.isArray(payload.documents) ? payload.documents : [];
@@ -722,6 +723,62 @@ export async function uploadAccountDocument(
     throw new Error('Document upload succeeded but no document was returned.');
   }
   return doc;
+}
+
+export async function fetchAccountDocumentFile(
+  ctx: AuthContext,
+  docType: CustomerDocumentType,
+  docId: number | string
+): Promise<{ buffer: Buffer; contentType: string; fileName: string }> {
+  if (!CUSTOMER_DOCUMENT_TYPES.includes(docType)) {
+    throw new Error('Invalid document type.');
+  }
+  const customerId = await ensureCrmCustomerId(ctx);
+  const { base, secret } = requireCrmIntegration();
+  const response = await crmFetch(
+    `${base}/api/customer/${customerId}/documents/${encodeURIComponent(docType)}/${encodeURIComponent(String(docId))}/file`,
+    {
+      method: 'GET',
+      headers: { 'x-integration-secret': secret },
+    }
+  );
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(
+      (payload as { message?: string })?.message || 'Could not open document.'
+    );
+  }
+  const contentType = response.headers.get('content-type') || 'application/octet-stream';
+  const disposition = response.headers.get('content-disposition') || '';
+  const nameMatch = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(disposition);
+  const fileName = nameMatch?.[1] ? decodeURIComponent(nameMatch[1]) : 'document';
+  const buffer = Buffer.from(await response.arrayBuffer());
+  return { buffer, contentType, fileName };
+}
+
+export async function deleteAccountDocument(
+  ctx: AuthContext,
+  docType: CustomerDocumentType,
+  docId: number | string
+): Promise<void> {
+  if (!CUSTOMER_DOCUMENT_TYPES.includes(docType)) {
+    throw new Error('Invalid document type.');
+  }
+  const customerId = await ensureCrmCustomerId(ctx);
+  const { base, secret } = requireCrmIntegration();
+  const response = await crmFetch(
+    `${base}/api/customer/${customerId}/documents/${encodeURIComponent(docType)}/${encodeURIComponent(String(docId))}`,
+    {
+      method: 'DELETE',
+      headers: { 'x-integration-secret': secret },
+    }
+  );
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(
+      (payload as { message?: string })?.message || 'Could not delete document.'
+    );
+  }
 }
 
 async function finishProfileSync(ctx: AuthContext, u: ProfileRow) {
