@@ -1,5 +1,10 @@
+import type { GroupPaxSlab, TourPricingModel } from './group-pax-pricing';
+import type { GroupPaxCollectionTier } from './tour-collection-tiers';
 import type { TourMarketAudience, TourMarketPricing } from './tour-market-audience';
 import { splitOverviewWithMeta } from './tour-overview-meta';
+
+export type { GroupPaxSlab, TourPricingModel } from './group-pax-pricing';
+export type { GroupPaxCollectionTier } from './tour-collection-tiers';
 
 export type TourCmsMeta = {
   crm_itinerary_id?: number;
@@ -45,6 +50,11 @@ export type TourCmsMeta = {
   departure_usd_manual?: string[];
   /** CMS multi-destination links (city/state/country). */
   destination_ids?: number[];
+  pricing_model?: TourPricingModel;
+  group_pax_slabs?: GroupPaxSlab[];
+  group_pax_tiers?: GroupPaxCollectionTier[];
+  group_pax_default_tier_id?: string;
+  group_pax_min_adults?: number;
 };
 
 export function parseTourCmsMeta(raw: string | null | undefined): TourCmsMeta {

@@ -16,6 +16,15 @@ import {
   type RoomPricingInput,
   type TourPriceSheet,
 } from '../lib/tour-pricing';
+import {
+  computeGroupPaxBookingTotalInr,
+  effectiveCollectionTiers,
+  groupPaxMinAdults,
+  isGroupPaxSlabPricing,
+  normalizeGroupPaxSlabs,
+  resolveGroupPaxSlab,
+} from '../lib/group-pax-pricing';
+import { collectionTierLabel } from '../lib/tour-collection-tiers';
 import { enqueueCrmBookingSync } from '../jobs/crm.job';
 import { env } from '../config/env';
 import {
@@ -127,6 +136,8 @@ export type CreateBookingInput = {
   } | null;
   /** When false, per-person flight supplement is deducted from total (tour meta `flight_cost_inr`). */
   include_flight?: boolean;
+  /** Group-slab FIT tours: Comfort / Signature / Royal collection id. */
+  collection_tier_id?: string | null;
 };
 
 /** Server-side fallback INR → market rates (used when client didn't snapshot a rate). Keep in sync with `madura-web/src/config/market.ts`. */
@@ -2849,14 +2860,48 @@ export async function createBooking(input: CreateBookingInput) {
   const crmSnap = cmsMeta.crm_costing_snapshot;
   const crmSnapCurrency = String(crmSnap?.currency || cmsMeta.crm_source_currency || '').toUpperCase().trim();
   const crmSnapTotal = Number(crmSnap?.total);
+  const groupPaxSlabs = normalizeGroupPaxSlabs(cmsMeta.group_pax_slabs);
+  const groupPaxTiers = effectiveCollectionTiers(cmsMeta);
+  const isGroupPax = isGroupPaxSlabPricing(cmsMeta);
+
+  if (isGroupPax) {
+    const minAdults = groupPaxMinAdults(cmsMeta);
+    if (adults < minAdults) {
+      throw new Error(`This tour requires at least ${minAdults} adults to book online. Please send an enquiry.`);
+    }
+    if (groupPaxTiers.length) {
+      const tierId = String(input.collection_tier_id || '').trim();
+      if (!tierId || !groupPaxTiers.some((t) => t.id === tierId)) {
+        throw new Error('Please select a collection tier (Comfort / Signature / Royal).');
+      }
+    }
+    const resolved = resolveGroupPaxSlab(adults, groupPaxSlabs, input.collection_tier_id);
+    if (!resolved) {
+      throw new Error('No group rate applies for this party size. Please contact us for a quote.');
+    }
+  }
+
   let totalPrice = 0;
   if (
     crmMetaHasCrmItinerary(cmsMeta) &&
     Number.isFinite(crmSnapTotal) &&
     crmSnapTotal > 0 &&
-    (!crmSnapCurrency || crmSnapCurrency === displayCurrency)
+    (!crmSnapCurrency || crmSnapCurrency === displayCurrency) &&
+    !isGroupPax
   ) {
     totalPrice = Math.round(crmSnapTotal);
+  } else if (isGroupPax) {
+    totalPrice = computeGroupPaxBookingTotalInr({
+      adults,
+      children: children + infants,
+      child_ages: childAges.length
+        ? childAges
+        : input.room_details?.flatMap((r) => r.child_ages || []) || [],
+      slabs: groupPaxSlabs,
+      tierId: input.collection_tier_id,
+      discountPercent,
+      childSheet: depSheetInr,
+    });
   } else {
     totalPrice = computeBookingTotalInr({
       sheet: depSheetDisplay,
