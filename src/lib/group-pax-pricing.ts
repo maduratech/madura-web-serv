@@ -168,6 +168,61 @@ export function defaultCollectionTierId(meta: GroupPaxPricingMeta): string | nul
   return tiers[0]?.id ?? null;
 }
 
+export function lowestGroupPaxDisplayInr(slabs: GroupPaxSlab[], tierId?: string | null): number {
+  let lowest = Infinity;
+  for (const slab of slabs) {
+    const tier = String(tierId || '').trim();
+    let rate = 0;
+    if (tier && slab.tier_rates_inr?.[tier] != null) {
+      rate = Number(slab.tier_rates_inr[tier]) || 0;
+    } else if (slab.per_person_inr != null) {
+      rate = Number(slab.per_person_inr) || 0;
+    } else if (slab.tier_rates_inr) {
+      const values = Object.values(slab.tier_rates_inr)
+        .map((v) => Number(v))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      rate = values.length ? Math.min(...values) : 0;
+    }
+    if (rate > 0) lowest = Math.min(lowest, rate);
+  }
+  return Number.isFinite(lowest) ? lowest : 0;
+}
+
+export function collectionTiersWithRatesForGroup(
+  adults: number,
+  slabs: GroupPaxSlab[],
+  tiers: GroupPaxCollectionTier[]
+): GroupPaxCollectionTier[] {
+  if (!tiers.length) return [];
+  const count = Math.max(0, Math.floor(Number(adults) || 0));
+  const slab = count > 0 ? slabs.find((s) => count >= s.min_pax && count <= s.max_pax) : null;
+
+  if (slab?.tier_rates_inr) {
+    return tiers.filter((t) => {
+      const rate = slab.tier_rates_inr?.[t.id];
+      return rate != null && Number(rate) > 0;
+    });
+  }
+
+  return tiers.filter((t) => lowestGroupPaxDisplayInr(slabs, t.id) > 0);
+}
+
+export function resolveCollectionTierId(
+  selectedId: string | null | undefined,
+  adults: number,
+  slabs: GroupPaxSlab[],
+  tiers: GroupPaxCollectionTier[],
+  defaultTierId: string | null | undefined
+): string | null {
+  const available = collectionTiersWithRatesForGroup(adults, slabs, tiers);
+  if (!available.length) return null;
+  const selected = String(selectedId || '').trim();
+  if (selected && available.some((t) => t.id === selected)) return selected;
+  const preferred = String(defaultTierId || '').trim();
+  if (preferred && available.some((t) => t.id === preferred)) return preferred;
+  return available[0]?.id ?? null;
+}
+
 export function collectionTierLabel(
   tiers: GroupPaxCollectionTier[],
   tierId: string | null | undefined

@@ -1,4 +1,5 @@
 export type TourCollectionTierId =
+  | 'budget_friendly'
   | 'comfort_collection'
   | 'signature_tours'
   | 'royal_retreat';
@@ -12,22 +13,28 @@ export type TourCollectionTierPreset = {
 
 export const BHUTAN_COLLECTION_TIER_PRESETS: TourCollectionTierPreset[] = [
   {
+    id: 'budget_friendly',
+    title: 'Budget Friendly',
+    subtitle: 'Budget stay, basic vehicles, essential tours',
+    sort_order: 1,
+  },
+  {
     id: 'comfort_collection',
     title: 'Comfort Collection',
     subtitle: '3★ hotels, AC vehicles, smooth tours',
-    sort_order: 1,
+    sort_order: 2,
   },
   {
     id: 'signature_tours',
     title: 'Signature Tours',
     subtitle: '4★ hotels, premium vehicles, relaxed tours',
-    sort_order: 2,
+    sort_order: 3,
   },
   {
     id: 'royal_retreat',
     title: 'Royal Retreat',
     subtitle: '5★ resorts, luxury vehicles, curated experiences',
-    sort_order: 3,
+    sort_order: 4,
   },
 ];
 
