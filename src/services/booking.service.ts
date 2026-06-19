@@ -307,7 +307,7 @@ const ENQUIRY_PHONE_RATE_MAX = 5;
 type AdvanceRegion = 'domestic' | 'sea_middle_east' | 'international';
 
 const ADVANCE_AMOUNTS: Record<'INR' | 'USD' | 'AUD', Record<AdvanceRegion, number>> = {
-  INR: { domestic: 1000, sea_middle_east: 3000, international: 5000 },
+  INR: { domestic: 5000, sea_middle_east: 5000, international: 5000 },
   USD: { domestic: 15, sea_middle_east: 40, international: 60 },
   AUD: { domestic: 20, sea_middle_east: 50, international: 90 },
 };
@@ -364,20 +364,37 @@ function resolveTourRegionFromData(tourRegion: string, destination: string, cont
   return 'international' as const;
 }
 
-/** India storefront (/in/): fixed booking fee — ₹1k domestic, ₹5k international. */
-function getInrBookingFee(resolvedRegion: AdvanceRegion): number {
-  return resolvedRegion === 'domestic' ? 1000 : 5000;
+/** India storefront (/in/): ₹5,000 booking fee per traveller. */
+function getInrBookingFeePerTraveller(): number {
+  return 5000;
 }
 
 function getAdvanceAmountForCurrency(
   resolvedRegion: AdvanceRegion,
   currency: 'INR' | 'USD' | 'AUD'
 ): number {
-  if (currency === 'INR') return getInrBookingFee(resolvedRegion);
+  if (currency === 'INR') return getInrBookingFeePerTraveller();
   const table = ADVANCE_AMOUNTS[currency];
   if (resolvedRegion === 'domestic') return table.domestic;
   if (resolvedRegion === 'sea_middle_east') return table.sea_middle_east;
   return table.international;
+}
+
+function countBookingFeeTravellers(
+  context: Awaited<ReturnType<typeof getBookingPaymentContext>>
+): number {
+  const rooms = context.roomDetailsStored;
+  if (Array.isArray(rooms) && rooms.length) {
+    const total = rooms.reduce(
+      (sum, room) =>
+        sum + Math.max(0, Number(room.adults || 0)) + Math.max(0, Number(room.children || 0)),
+      0
+    );
+    if (total > 0) return total;
+  }
+  const travellers = context.travellersForCrm;
+  if (Array.isArray(travellers) && travellers.length) return travellers.length;
+  return 1;
 }
 
 function advancePaymentDescription(
@@ -388,8 +405,7 @@ function advancePaymentDescription(
 ): string {
   const label = tourTitle || destination || 'your tour';
   if (storefront === 'au') return `50% advance payment — ${label}`;
-  if (resolvedRegion === 'domestic') return `Booking fee (domestic) — ${label}`;
-  return `Booking fee (international) — ${label}`;
+  return `Booking fee — ${label}`;
 }
 
 function marketCountryForDisplayCurrency(currency: string): string {
@@ -3189,7 +3205,9 @@ async function resolvePaymentChargeAmount(
   if (storefront === 'au') {
     return Math.max(0, Math.round(packageTotal * 0.5));
   }
-  return getAdvanceAmountForCurrency(region, chargeCur);
+  const perTraveller = getAdvanceAmountForCurrency(region, chargeCur);
+  const travellerCount = countBookingFeeTravellers(context);
+  return perTraveller * Math.max(1, travellerCount);
 }
 
 function buildTravellersAndRoomsCrmNote(

@@ -107,6 +107,7 @@ function childRateForSlabTour(
 
 export function computeGroupPaxBookingTotalInr(input: {
   adults: number;
+  slabAdults?: number;
   children?: number;
   child_ages?: number[];
   slabs: GroupPaxSlab[];
@@ -115,14 +116,22 @@ export function computeGroupPaxBookingTotalInr(input: {
   childSheet?: TourPriceSheet;
 }): number {
   const adults = Math.max(0, Math.floor(Number(input.adults) || 0));
-  const children = Math.max(0, Math.floor(Number(input.children) || 0));
-  const resolved = resolveGroupPaxSlab(adults, input.slabs, input.tierId);
+  const slabAdults = Math.max(
+    0,
+    Math.floor(Number(input.slabAdults ?? input.adults) || 0)
+  );
+  const resolved = resolveGroupPaxSlab(
+    slabAdults > 0 ? slabAdults : adults,
+    input.slabs,
+    input.tierId
+  );
   if (!resolved) return 0;
 
   const discount = input.discountPercent;
   const adultRate = applyDiscountPercent(resolved.perPersonInr, discount);
   let total = adultRate * adults;
 
+  const children = Math.max(0, Math.floor(Number(input.children) || 0));
   const sheet = input.childSheet ?? {};
   const ages = Array.isArray(input.child_ages) ? input.child_ages : [];
   for (let i = 0; i < children; i += 1) {
