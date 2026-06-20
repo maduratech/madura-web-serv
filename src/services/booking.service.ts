@@ -1204,6 +1204,7 @@ export async function getDestinations(): Promise<DestinationListItem[]> {
 function parseDestinationPageMeta(description: string | null | undefined): {
   tagline: string | null;
   banner_image_url: string | null;
+  banner_video_url: string | null;
   default_view_mode: 'list' | 'grid';
   body: string;
   description_in: string;
@@ -1216,6 +1217,7 @@ function parseDestinationPageMeta(description: string | null | undefined): {
     return {
       tagline: null,
       banner_image_url: null,
+      banner_video_url: null,
       default_view_mode: 'grid',
       body: text,
       description_in: text,
@@ -1226,6 +1228,7 @@ function parseDestinationPageMeta(description: string | null | undefined): {
     const meta = JSON.parse(match[1]) as {
       tagline?: string;
       banner_image_url?: string;
+      banner_video_url?: string;
       default_view_mode?: 'list' | 'grid';
       description_in?: string;
       description_au?: string;
@@ -1239,6 +1242,7 @@ function parseDestinationPageMeta(description: string | null | undefined): {
     return {
       tagline: meta.tagline?.trim() || null,
       banner_image_url: meta.banner_image_url?.trim() || null,
+      banner_video_url: meta.banner_video_url?.trim() || null,
       default_view_mode: meta.default_view_mode === 'list' ? 'list' : 'grid',
       body: legacyBody || description_in,
       description_in,
@@ -1248,6 +1252,7 @@ function parseDestinationPageMeta(description: string | null | undefined): {
     return {
       tagline: null,
       banner_image_url: null,
+      banner_video_url: null,
       default_view_mode: 'grid',
       body: text,
       description_in: text,
@@ -1311,6 +1316,7 @@ export async function getDestinationBySlug(slug: string) {
             normalizeMediaUrl(row.cover_image_url) ||
             normalizeMediaUrl(row.image_url) ||
             null,
+          banner_video_url: normalizeMediaUrl(pageMeta.banner_video_url) || null,
           flag_image_url: normalizeHttpImageUrl(row.flag_image_url),
           flag_iso:
             normalizeFlagIsoStored((row as { flag_iso?: string | null }).flag_iso) ||

@@ -11,7 +11,11 @@ import {
   getTours,
   getToursListing,
 } from '../../services/booking.service';
-import { getTourThemePageByLabel } from '../../services/cms-taxonomy.service';
+import {
+  getTourTaxonomyPageByLabel,
+  getTourTaxonomyPageByPackagesSlug,
+  getTourThemePageByLabel,
+} from '../../services/cms-taxonomy.service';
 import { splitOverviewWithMeta } from '../../lib/tour-overview-meta';
 
 const toursRouter = Router();
@@ -63,6 +67,39 @@ toursRouter.get('/tour-themes/:label', async (req, res, next) => {
     const market = (rawMarket.split('-')[0] || 'in') as 'in' | 'au';
     const row = await getTourThemePageByLabel(label, market === 'au' ? 'au' : 'in');
     if (!row) return res.status(404).json({ message: 'Tour theme not found.' });
+    return res.json({ data: row });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+toursRouter.get('/tour-taxonomy/:label', async (req, res, next) => {
+  try {
+    const label = decodeURIComponent(String(req.params.label || '')).trim();
+    if (!label) return res.status(400).json({ message: 'Invalid taxonomy label.' });
+    const rawMarket = String(req.query.market || 'in').trim().toLowerCase();
+    const market = (rawMarket.split('-')[0] || 'in') as 'in' | 'au';
+    const rawKind = String(req.query.kind || 'auto').trim().toLowerCase();
+    const kind =
+      rawKind === 'tour_type' || rawKind === 'tour_experience'
+        ? rawKind
+        : ('auto' as const);
+    const row = await getTourTaxonomyPageByLabel(label, kind, market === 'au' ? 'au' : 'in');
+    if (!row) return res.status(404).json({ message: 'Tour taxonomy page not found.' });
+    return res.json({ data: row });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+toursRouter.get('/tour-taxonomy-slug/:slug', async (req, res, next) => {
+  try {
+    const slug = decodeURIComponent(String(req.params.slug || '')).trim();
+    if (!slug) return res.status(400).json({ message: 'Invalid taxonomy slug.' });
+    const rawMarket = String(req.query.market || 'in').trim().toLowerCase();
+    const market = (rawMarket.split('-')[0] || 'in') as 'in' | 'au';
+    const row = await getTourTaxonomyPageByPackagesSlug(slug, market === 'au' ? 'au' : 'in');
+    if (!row) return res.status(404).json({ message: 'Tour taxonomy page not found.' });
     return res.json({ data: row });
   } catch (error) {
     return next(error);

@@ -276,20 +276,74 @@ export async function getTourThemePageByLabel(
   themeLabel: string,
   marketCountry: 'in' | 'au' = 'in'
 ): Promise<TourThemePageInfo | null> {
-  const label = normalizeLabel(themeLabel);
-  if (!label) return null;
-
-  const match = await getTourTaxonomyByLabel('tour_experience', label);
-  const meta = match?.meta || {};
-  const description = resolveTourThemeDescriptionForMarket(meta, marketCountry);
-
+  const page = await getTourTaxonomyPageByLabel(themeLabel, 'tour_experience', marketCountry);
+  if (!page) return null;
   return {
-    id: match?.id || 0,
-    label,
-    slug: normalizeDestinationSlug(label),
-    banner_image_url: meta.banner_image_url?.trim() || null,
-    description,
+    id: page.id,
+    label: page.label,
+    slug: page.slug,
+    banner_image_url: page.banner_image_url,
+    description: page.description,
   };
+}
+
+export type TourTaxonomyPageInfo = TourThemePageInfo & {
+  kind: TourTaxonomyKind;
+};
+
+function taxonomyPageFromRow(
+  row: TourTaxonomyRow,
+  marketCountry: 'in' | 'au'
+): TourTaxonomyPageInfo {
+  const meta = row.meta || {};
+  return {
+    id: row.id,
+    kind: row.kind,
+    label: row.label,
+    slug: normalizeDestinationSlug(row.label),
+    banner_image_url: meta.banner_image_url?.trim() || null,
+    description: resolveTourThemeDescriptionForMarket(meta, marketCountry),
+  };
+}
+
+/** CMS tour type or experience listing page by label. */
+export async function getTourTaxonomyPageByLabel(
+  label: string,
+  kind: TourTaxonomyKind | 'auto' = 'auto',
+  marketCountry: 'in' | 'au' = 'in'
+): Promise<TourTaxonomyPageInfo | null> {
+  const normalized = normalizeLabel(label);
+  if (!normalized) return null;
+
+  const kinds: TourTaxonomyKind[] =
+    kind === 'auto' ? ['tour_experience', 'tour_type'] : [kind];
+
+  for (const entryKind of kinds) {
+    const match = await getTourTaxonomyByLabel(entryKind, normalized);
+    if (match) return taxonomyPageFromRow(match, marketCountry);
+  }
+
+  return null;
+}
+
+/** Resolve `/in/family-holidays-packages` to CMS taxonomy (type or experience). */
+export async function getTourTaxonomyPageByPackagesSlug(
+  packagesSlug: string,
+  marketCountry: 'in' | 'au' = 'in'
+): Promise<TourTaxonomyPageInfo | null> {
+  const normalized = normalizeDestinationSlug(packagesSlug);
+  if (!normalized.endsWith('-packages')) return null;
+
+  const base = normalized.slice(0, -'-packages'.length).replace(/-+$/g, '');
+  if (!base) return null;
+
+  for (const kind of ['tour_type', 'tour_experience'] as const) {
+    const rows = await listTourTaxonomyRows(kind);
+    const match = rows.find((row) => normalizeDestinationSlug(row.label) === base);
+    if (match) return taxonomyPageFromRow(match, marketCountry);
+  }
+
+  return null;
 }
 
 /** Public theme hub page copy keyed by nav slug (e.g. senior-citizen-tours). */

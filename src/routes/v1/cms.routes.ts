@@ -68,7 +68,7 @@ function clientError(res: import('express').Response, err: unknown) {
   res.status(400).json({ message, error: message });
 }
 import { listCmsOrders } from '../../services/cms-orders.service';
-import { searchStockImages, uploadCmsMedia } from '../../services/cms-media.service';
+import { searchStockImages, searchStockVideos, uploadCmsMedia } from '../../services/cms-media.service';
 import { listTourDepartures, replaceTourDepartures } from '../../services/cms-departures.service';
 import { parseTourSupplierContentForCms } from '../../services/cms-ai.service';
 
@@ -326,6 +326,17 @@ cmsRouter.get('/stock-images', async (req, res, next) => {
     const query = String(req.query.q || req.query.query || '').trim();
     const page = Math.max(1, Number(req.query.page || 1));
     const result = await searchStockImages(query, page);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.get('/stock-videos', async (req, res, next) => {
+  try {
+    const query = String(req.query.q || req.query.query || '').trim();
+    const page = Math.max(1, Number(req.query.page || 1));
+    const result = await searchStockVideos(query, page);
     res.json(result);
   } catch (err) {
     next(err);
