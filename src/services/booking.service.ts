@@ -2826,13 +2826,19 @@ function validateCreateBookingPayload(input: CreateBookingInput): void {
   }
 
   for (const [idx, traveller] of input.travellers.entries()) {
-    if (
+    const missingCore =
       !traveller.salutation ||
       !traveller.first_name ||
       !traveller.last_name ||
       !traveller.phone ||
-      !traveller.email
-    ) {
+      !traveller.email;
+    if (idx === 0) {
+      if (missingCore) {
+        throw new Error(`Traveller #${idx + 1} is missing required fields.`);
+      }
+      continue;
+    }
+    if (missingCore) {
       throw new Error(`Traveller #${idx + 1} is missing required fields.`);
     }
   }
