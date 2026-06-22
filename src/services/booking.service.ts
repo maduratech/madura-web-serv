@@ -1054,6 +1054,8 @@ type ListingTourRow = {
   infant_price?: number | null;
   child_price?: number | null;
   youth_price?: number | null;
+  discounted_price?: number | null;
+  overview?: string | null;
   destination_ref?: {
     name?: string | null;
     slug?: string | null;
