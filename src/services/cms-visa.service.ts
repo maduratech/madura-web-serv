@@ -212,7 +212,7 @@ function normalizePartners(raw: unknown): VisaPartner[] {
       const p = item as { name?: unknown; logo_url?: unknown };
       const name = String(p.name || '').trim();
       const logo_url = String(p.logo_url || '').trim();
-      if (!name) return null;
+      if (!name && !logo_url) return null;
       return { name, logo_url };
     })
     .filter(Boolean) as VisaPartner[];
