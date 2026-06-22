@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { computeVisaListingMetaFromVisaTypes } from './visa-listing-meta';
 
 export type VisaFilterVisaType = 'visa_free' | 'visa_on_arrival' | 'e_visa' | 'sticker';
 export type VisaFilterDocumentLevel =
@@ -34,6 +35,20 @@ export type VisaFaq = {
   answer: string;
 };
 
+export type VisaTypeOption = {
+  id: string;
+  name: string;
+  processing_time: string;
+  stay_period: string;
+  validity: string;
+  entry: string;
+  fees_inr: number;
+  is_popular?: boolean;
+  documents_required: VisaDocumentsRequired;
+  visa_requirements: string[];
+  sample_visa_image_url: string | null;
+};
+
 export type CmsVisaPage = {
   id: number;
   slug: string;
@@ -62,6 +77,7 @@ export type CmsVisaPage = {
   filter_document_level: VisaFilterDocumentLevel;
   filter_delivery_bucket: VisaFilterDeliveryBucket;
   processing_days: number | null;
+  visa_types: VisaTypeOption[];
   created_at: string | null;
   updated_at: string | null;
 };
@@ -137,12 +153,13 @@ type VisaRow = {
   filter_document_level?: string | null;
   filter_delivery_bucket?: string | null;
   processing_days?: number | null;
+  visa_types?: unknown;
   created_at?: string | null;
   updated_at?: string | null;
 };
 
 const SELECT_COLS =
-  'id,slug,title,country_name,flag_iso,is_published,sort_order,market,hero_images,delivery_promise_text,starting_price_inr,validity_label,overview_html,visa_type_label,validity_period,length_of_stay,entry_type,visa_method,documents_required,visa_requirements,travel_checklist,partners,faqs,filter_visa_type,filter_document_level,filter_delivery_bucket,processing_days,created_at,updated_at';
+  'id,slug,title,country_name,flag_iso,is_published,sort_order,market,hero_images,delivery_promise_text,starting_price_inr,validity_label,overview_html,visa_type_label,validity_period,length_of_stay,entry_type,visa_method,documents_required,visa_requirements,travel_checklist,partners,faqs,filter_visa_type,filter_document_level,filter_delivery_bucket,processing_days,visa_types,created_at,updated_at';
 
 function isMissingVisaTable(message: string): boolean {
   const m = String(message || '').toLowerCase();
@@ -214,6 +231,77 @@ function normalizeFaqs(raw: unknown): VisaFaq[] {
     .filter(Boolean) as VisaFaq[];
 }
 
+function newVisaTypeId(): string {
+  return `vt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeVisaTypes(raw: unknown): VisaTypeOption[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const v = item as {
+        id?: unknown;
+        name?: unknown;
+        processing_time?: unknown;
+        stay_period?: unknown;
+        validity?: unknown;
+        entry?: unknown;
+        fees_inr?: unknown;
+        is_popular?: unknown;
+        documents_required?: unknown;
+        visa_requirements?: unknown;
+        sample_visa_image_url?: unknown;
+      };
+      const name = String(v.name || '').trim();
+      if (!name) return null;
+      const fees = Number(v.fees_inr);
+      return {
+        id: String(v.id || '').trim() || newVisaTypeId(),
+        name,
+        processing_time: String(v.processing_time || '').trim(),
+        stay_period: String(v.stay_period || '').trim(),
+        validity: String(v.validity || '').trim(),
+        entry: String(v.entry || '').trim(),
+        fees_inr: Number.isFinite(fees) ? fees : 0,
+        is_popular: v.is_popular === true,
+        documents_required: normalizeDocumentsRequired(v.documents_required),
+        visa_requirements: normalizeStringList(v.visa_requirements),
+        sample_visa_image_url: String(v.sample_visa_image_url || '').trim() || null,
+      };
+    })
+    .filter(Boolean) as VisaTypeOption[];
+}
+
+export function computeStartingPriceFromVisaTypes(types: VisaTypeOption[]): number | null {
+  return computeVisaListingMetaFromVisaTypes(types).starting_price_inr;
+}
+
+function applyListingMetaToRow(row: Record<string, unknown>, visaTypes: VisaTypeOption[]): void {
+  const meta = computeVisaListingMetaFromVisaTypes(visaTypes);
+  row.starting_price_inr = meta.starting_price_inr;
+  row.validity_label = meta.validity_label;
+  row.processing_days = meta.processing_days;
+  row.filter_visa_type = meta.filter_visa_type;
+  row.filter_document_level = meta.filter_document_level;
+  row.filter_delivery_bucket = meta.filter_delivery_bucket;
+  row.visa_type_label = meta.visa_type_label;
+  row.validity_period = null;
+  row.length_of_stay = null;
+  row.entry_type = null;
+  row.visa_method = null;
+  row.documents_required = { sections: [] };
+  row.visa_requirements = [];
+}
+
+function assertVisaTypesProvided(raw: unknown): VisaTypeOption[] {
+  const visaTypes = normalizeVisaTypes(raw);
+  if (visaTypes.length === 0) {
+    throw new Error('Add at least one visa type with a name.');
+  }
+  return visaTypes;
+}
+
 function normalizeHeroImages(raw: unknown): string[] {
   return normalizeStringList(raw);
 }
@@ -257,6 +345,9 @@ function normalizeMarket(raw: unknown): string {
 }
 
 function mapVisaRow(row: VisaRow): CmsVisaPage {
+  const visaTypes = normalizeVisaTypes(row.visa_types);
+  const listingMeta = visaTypes.length > 0 ? computeVisaListingMetaFromVisaTypes(visaTypes) : null;
+
   return {
     id: row.id,
     slug: row.slug,
@@ -268,13 +359,13 @@ function mapVisaRow(row: VisaRow): CmsVisaPage {
     market: normalizeMarket(row.market),
     hero_images: normalizeHeroImages(row.hero_images),
     delivery_promise_text: row.delivery_promise_text ?? null,
-    starting_price_inr:
-      row.starting_price_inr != null && Number.isFinite(Number(row.starting_price_inr))
+    starting_price_inr: listingMeta?.starting_price_inr ??
+      (row.starting_price_inr != null && Number.isFinite(Number(row.starting_price_inr))
         ? Number(row.starting_price_inr)
-        : null,
-    validity_label: row.validity_label ?? null,
+        : null),
+    validity_label: listingMeta?.validity_label ?? row.validity_label ?? null,
     overview_html: row.overview_html ?? null,
-    visa_type_label: row.visa_type_label ?? null,
+    visa_type_label: listingMeta?.visa_type_label ?? row.visa_type_label ?? null,
     validity_period: row.validity_period ?? null,
     length_of_stay: row.length_of_stay ?? null,
     entry_type: row.entry_type ?? null,
@@ -284,13 +375,17 @@ function mapVisaRow(row: VisaRow): CmsVisaPage {
     travel_checklist: normalizeStringList(row.travel_checklist),
     partners: normalizePartners(row.partners),
     faqs: normalizeFaqs(row.faqs),
-    filter_visa_type: normalizeFilterVisaType(row.filter_visa_type),
-    filter_document_level: normalizeFilterDocumentLevel(row.filter_document_level),
-    filter_delivery_bucket: normalizeFilterDeliveryBucket(row.filter_delivery_bucket),
+    filter_visa_type: listingMeta?.filter_visa_type ?? normalizeFilterVisaType(row.filter_visa_type),
+    filter_document_level:
+      listingMeta?.filter_document_level ?? normalizeFilterDocumentLevel(row.filter_document_level),
+    filter_delivery_bucket:
+      listingMeta?.filter_delivery_bucket ?? normalizeFilterDeliveryBucket(row.filter_delivery_bucket),
     processing_days:
-      row.processing_days != null && Number.isFinite(Number(row.processing_days))
+      listingMeta?.processing_days ??
+      (row.processing_days != null && Number.isFinite(Number(row.processing_days))
         ? Number(row.processing_days)
-        : null,
+        : null),
+    visa_types: visaTypes,
     created_at: row.created_at ?? null,
     updated_at: row.updated_at ?? null,
   };
@@ -476,6 +571,11 @@ function visaInputToDb(input: Partial<CmsVisaPage>): Record<string, unknown> {
         ? Number(input.processing_days)
         : null;
   }
+  if (input.visa_types !== undefined) {
+    const visaTypes = assertVisaTypesProvided(input.visa_types);
+    row.visa_types = visaTypes;
+    applyListingMetaToRow(row, visaTypes);
+  }
   return row;
 }
 
@@ -484,6 +584,8 @@ export async function createVisaPage(input: Partial<CmsVisaPage>): Promise<CmsVi
   const country_name = String(input.country_name || '').trim();
   if (!title) throw new Error('Visa page title is required.');
   if (!country_name) throw new Error('Country name is required.');
+  const visaTypes = assertVisaTypesProvided(input.visa_types);
+  const listingMeta = computeVisaListingMetaFromVisaTypes(visaTypes);
   const slug = await ensureUniqueSlug(input.slug || title);
   const now = new Date().toISOString();
   const payload = {
@@ -496,29 +598,24 @@ export async function createVisaPage(input: Partial<CmsVisaPage>): Promise<CmsVi
     market: normalizeMarket(input.market),
     hero_images: normalizeHeroImages(input.hero_images),
     delivery_promise_text: input.delivery_promise_text?.trim() || null,
-    starting_price_inr:
-      input.starting_price_inr != null && Number.isFinite(Number(input.starting_price_inr))
-        ? Number(input.starting_price_inr)
-        : null,
-    validity_label: input.validity_label?.trim() || null,
+    starting_price_inr: listingMeta.starting_price_inr,
+    validity_label: listingMeta.validity_label,
     overview_html: input.overview_html || null,
-    visa_type_label: input.visa_type_label?.trim() || null,
-    validity_period: input.validity_period?.trim() || null,
-    length_of_stay: input.length_of_stay?.trim() || null,
-    entry_type: input.entry_type?.trim() || null,
-    visa_method: input.visa_method?.trim() || null,
-    documents_required: normalizeDocumentsRequired(input.documents_required),
-    visa_requirements: normalizeStringList(input.visa_requirements),
+    visa_type_label: listingMeta.visa_type_label,
+    validity_period: null,
+    length_of_stay: null,
+    entry_type: null,
+    visa_method: null,
+    documents_required: { sections: [] },
+    visa_requirements: [],
     travel_checklist: normalizeStringList(input.travel_checklist),
     partners: normalizePartners(input.partners),
     faqs: normalizeFaqs(input.faqs),
-    filter_visa_type: normalizeFilterVisaType(input.filter_visa_type),
-    filter_document_level: normalizeFilterDocumentLevel(input.filter_document_level),
-    filter_delivery_bucket: normalizeFilterDeliveryBucket(input.filter_delivery_bucket),
-    processing_days:
-      input.processing_days != null && Number.isFinite(Number(input.processing_days))
-        ? Number(input.processing_days)
-        : null,
+    filter_visa_type: listingMeta.filter_visa_type,
+    filter_document_level: listingMeta.filter_document_level,
+    filter_delivery_bucket: listingMeta.filter_delivery_bucket,
+    processing_days: listingMeta.processing_days,
+    visa_types: visaTypes,
     created_at: now,
     updated_at: now,
   };
