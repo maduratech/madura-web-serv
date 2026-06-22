@@ -2217,6 +2217,75 @@ function selectLowestAdultRate(
   return best;
 }
 
+type DepartureBandRow = {
+  price?: number | null;
+  twin_sharing_price?: number | null;
+  triple_sharing_price?: number | null;
+  single_sharing_price?: number | null;
+  quad_sharing_price?: number | null;
+  infant_price?: number | null;
+  child_price?: number | null;
+  youth_price?: number | null;
+};
+
+function minDiscountedDepartureBand(
+  departures: DepartureBandRow[],
+  pick: (row: DepartureBandRow) => number | null | undefined,
+  discountPercent: number | null
+): number | null {
+  const values = departures
+    .map((row) => discountedDisplay(pick(row), discountPercent))
+    .filter((value): value is number => value != null && value > 0);
+  return values.length ? Math.min(...values) : null;
+}
+
+/** Min single / twin / triple / quad (and child bands) across scheduled departures. */
+function resolveDepartureShelfBandsMin(
+  departures: DepartureBandRow[],
+  discountPercent: number | null
+): {
+  twin: number | null;
+  triple: number | null;
+  single: number | null;
+  quad: number | null;
+  infant: number | null;
+  child: number | null;
+  youth: number | null;
+  lowestAdult: { value: number; note: string } | null;
+} | null {
+  if (!departures.length) return null;
+  const twin = minDiscountedDepartureBand(
+    departures,
+    (row) => row.twin_sharing_price ?? row.price,
+    discountPercent
+  );
+  const triple = minDiscountedDepartureBand(departures, (row) => row.triple_sharing_price, discountPercent);
+  const single = minDiscountedDepartureBand(departures, (row) => row.single_sharing_price, discountPercent);
+  const quad = minDiscountedDepartureBand(departures, (row) => row.quad_sharing_price, discountPercent);
+  const infant = minDiscountedDepartureBand(departures, (row) => row.infant_price, discountPercent);
+  const child = minDiscountedDepartureBand(departures, (row) => row.child_price, discountPercent);
+  const youth = minDiscountedDepartureBand(departures, (row) => row.youth_price, discountPercent);
+  const lowest = selectLowestAdultRate(
+    {
+      twin_sharing_price: twin,
+      triple_sharing_price: triple,
+      single_sharing_price: single,
+      quad_sharing_price: quad,
+    },
+    discountPercent
+  );
+  return {
+    twin,
+    triple,
+    single,
+    quad,
+    infant,
+    child,
+    youth,
+    lowestAdult: lowest.value && lowest.note ? { value: lowest.value, note: lowest.note } : null,
+  };
+}
+
 function resolveTourListingStartingTwin(
   row: {
     twin_sharing_price?: number | null;
@@ -2335,14 +2404,25 @@ export async function getToursListing(marketCountry = 'in') {
     const cmsMeta = parseTourCmsMeta((row as { overview?: string | null }).overview);
     const marketBands = resolveMarketPriceBands(row, cmsMeta, marketCountry);
     const bandPrices = childPricesFromDb(row);
-    const startingTwin = resolveTourListingStartingTwin(row, departures, marketCountry);
+    const discountPercent = inferDiscountPercent(
+      marketBands.twin ?? row.twin_sharing_price,
+      row.discounted_price,
+      cmsMeta.discount_percent
+    );
+    const departureBands = resolveDepartureShelfBandsMin(departures, discountPercent);
+    const startingTwin =
+      departureBands?.lowestAdult?.value ??
+      resolveTourListingStartingTwin(row, departures, marketCountry);
     const startingTriple =
-      marketBands.triple ?? row.triple_sharing_price ?? (startingTwin ? Math.round(startingTwin * 0.9) : null);
-    const startingSingle = marketBands.single ?? row.single_sharing_price ?? null;
-    const startingQuad = marketBands.quad ?? row.quad_sharing_price ?? null;
-    const startingInfant = marketBands.infant ?? bandPrices.infant_price ?? null;
-    const startingChild = marketBands.child ?? bandPrices.child_price ?? null;
-    const startingYouth = marketBands.youth ?? bandPrices.youth_price ?? null;
+      departureBands?.triple ??
+      marketBands.triple ??
+      row.triple_sharing_price ??
+      (startingTwin ? Math.round(startingTwin * 0.9) : null);
+    const startingSingle = departureBands?.single ?? marketBands.single ?? row.single_sharing_price ?? null;
+    const startingQuad = departureBands?.quad ?? marketBands.quad ?? row.quad_sharing_price ?? null;
+    const startingInfant = departureBands?.infant ?? marketBands.infant ?? bandPrices.infant_price ?? null;
+    const startingChild = departureBands?.child ?? marketBands.child ?? bandPrices.child_price ?? null;
+    const startingYouth = departureBands?.youth ?? marketBands.youth ?? bandPrices.youth_price ?? null;
     const destination = row.destination_ref?.name || row.destination || 'Unknown';
     const primarySlug = row.destination_ref?.slug || toSlug(destination);
     const linkedDestinationIds = readTourDestinationIds({
@@ -2593,7 +2673,10 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
   const fromDepartureUsd = departures.length
     ? lowestStartingTwinFromDepartures(departures, cmsMeta, marketCountry, discountPercent)
     : null;
-  const lowestAdult = selectLowestAdultRate(detailSheet, discountPercent, fromDepartureUsd);
+  const departureBands = resolveDepartureShelfBandsMin(departures, discountPercent);
+  const lowestAdult = departureBands?.lowestAdult
+    ? { value: departureBands.lowestAdult.value, note: departureBands.lowestAdult.note }
+    : selectLowestAdultRate(detailSheet, discountPercent, fromDepartureUsd);
   const tourTwinDisplay = twinSharingDisplayPrice(detailSheet, discountPercent);
   const startingTwin = crmUsdStorefront
     ? marketBands.twin ?? lowestAdult.value ?? null
@@ -2652,12 +2735,15 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
     promo_badge: resolvePromoBadgeLabel(cmsMeta, sidebarBadgeMap),
     starting_from_twin: startingTwin,
     starting_from_triple:
-      marketBands.triple ?? row.triple_sharing_price ?? (startingTwin ? Math.round(startingTwin * 0.9) : null),
-    starting_from_single: marketBands.single ?? row.single_sharing_price ?? null,
-    starting_from_quad: marketBands.quad ?? row.quad_sharing_price ?? null,
-    starting_from_infant: marketBands.infant ?? detailBand.infant_price ?? null,
-    starting_from_child: marketBands.child ?? detailBand.child_price ?? null,
-    starting_from_youth: marketBands.youth ?? detailBand.youth_price ?? null,
+      departureBands?.triple ??
+      marketBands.triple ??
+      row.triple_sharing_price ??
+      (startingTwin ? Math.round(startingTwin * 0.9) : null),
+    starting_from_single: departureBands?.single ?? marketBands.single ?? row.single_sharing_price ?? null,
+    starting_from_quad: departureBands?.quad ?? marketBands.quad ?? row.quad_sharing_price ?? null,
+    starting_from_infant: departureBands?.infant ?? marketBands.infant ?? detailBand.infant_price ?? null,
+    starting_from_child: departureBands?.child ?? marketBands.child ?? detailBand.child_price ?? null,
+    starting_from_youth: departureBands?.youth ?? marketBands.youth ?? detailBand.youth_price ?? null,
     starting_from_twin_inr: row.twin_sharing_price ?? derivedTwin,
     starting_from_triple_inr: row.triple_sharing_price ?? null,
     starting_from_single_inr: row.single_sharing_price ?? null,
