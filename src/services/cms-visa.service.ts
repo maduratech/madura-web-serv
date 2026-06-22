@@ -1,5 +1,5 @@
 import { supabase } from '../lib/supabase';
-import { computeVisaListingMetaFromVisaTypes } from './visa-listing-meta';
+import { computeVisaListingMetaFromVisaTypes, inferFilterVisaTypeFromName } from './visa-listing-meta';
 
 export type VisaFilterVisaType = 'visa_free' | 'visa_on_arrival' | 'e_visa' | 'sticker';
 export type VisaFilterDocumentLevel =
@@ -38,6 +38,7 @@ export type VisaFaq = {
 export type VisaTypeOption = {
   id: string;
   name: string;
+  visa_format: VisaFilterVisaType;
   processing_time: string;
   stay_period: string;
   validity: string;
@@ -231,6 +232,21 @@ function normalizeFaqs(raw: unknown): VisaFaq[] {
     .filter(Boolean) as VisaFaq[];
 }
 
+function sameStringList(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((value, index) => value === b[index]);
+}
+
+function dedupeTypeRequirements(types: VisaTypeOption[], globalRequirements: string[]): VisaTypeOption[] {
+  return types.map((type) => ({
+    ...type,
+    visa_requirements:
+      type.visa_requirements.length > 0 && sameStringList(type.visa_requirements, globalRequirements)
+        ? []
+        : type.visa_requirements,
+  }));
+}
+
 function newVisaTypeId(): string {
   return `vt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -243,6 +259,7 @@ function normalizeVisaTypes(raw: unknown): VisaTypeOption[] {
       const v = item as {
         id?: unknown;
         name?: unknown;
+        visa_format?: unknown;
         processing_time?: unknown;
         stay_period?: unknown;
         validity?: unknown;
@@ -259,6 +276,7 @@ function normalizeVisaTypes(raw: unknown): VisaTypeOption[] {
       return {
         id: String(v.id || '').trim() || newVisaTypeId(),
         name,
+        visa_format: normalizeFilterVisaType(v.visa_format ?? inferFilterVisaTypeFromName(name)),
         processing_time: String(v.processing_time || '').trim(),
         stay_period: String(v.stay_period || '').trim(),
         validity: String(v.validity || '').trim(),
@@ -291,7 +309,6 @@ function applyListingMetaToRow(row: Record<string, unknown>, visaTypes: VisaType
   row.entry_type = null;
   row.visa_method = null;
   row.documents_required = { sections: [] };
-  row.visa_requirements = [];
 }
 
 function assertVisaTypesProvided(raw: unknown): VisaTypeOption[] {
@@ -518,7 +535,7 @@ async function ensureUniqueSlug(base: string, excludeId?: number): Promise<strin
   }
 }
 
-function visaInputToDb(input: Partial<CmsVisaPage>): Record<string, unknown> {
+function visaInputToDb(input: Partial<CmsVisaPage>, existing?: CmsVisaPage): Record<string, unknown> {
   const now = new Date().toISOString();
   const row: Record<string, unknown> = { updated_at: now };
   if (input.slug !== undefined) row.slug = input.slug ? normalizeVisaSlug(input.slug) : null;
@@ -573,8 +590,12 @@ function visaInputToDb(input: Partial<CmsVisaPage>): Record<string, unknown> {
   }
   if (input.visa_types !== undefined) {
     const visaTypes = assertVisaTypesProvided(input.visa_types);
-    row.visa_types = visaTypes;
-    applyListingMetaToRow(row, visaTypes);
+    const globalRequirements =
+      input.visa_requirements !== undefined
+        ? normalizeStringList(input.visa_requirements)
+        : normalizeStringList(existing?.visa_requirements);
+    row.visa_types = dedupeTypeRequirements(visaTypes, globalRequirements);
+    applyListingMetaToRow(row, row.visa_types as VisaTypeOption[]);
   }
   return row;
 }
@@ -584,7 +605,8 @@ export async function createVisaPage(input: Partial<CmsVisaPage>): Promise<CmsVi
   const country_name = String(input.country_name || '').trim();
   if (!title) throw new Error('Visa page title is required.');
   if (!country_name) throw new Error('Country name is required.');
-  const visaTypes = assertVisaTypesProvided(input.visa_types);
+  const globalRequirements = normalizeStringList(input.visa_requirements);
+  const visaTypes = dedupeTypeRequirements(assertVisaTypesProvided(input.visa_types), globalRequirements);
   const listingMeta = computeVisaListingMetaFromVisaTypes(visaTypes);
   const slug = await ensureUniqueSlug(input.slug || title);
   const now = new Date().toISOString();
@@ -607,7 +629,7 @@ export async function createVisaPage(input: Partial<CmsVisaPage>): Promise<CmsVi
     entry_type: null,
     visa_method: null,
     documents_required: { sections: [] },
-    visa_requirements: [],
+    visa_requirements: globalRequirements,
     travel_checklist: normalizeStringList(input.travel_checklist),
     partners: normalizePartners(input.partners),
     faqs: normalizeFaqs(input.faqs),
@@ -632,7 +654,7 @@ export async function createVisaPage(input: Partial<CmsVisaPage>): Promise<CmsVi
 export async function updateVisaPage(id: number, input: Partial<CmsVisaPage>): Promise<CmsVisaPage> {
   const existing = await getVisaPage(id);
   if (!existing) throw new Error('Visa page not found.');
-  const patch = visaInputToDb(input);
+  const patch = visaInputToDb(input, existing);
   if (input.title !== undefined && !String(input.title).trim()) {
     throw new Error('Visa page title is required.');
   }

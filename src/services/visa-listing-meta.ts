@@ -15,6 +15,7 @@ export type VisaFilterDeliveryBucket =
 
 export type VisaTypeListingInput = {
   name: string;
+  visa_format?: VisaFilterVisaType | string | null;
   processing_time: string;
   validity: string;
   fees_inr: number;
@@ -55,7 +56,7 @@ export function parseProcessingDaysFromText(text: string): number | null {
   return null;
 }
 
-function inferFilterVisaType(name: string): VisaFilterVisaType {
+function inferFilterVisaTypeFromName(name: string): VisaFilterVisaType {
   const n = name.toLowerCase();
   if (/visa\s*free|no\s*visa\s*required/.test(n)) return 'visa_free';
   if (/on\s*arrival|\bvoa\b/.test(n)) return 'visa_on_arrival';
@@ -63,6 +64,29 @@ function inferFilterVisaType(name: string): VisaFilterVisaType {
   if (/e[\s-]?visa|electronic\s*visa|online\s*visa/.test(n)) return 'e_visa';
   if (/transit|tourist|business|multiple\s*entry|single\s*entry/.test(n)) return 'e_visa';
   return 'e_visa';
+}
+
+export { inferFilterVisaTypeFromName };
+
+function normalizeListingVisaFormat(
+  format: VisaFilterVisaType | string | null | undefined,
+  name: string
+): VisaFilterVisaType {
+  const value = String(format || '').trim();
+  if (value === 'visa_free' || value === 'visa_on_arrival' || value === 'e_visa' || value === 'sticker') {
+    return value;
+  }
+  return inferFilterVisaTypeFromName(name);
+}
+
+function visaFormatLabel(format: VisaFilterVisaType): string {
+  const map: Record<VisaFilterVisaType, string> = {
+    visa_free: 'Visa Free',
+    visa_on_arrival: 'Visa on Arrival',
+    e_visa: 'E-Visa',
+    sticker: 'Sticker Visa',
+  };
+  return map[format];
 }
 
 function collectDocumentText(types: VisaTypeListingInput[]): string {
@@ -125,10 +149,12 @@ export function computeVisaListingMetaFromVisaTypes(types: VisaTypeListingInput[
     .filter((d): d is number => d != null);
   const processing_days = processingDaysList.length > 0 ? Math.min(...processingDaysList) : null;
 
-  const filter_visa_type = primary ? inferFilterVisaType(primary.name) : 'e_visa';
+  const filter_visa_type = primary
+    ? normalizeListingVisaFormat(primary.visa_format, primary.name)
+    : 'e_visa';
   const filter_document_level = inferDocumentLevel(types);
   const filter_delivery_bucket = inferDeliveryBucket(processing_days);
-  const visa_type_label = inferVisaTypeLabel(primary);
+  const visa_type_label = primary ? visaFormatLabel(filter_visa_type) : null;
 
   return {
     starting_price_inr,
