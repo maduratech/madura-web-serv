@@ -38,7 +38,7 @@ export type VisaFaq = {
 export type VisaTypeOption = {
   id: string;
   name: string;
-  visa_format: VisaFilterVisaType;
+  visa_format: string;
   processing_time: string;
   stay_period: string;
   validity: string;
@@ -247,6 +247,28 @@ function dedupeTypeRequirements(types: VisaTypeOption[], globalRequirements: str
   }));
 }
 
+function visaFormatLabelFromFilter(format: VisaFilterVisaType): string {
+  const map: Record<VisaFilterVisaType, string> = {
+    visa_free: 'Visa Free',
+    visa_on_arrival: 'Visa on Arrival',
+    e_visa: 'E-Visa',
+    sticker: 'Sticker Visa',
+  };
+  return map[format];
+}
+
+function normalizeVisaFormatText(raw: unknown, name: string): string {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return visaFormatLabelFromFilter(inferFilterVisaTypeFromName(name));
+  const slugLabels: Record<string, string> = {
+    e_visa: 'E-Visa',
+    sticker: 'Sticker Visa',
+    visa_on_arrival: 'Visa on Arrival',
+    visa_free: 'Visa Free',
+  };
+  return slugLabels[trimmed] || slugLabels[trimmed.toLowerCase()] || trimmed;
+}
+
 function newVisaTypeId(): string {
   return `vt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -276,7 +298,7 @@ function normalizeVisaTypes(raw: unknown): VisaTypeOption[] {
       return {
         id: String(v.id || '').trim() || newVisaTypeId(),
         name,
-        visa_format: normalizeFilterVisaType(v.visa_format ?? inferFilterVisaTypeFromName(name)),
+        visa_format: normalizeVisaFormatText(v.visa_format, name),
         processing_time: String(v.processing_time || '').trim(),
         stay_period: String(v.stay_period || '').trim(),
         validity: String(v.validity || '').trim(),
