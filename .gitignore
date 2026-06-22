@@ -4,3 +4,4 @@ coverage/
 *.log
 .env*
 !.env.example
+sql/cms_visa_types.sql
