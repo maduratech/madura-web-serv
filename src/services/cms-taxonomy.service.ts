@@ -326,15 +326,23 @@ export async function getTourTaxonomyPageByLabel(
   return null;
 }
 
-/** Resolve `/in/family-holidays-packages` to CMS taxonomy (type or experience). */
+function taxonomyBaseFromPackagesSlug(normalized: string): string | null {
+  if (normalized.endsWith('-tour-packages')) {
+    return normalized.slice(0, -'-tour-packages'.length).replace(/-+$/g, '') || null;
+  }
+  if (normalized.endsWith('-packages')) {
+    return normalized.slice(0, -'-packages'.length).replace(/-+$/g, '') || null;
+  }
+  return null;
+}
+
+/** Resolve `/in/family-holidays-packages` or `/in/packages/group-tours-tour-packages` to CMS taxonomy. */
 export async function getTourTaxonomyPageByPackagesSlug(
   packagesSlug: string,
   marketCountry: 'in' | 'au' = 'in'
 ): Promise<TourTaxonomyPageInfo | null> {
   const normalized = normalizeDestinationSlug(packagesSlug);
-  if (!normalized.endsWith('-packages')) return null;
-
-  const base = normalized.slice(0, -'-packages'.length).replace(/-+$/g, '');
+  const base = taxonomyBaseFromPackagesSlug(normalized);
   if (!base) return null;
 
   for (const kind of ['tour_type', 'tour_experience'] as const) {

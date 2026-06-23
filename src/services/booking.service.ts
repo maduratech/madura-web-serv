@@ -2338,6 +2338,47 @@ function resolveTourListingStartingTwin(
       : lowestAdult.value || row.twin_sharing_price || derivedTwin;
 }
 
+function mapUpcomingListingDepartures(
+  departures: NonNullable<ListingTourRow['departures']>,
+  discountPercent: number
+): Array<{
+  id: number;
+  start_date: string;
+  end_date: string | null;
+  city: string;
+  twin_price: number | null;
+}> {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  return departures
+    .filter((dep) => {
+      if (!dep.start_date) return false;
+      const start = new Date(dep.start_date);
+      if (Number.isNaN(start.getTime())) return false;
+      start.setHours(0, 0, 0, 0);
+      return start >= today;
+    })
+    .sort(
+      (a, b) =>
+        new Date(String(a.start_date)).getTime() - new Date(String(b.start_date)).getTime()
+    )
+    .map((dep) => {
+      const rawTwin = dep.twin_sharing_price ?? dep.price ?? null;
+      const twin =
+        rawTwin != null && Number.isFinite(Number(rawTwin))
+          ? discountedDisplay(Number(rawTwin), discountPercent)
+          : null;
+      return {
+        id: Number(dep.id),
+        start_date: String(dep.start_date),
+        end_date: dep.end_date ? String(dep.end_date) : null,
+        city: String(dep.departure_city?.name || dep.city || '').trim(),
+        twin_price: twin != null && Number.isFinite(twin) ? twin : null,
+      };
+    });
+}
+
 export async function getToursListing(marketCountry = 'in') {
   let data: ListingTourRow[] | null = null;
   let error: { message: string } | null = null;
@@ -2446,6 +2487,7 @@ export async function getToursListing(marketCountry = 'in') {
           .filter(Boolean)
       )
     );
+    const upcoming_departures = mapUpcomingListingDepartures(departures, discountPercent);
 
     return {
       id: row.id,
@@ -2475,6 +2517,7 @@ export async function getToursListing(marketCountry = 'in') {
       starting_from_child: startingChild,
       starting_from_youth: startingYouth,
       departure_cities: departureCities,
+      upcoming_departures,
       tour_includes: Array.isArray(row.tour_includes) ? row.tour_includes : [],
     };
   });
