@@ -2340,7 +2340,7 @@ function resolveTourListingStartingTwin(
 
 function mapUpcomingListingDepartures(
   departures: NonNullable<ListingTourRow['departures']>,
-  discountPercent: number
+  discountPercent: number | null
 ): Array<{
   id: number;
   start_date: string;
