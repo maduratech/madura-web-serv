@@ -11,7 +11,7 @@ export const integrationRouter = Router();
 const webPublicBase =
   process.env.MADURA_WEB_PUBLIC_URL ||
   process.env.WEB_PUBLIC_BASE_URL ||
-  'https://web.maduratravel.com';
+  'https://maduratravel.com';
 
 integrationRouter.use(requireCrmIntegrationSecret);
 

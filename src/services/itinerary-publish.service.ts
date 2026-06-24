@@ -631,7 +631,7 @@ function buildPublicTourUrl(
   destSlugFallback: string | null | undefined,
   marketPrefix: 'in' | 'au'
 ): string {
-  const base = String(baseUrl || 'https://web.maduratravel.com').replace(/\/$/, '');
+  const base = String(baseUrl || 'https://maduratravel.com').replace(/\/$/, '');
   const embed = tourRow?.destination_ref ?? tourRow?.destinations;
   const embedSlug = Array.isArray(embed) ? embed[0]?.slug : embed?.slug;
   const destSlug = embedSlug || destSlugFallback || slugify(String(tourRow?.destination || ''));
