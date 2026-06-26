@@ -240,3 +240,58 @@ export function collectionTierLabel(
   if (!id) return null;
   return tiers.find((t) => t.id === id)?.title ?? null;
 }
+
+/** Lowest per-person shelf rate for group-size slab tours (default collection tier). */
+export function groupPaxStartingFrom(
+  meta: GroupPaxPricingMeta,
+  tierId?: string | null,
+  discountPercent?: number | null
+): { perPersonInr: number; sharingLabel: string | null } {
+  const slabs = normalizeGroupPaxSlabs(meta.group_pax_slabs);
+  if (!slabs.length) {
+    return { perPersonInr: 0, sharingLabel: null };
+  }
+
+  const tiers = effectiveCollectionTiers(meta);
+  const effectiveTier = resolveCollectionTierId(
+    tierId,
+    0,
+    slabs,
+    tiers,
+    defaultCollectionTierId(meta)
+  );
+
+  let bestRate = 0;
+  let bestLabel: string | null = null;
+  for (const slab of slabs) {
+    const tier = effectiveTier || String(tierId || '').trim();
+    let rate = 0;
+    if (tier && slab.tier_rates_inr?.[tier] != null) {
+      rate = Number(slab.tier_rates_inr[tier]) || 0;
+    } else if (slab.per_person_inr != null) {
+      rate = Number(slab.per_person_inr) || 0;
+    }
+    const display = applyDiscountPercent(rate, discountPercent);
+    if (display > 0 && (bestRate === 0 || display < bestRate)) {
+      bestRate = display;
+      bestLabel =
+        slab.label?.trim() ||
+        (slab.min_pax === slab.max_pax
+          ? `${slab.min_pax} Pax`
+          : `${slab.min_pax} – ${slab.max_pax} Pax`);
+    }
+  }
+
+  if (bestRate <= 0) {
+    const fallback = lowestGroupPaxDisplayInr(slabs, effectiveTier);
+    return {
+      perPersonInr: applyDiscountPercent(fallback, discountPercent),
+      sharingLabel: null,
+    };
+  }
+
+  return {
+    perPersonInr: bestRate,
+    sharingLabel: bestLabel ? `${bestLabel} group rate · Twin sharing` : 'Twin sharing rate',
+  };
+}

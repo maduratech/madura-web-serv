@@ -18,8 +18,10 @@ import {
 } from '../lib/tour-pricing';
 import {
   computeGroupPaxBookingTotalInr,
+  defaultCollectionTierId,
   effectiveCollectionTiers,
   groupPaxMinAdults,
+  groupPaxStartingFrom,
   isGroupPaxSlabPricing,
   normalizeGroupPaxSlabs,
   resolveGroupPaxSlab,
@@ -2248,6 +2250,22 @@ function discountedDisplay(value: number | null | undefined, discountPercent: nu
   return Math.round(n);
 }
 
+function resolveListingTriplePrice(
+  cmsMeta: TourCmsMeta,
+  startingTwin: number | null,
+  departureTriple: number | null | undefined,
+  marketTriple: number | null | undefined,
+  rowTriple: number | null | undefined
+): number | null {
+  if (isGroupPaxSlabPricing(cmsMeta)) return null;
+  return (
+    departureTriple ??
+    marketTriple ??
+    rowTriple ??
+    (startingTwin ? Math.round(startingTwin * 0.9) : null)
+  );
+}
+
 function selectLowestAdultRate(
   sheet: TourPriceSheet,
   discountPercent: number | null,
@@ -2364,6 +2382,14 @@ function resolveTourListingStartingTwin(
     row.discounted_price,
     cmsMeta.discount_percent
   );
+  if (isGroupPaxSlabPricing(cmsMeta)) {
+    const groupFrom = groupPaxStartingFrom(
+      cmsMeta,
+      defaultCollectionTierId(cmsMeta),
+      discountPercent
+    );
+    if (groupFrom.perPersonInr > 0) return groupFrom.perPersonInr;
+  }
   const crmUsdListing = resolveStorefrontPricingCurrency(cmsMeta) === 'USD';
   const listingSheet: TourPriceSheet = {
     twin_sharing_price: marketBands.twin ?? (crmUsdListing ? null : derivedTwin),
@@ -2503,14 +2529,20 @@ export async function getToursListing(marketCountry = 'in') {
       cmsMeta.discount_percent
     );
     const departureBands = resolveDepartureShelfBandsMin(departures, discountPercent);
+    const groupPaxFrom = isGroupPaxSlabPricing(cmsMeta)
+      ? groupPaxStartingFrom(cmsMeta, defaultCollectionTierId(cmsMeta), discountPercent)
+      : null;
     const startingTwin =
-      departureBands?.lowestAdult?.value ??
+      groupPaxFrom?.perPersonInr ||
+      departureBands?.lowestAdult?.value ||
       resolveTourListingStartingTwin(row, departures, marketCountry);
-    const startingTriple =
-      departureBands?.triple ??
-      marketBands.triple ??
-      row.triple_sharing_price ??
-      (startingTwin ? Math.round(startingTwin * 0.9) : null);
+    const startingTriple = resolveListingTriplePrice(
+      cmsMeta,
+      startingTwin,
+      departureBands?.triple,
+      marketBands.triple,
+      row.triple_sharing_price
+    );
     const startingSingle = departureBands?.single ?? marketBands.single ?? row.single_sharing_price ?? null;
     const startingQuad = departureBands?.quad ?? marketBands.quad ?? row.quad_sharing_price ?? null;
     const startingInfant = departureBands?.infant ?? marketBands.infant ?? bandPrices.infant_price ?? null;
@@ -2769,20 +2801,26 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
     ? lowestStartingTwinFromDepartures(departures, cmsMeta, marketCountry, discountPercent)
     : null;
   const departureBands = resolveDepartureShelfBandsMin(departures, discountPercent);
+  const groupPaxFrom = isGroupPaxSlabPricing(cmsMeta)
+    ? groupPaxStartingFrom(cmsMeta, defaultCollectionTierId(cmsMeta), discountPercent)
+    : null;
   const lowestAdult = departureBands?.lowestAdult
     ? { value: departureBands.lowestAdult.value, note: departureBands.lowestAdult.note }
     : selectLowestAdultRate(detailSheet, discountPercent, fromDepartureUsd);
   const tourTwinDisplay = twinSharingDisplayPrice(detailSheet, discountPercent);
-  const startingTwin = crmUsdStorefront
-    ? marketBands.twin ?? lowestAdult.value ?? null
-    : isGlobalDetail
-      ? lowestAdult.value
-      : lowestAdult.value ||
-        tourTwinDisplay ||
-        row.twin_sharing_price ||
-        row.discounted_price ||
-        derivedTwin;
-  const startingSharingNote = lowestAdult.note ?? twinSharingRateNote(detailSheet);
+  const startingTwin = groupPaxFrom?.perPersonInr
+    ? groupPaxFrom.perPersonInr
+    : crmUsdStorefront
+      ? marketBands.twin ?? lowestAdult.value ?? null
+      : isGlobalDetail
+        ? lowestAdult.value
+        : lowestAdult.value ||
+          tourTwinDisplay ||
+          row.twin_sharing_price ||
+          row.discounted_price ||
+          derivedTwin;
+  const startingSharingNote =
+    groupPaxFrom?.sharingLabel ?? lowestAdult.note ?? twinSharingRateNote(detailSheet);
   const detailBand = childPricesFromDb(row);
   const destination = row.destination_ref?.name || row.destination || 'Unknown';
   const heroImage = normalizeMediaUrl(row.hero_image_url);
@@ -2829,11 +2867,13 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
     tour_type: resolveListingTourType(cmsMeta, row.flow_type),
     promo_badge: resolvePromoBadgeLabel(cmsMeta, sidebarBadgeMap),
     starting_from_twin: startingTwin,
-    starting_from_triple:
-      departureBands?.triple ??
-      marketBands.triple ??
-      row.triple_sharing_price ??
-      (startingTwin ? Math.round(startingTwin * 0.9) : null),
+    starting_from_triple: resolveListingTriplePrice(
+      cmsMeta,
+      startingTwin,
+      departureBands?.triple,
+      marketBands.triple,
+      row.triple_sharing_price
+    ),
     starting_from_single: departureBands?.single ?? marketBands.single ?? row.single_sharing_price ?? null,
     starting_from_quad: departureBands?.quad ?? marketBands.quad ?? row.quad_sharing_price ?? null,
     starting_from_infant: departureBands?.infant ?? marketBands.infant ?? detailBand.infant_price ?? null,
