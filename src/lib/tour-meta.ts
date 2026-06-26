@@ -66,6 +66,25 @@ export function defaultTaxPercentsForMarket(marketCountry: string): { gst: numbe
   return { gst: 0, tds: 0 };
 }
 
+/** GST / TCS (stored as tds_percent in CMS) — only when explicitly set on the tour and > 0. */
+export function tourTaxPercentsFromMeta(
+  meta: Pick<TourCmsMeta, 'gst_percent' | 'tds_percent'>
+): { gst: number; tcs: number } {
+  const gst =
+    meta.gst_percent != null &&
+    Number.isFinite(Number(meta.gst_percent)) &&
+    Number(meta.gst_percent) > 0
+      ? Number(meta.gst_percent)
+      : 0;
+  const tcs =
+    meta.tds_percent != null &&
+    Number.isFinite(Number(meta.tds_percent)) &&
+    Number(meta.tds_percent) > 0
+      ? Number(meta.tds_percent)
+      : 0;
+  return { gst, tcs };
+}
+
 const LEGACY_TOUR_TYPE_MAP: Record<string, string> = {
   Family: 'Family Holidays',
   Honeymoon: 'Honeymoon Packages',

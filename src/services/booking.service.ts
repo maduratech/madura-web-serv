@@ -1,5 +1,5 @@
 import { supabase } from '../lib/supabase';
-import { parseTourCmsMeta, resolveListingTourType } from '../lib/tour-meta';
+import { parseTourCmsMeta, resolveListingTourType, tourTaxPercentsFromMeta } from '../lib/tour-meta';
 import { loadActiveSidebarBadgeMap, resolvePromoBadgeLabel } from '../lib/sidebar-badge';
 import { lookupDeparturePricingUsd } from '../lib/departure-pricing-key';
 import {
@@ -312,6 +312,9 @@ const ADVANCE_AMOUNTS: Record<'INR' | 'USD' | 'AUD', Record<AdvanceRegion, numbe
   AUD: { domestic: 20, sea_middle_east: 50, international: 90 },
 };
 
+/** India storefront (/in/): 5% of package total (after GST & TCS) per traveller. */
+const INR_BOOKING_FEE_PERCENT = 0.05;
+
 const seaAndMiddleEastDestinations = new Set(
   [
     'uae',
@@ -364,16 +367,46 @@ function resolveTourRegionFromData(tourRegion: string, destination: string, cont
   return 'international' as const;
 }
 
-/** India storefront (/in/): ₹5,000 booking fee per traveller. */
-function getInrBookingFeePerTraveller(): number {
-  return 5000;
+/** India storefront (/in/): percentage-based booking fee (see resolvePaymentChargeAmount). */
+function getInrBookingFeePerTraveller(_packageTotalAfterTax: number): number {
+  return Math.max(0, Math.round(_packageTotalAfterTax * INR_BOOKING_FEE_PERCENT));
+}
+
+function applyPackageTaxes(subtotal: number, gstPercent: number, tcsPercent: number): number {
+  const gst = Math.max(0, Number(gstPercent) || 0);
+  const tcs = Math.max(0, Number(tcsPercent) || 0);
+  if (gst <= 0 && tcs <= 0) return Math.round(subtotal);
+  const gstAmount = Math.round(subtotal * (gst / 100));
+  const tcsAmount = Math.round((subtotal + gstAmount) * (tcs / 100));
+  return Math.round(subtotal + gstAmount + tcsAmount);
+}
+
+async function packageTotalAfterTaxForPayment(
+  context: { booking: Record<string, unknown>; displayCurrency: string | null },
+  storefront: PaymentStorefront
+): Promise<number> {
+  const subtotal = await packageTotalForPayment(context, storefront);
+  if (storefront !== 'in') return subtotal;
+
+  const tourId = Number(context.booking.tour_id);
+  if (!Number.isFinite(tourId) || tourId <= 0) return subtotal;
+
+  const { data: tourRow } = await supabase
+    .from('tours')
+    .select('overview')
+    .eq('id', tourId)
+    .maybeSingle();
+  const cmsMeta = parseTourCmsMeta((tourRow as { overview?: string | null } | null)?.overview);
+  const { gst, tcs } = tourTaxPercentsFromMeta(cmsMeta);
+  return applyPackageTaxes(subtotal, gst, tcs);
 }
 
 function getAdvanceAmountForCurrency(
   resolvedRegion: AdvanceRegion,
-  currency: 'INR' | 'USD' | 'AUD'
+  currency: 'INR' | 'USD' | 'AUD',
+  packageTotalAfterTax: number
 ): number {
-  if (currency === 'INR') return getInrBookingFeePerTraveller();
+  if (currency === 'INR') return getInrBookingFeePerTraveller(packageTotalAfterTax);
   const table = ADVANCE_AMOUNTS[currency];
   if (resolvedRegion === 'domestic') return table.domestic;
   if (resolvedRegion === 'sea_middle_east') return table.sea_middle_east;
@@ -3340,15 +3373,16 @@ async function resolvePaymentChargeAmount(
   const region = resolveTourRegionFromData(context.tourRegion, context.destination, context.continent);
   const chargeCur = chargeCurrencyForBooking(context.displayCurrency, storefront);
   const packageTotal = await packageTotalForPayment(context, storefront);
+  const packageTotalAfterTax = await packageTotalAfterTaxForPayment(context, storefront);
   const paid = await getPaidAmountForBooking(context.booking);
   if (purpose === 'balance') {
-    return Math.max(0, Math.round(packageTotal - paid));
+    return Math.max(0, Math.round(packageTotalAfterTax - paid));
   }
   /** Australia storefront (/au/): 50% of package total as advance. */
   if (storefront === 'au') {
     return Math.max(0, Math.round(packageTotal * 0.5));
   }
-  const perTraveller = getAdvanceAmountForCurrency(region, chargeCur);
+  const perTraveller = getAdvanceAmountForCurrency(region, chargeCur, packageTotalAfterTax);
   const travellerCount = countBookingFeeTravellers(context);
   return perTraveller * Math.max(1, travellerCount);
 }
@@ -3652,7 +3686,7 @@ export async function createBookingPaymentOrder(input: CreateBookingPaymentOrder
     amount: charge.minorUnits,
     currency,
     slab_region: resolvedRegion,
-    advance_mode: 'booking_fee' as const,
+    advance_mode: 'percent_5_per_traveller' as const,
     description: paymentDescription,
   };
 }
