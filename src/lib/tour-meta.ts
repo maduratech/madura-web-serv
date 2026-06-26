@@ -8,6 +8,10 @@ export type { GroupPaxCollectionTier } from './tour-collection-tiers';
 
 export type TourCmsMeta = {
   crm_itinerary_id?: number;
+  /** Smart itinerary tracking enabled for CRM-published links. */
+  crm_engagement_enabled?: boolean;
+  /** When true, customer sees Confirm + payment (full or partial) instead of Approve only. */
+  crm_show_payment_button?: boolean;
   /** CRM itinerary display currency (e.g. AUD). Drives storefront INR vs USD. */
   crm_source_currency?: string;
   crm_costing_snapshot?: {
