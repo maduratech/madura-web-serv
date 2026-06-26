@@ -3328,6 +3328,16 @@ export async function createBooking(input: CreateBookingInput) {
     primaryTravellerPhone: travellers?.[0]?.phone,
   });
 
+  void (async () => {
+    try {
+      const context = await getBookingPaymentContext(booking.id);
+      await ensureBookingMtsReference(context);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[createBooking] background MTS reference sync skipped:', err);
+    }
+  })();
+
   return {
     booking,
     travellers: travellers || [],
@@ -3504,6 +3514,77 @@ function buildTravellersAndRoomsCrmNote(
   }
 
   return lines.join('\n');
+}
+
+async function ensureBookingMtsReference(
+  context: Awaited<ReturnType<typeof getBookingPaymentContext>>
+): Promise<string | null> {
+  const existing = String((context.booking as { mts_id?: string | null }).mts_id || '').trim();
+  if (existing) return existing;
+
+  const paymentStatus =
+    String((context.booking as { payment_status?: string | null }).payment_status || 'pending')
+      .toLowerCase()
+      .trim() || 'pending';
+  const advanceSlabInInr = Number(
+    (context.booking as { payment_amount?: number | null })?.payment_amount || 0
+  );
+  const totalInInr = Number((context.booking as { total_price?: number | null })?.total_price || 0);
+  const detailsNote =
+    `Booking reference sync\n` +
+    `Payment Status: ${paymentStatus.toUpperCase()}\n` +
+    `Booking ID: ${context.booking.id}\n` +
+    `Package Total: ${context.formatInr(totalInInr)}` +
+    (context.travellersRoomsNote || '');
+
+  try {
+    const crmSyncResult = await syncBookingPaymentToCrm({
+      booking_id: Number(context.booking.id),
+      payment_status: paymentStatus,
+      amount: advanceSlabInInr,
+      amount_slab: advanceSlabInInr,
+      full_amount: totalInInr,
+      remaining_amount: Math.max(0, totalInInr - advanceSlabInInr),
+      payment_currency: 'INR',
+      destination: context.destination,
+      tour_title: context.tourTitle,
+      travel_date: context.travelDate,
+      return_date: context.returnDate,
+      duration: context.durationDaysLabel || context.durationLabel,
+      starting_point: context.departureCity,
+      tour_region: context.tourRegion,
+      departure_city: context.departureCity,
+      razorpay_order_id: String(
+        (context.booking as { payment_order_id?: string | null }).payment_order_id || ''
+      ).trim() || undefined,
+      display_currency: context.displayCurrency,
+      display_fx_rate: context.displayFxRate,
+      customer_phone: context.primaryTraveller?.phone ?? undefined,
+      customer_email: context.primaryTraveller?.email ?? undefined,
+      customer_name: `${context.primaryTraveller?.first_name || ''} ${context.primaryTraveller?.last_name || ''}`.trim(),
+      travellers: context.travellersForCrm,
+      room_details: context.roomDetailsStored,
+      details_note: detailsNote,
+    });
+
+    if (crmSyncResult?.mts_id || crmSyncResult?.lead_id) {
+      try {
+        await upsertBookingPaymentFields(Number(context.booking.id), {
+          mts_id: crmSyncResult?.mts_id || undefined,
+          crm_lead_id: crmSyncResult?.lead_id || undefined,
+        });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[ensure-mts-id] booking mts_id update skipped:', err);
+      }
+      return crmSyncResult?.mts_id ?? null;
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[ensure-mts-id] CRM sync failed:', err);
+  }
+
+  return null;
 }
 
 async function getBookingPaymentContext(bookingId: number) {
@@ -3810,10 +3891,14 @@ export async function getBookingPaymentSummary(input: CreateBookingPaymentOrderI
   const totalAmountInInr = await packageTotalForPayment(context, storefront);
   const paidAmountInInr = await getPaidAmountForBooking(context.booking);
   const remainingAmountInInr = Math.max(0, totalAmountInInr - paidAmountInInr);
+  let mtsId = String((context.booking as { mts_id?: string | null }).mts_id || '').trim() || null;
+  if (!mtsId) {
+    mtsId = await ensureBookingMtsReference(context);
+  }
   return {
     booking_id: context.booking.id,
     tour_id: Number(context.booking.tour_id) > 0 ? Number(context.booking.tour_id) : null,
-    mts_id: context.booking.mts_id ?? null,
+    mts_id: mtsId,
     payment_status: context.booking.payment_status ?? null,
     payment_order_id: context.booking.payment_order_id ?? null,
     total_amount: totalAmountInInr,
