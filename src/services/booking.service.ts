@@ -179,6 +179,8 @@ function formatInrDual(
 
 export type CreateBookingPaymentOrderInput = {
   booking_id: number;
+  /** CRM itinerary link: customer-chosen payment (full or partial). */
+  amount?: number | null;
 };
 
 export type VerifyBookingPaymentInput = {
@@ -2191,6 +2193,21 @@ function crmMetaHasCrmItinerary(cmsMeta: TourCmsMeta): boolean {
   return Number(cmsMeta.crm_itinerary_id) > 0;
 }
 
+function crmItineraryPaymentEnabled(meta: TourCmsMeta): boolean {
+  return crmMetaHasCrmItinerary(meta) && meta.crm_show_payment_button === true;
+}
+
+async function loadTourMetaForBooking(booking: Record<string, unknown>): Promise<TourCmsMeta> {
+  const tourId = Number(booking.tour_id);
+  if (!Number.isFinite(tourId) || tourId <= 0) return {};
+  const { data: tourRow } = await supabase
+    .from('tours')
+    .select('overview')
+    .eq('id', tourId)
+    .maybeSingle();
+  return parseTourCmsMeta((tourRow as { overview?: string | null } | null)?.overview);
+}
+
 /** Group tours: “from” price = lowest departure (matches tour detail), not tour-level USD only. */
 function lowestStartingTwinFromDepartures(
   departures: NonNullable<ListingTourRow['departures']>,
@@ -3368,7 +3385,8 @@ async function packageTotalForPayment(
 async function resolvePaymentChargeAmount(
   context: Awaited<ReturnType<typeof getBookingPaymentContext>>,
   storefront: PaymentStorefront,
-  purpose: 'advance' | 'balance'
+  purpose: 'advance' | 'balance',
+  requestedAmount?: number | null
 ): Promise<number> {
   const region = resolveTourRegionFromData(context.tourRegion, context.destination, context.continent);
   const chargeCur = chargeCurrencyForBooking(context.displayCurrency, storefront);
@@ -3377,6 +3395,17 @@ async function resolvePaymentChargeAmount(
   const paid = await getPaidAmountForBooking(context.booking);
   if (purpose === 'balance') {
     return Math.max(0, Math.round(packageTotalAfterTax - paid));
+  }
+  /** CRM shared itinerary with payment enabled: full or customer-chosen partial amount. */
+  const tourMeta = await loadTourMetaForBooking(context.booking);
+  if (crmItineraryPaymentEnabled(tourMeta)) {
+    const remaining = Math.max(0, Math.round(packageTotalAfterTax - paid));
+    if (remaining <= 0) return 0;
+    const raw =
+      requestedAmount != null && Number.isFinite(Number(requestedAmount))
+        ? Math.round(Number(requestedAmount))
+        : remaining;
+    return Math.max(1, Math.min(raw, remaining));
   }
   /** Australia storefront (/au/): 50% of package total as advance. */
   if (storefront === 'au') {
@@ -3600,14 +3629,23 @@ export async function createBookingPaymentOrder(input: CreateBookingPaymentOrder
   const gateway = resolvePaymentGateway(context.displayCurrency);
   const storefront = resolveStorefront(context.displayCurrency);
   const resolvedRegion = resolveTourRegionFromData(context.tourRegion, context.destination, context.continent);
-  const advanceAmount = await resolvePaymentChargeAmount(context, storefront, 'advance');
-  const charge = chargeAmountMinorUnits(advanceAmount, storefront);
-  const paymentDescription = advancePaymentDescription(
+  const advanceAmount = await resolvePaymentChargeAmount(
+    context,
     storefront,
-    resolvedRegion,
-    context.tourTitle || '',
-    context.destination || ''
+    'advance',
+    input.amount
   );
+  const charge = chargeAmountMinorUnits(advanceAmount, storefront);
+  const tourMetaForPayment = await loadTourMetaForBooking(context.booking);
+  const crmFlexiblePayment = crmItineraryPaymentEnabled(tourMetaForPayment);
+  const paymentDescription = crmFlexiblePayment
+    ? `Package payment — ${context.tourTitle || context.destination || 'your tour'}`
+    : advancePaymentDescription(
+        storefront,
+        resolvedRegion,
+        context.tourTitle || '',
+        context.destination || ''
+      );
 
   if (gateway === 'square') {
     if (!squareConfigured()) {
@@ -3686,7 +3724,9 @@ export async function createBookingPaymentOrder(input: CreateBookingPaymentOrder
     amount: charge.minorUnits,
     currency,
     slab_region: resolvedRegion,
-    advance_mode: 'percent_5_per_traveller' as const,
+    advance_mode: crmFlexiblePayment
+      ? ('crm_flexible' as const)
+      : ('percent_5_per_traveller' as const),
     description: paymentDescription,
   };
 }

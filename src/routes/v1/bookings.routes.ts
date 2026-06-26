@@ -41,7 +41,10 @@ bookingsRouter.post(
   async (req, res, next) => {
   try {
     const bookingId = Number(req.params.bookingId || req.body.booking_id || 0);
-    const result = await createBookingPaymentOrder({ booking_id: bookingId });
+    const result = await createBookingPaymentOrder({
+      booking_id: bookingId,
+      amount: req.body?.amount != null ? Number(req.body.amount) : undefined,
+    });
     return res.status(201).json({
       message: 'Payment order created successfully.',
       data: result,

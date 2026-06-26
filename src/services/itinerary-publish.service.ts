@@ -39,6 +39,8 @@ export type PublishItineraryPayload = {
   children?: number | null;
   infants?: number | null;
   grand_total?: number | null;
+  /** From CRM itineraries.show_payment_button */
+  show_payment_button?: boolean | null;
   lead_requirements?: {
     adults?: number;
     children?: number;
@@ -593,14 +595,17 @@ async function findExistingTourForItinerary(itineraryId: number): Promise<number
 
   const { data: rows } = await supabase
     .from('tours')
-    .select('id,overview')
-    .ilike('overview', `%crm_itinerary_id":${itineraryId}%`)
-    .limit(5);
+    .select('id,overview,created_at')
+    .ilike('overview', '%cms-meta-b64:%')
+    .order('created_at', { ascending: true });
+  const matches: number[] = [];
   for (const row of rows || []) {
-    const { meta } = splitOverviewWithMeta(row.overview);
-    if (Number(meta.crm_itinerary_id) === itineraryId) return Number(row.id);
+    const { meta } = splitOverviewWithMeta((row as { overview?: string | null }).overview);
+    if (Number(meta.crm_itinerary_id) === itineraryId) {
+      matches.push(Number(row.id));
+    }
   }
-  return null;
+  return matches[0] ?? null;
 }
 
 async function uniqueSlug(base: string, excludeTourId?: number): Promise<string> {
@@ -852,13 +857,15 @@ export async function publishItineraryToTour(
   const existingTourId = await findExistingTourForItinerary(itineraryId);
 
   let priorMeta: TourCmsMeta = {};
+  let existingSlug: string | null = null;
   if (existingTourId) {
     const { data: existingRow } = await supabase
       .from('tours')
-      .select('overview')
+      .select('overview,slug')
       .eq('id', existingTourId)
       .maybeSingle();
     priorMeta = splitOverviewWithMeta(existingRow?.overview).meta;
+    existingSlug = String(existingRow?.slug || '').trim() || null;
   }
 
   const displayCurrency = normalizeDisplayCurrency(input.display_currency);
@@ -897,6 +904,7 @@ export async function publishItineraryToTour(
     ...priorMeta,
     crm_itinerary_id: itineraryId,
     crm_engagement_enabled: true,
+    crm_show_payment_button: input.show_payment_button === true,
     crm_source_currency: displayCurrency,
     crm_display_prices: {
       currency: displayCurrency,
@@ -931,7 +939,9 @@ export async function publishItineraryToTour(
   const overview = joinOverviewWithMeta(overviewBody, cmsMeta);
 
   const baseSlug = titleTourSlug(title, itineraryId);
-  const slug = await uniqueSlug(baseSlug, existingTourId ?? undefined);
+  const slug = existingTourId && existingSlug
+    ? existingSlug
+    : await uniqueSlug(baseSlug, existingTourId ?? undefined);
 
   const media = await resolvePublishMedia({
     cover_image_url: input.cover_image_url,
