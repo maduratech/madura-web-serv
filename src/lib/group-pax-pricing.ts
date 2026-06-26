@@ -292,6 +292,6 @@ export function groupPaxStartingFrom(
 
   return {
     perPersonInr: bestRate,
-    sharingLabel: bestLabel ? `${bestLabel} group rate · Twin sharing` : 'Twin sharing rate',
+    sharingLabel: bestLabel ? `${bestLabel} group rate` : 'Group rate',
   };
 }
