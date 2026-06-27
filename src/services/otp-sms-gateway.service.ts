@@ -17,37 +17,37 @@ export function buildOtpMessage(otp: string): string {
   return OTP_TEMPLATE.replace('{#var#}', otp);
 }
 
-function isSmsConfigured(): boolean {
+function isOtpSmsConfigured(): boolean {
   return Boolean(
-    env.SMSINTEGRA_UID &&
-      env.SMSINTEGRA_PWD &&
-      env.SMSINTEGRA_SID &&
-      env.SMSINTEGRA_ENTITY_ID &&
-      env.SMSINTEGRA_OTP_TEMPLATE_ID &&
-      env.SMSINTEGRA_API_URL
+    env.OTP_SMS_UID &&
+      env.OTP_SMS_PWD &&
+      env.OTP_SMS_SENDER_ID &&
+      env.OTP_SMS_ENTITY_ID &&
+      env.OTP_SMS_TEMPLATE_ID &&
+      env.OTP_SMS_GATEWAY_URL
   );
 }
 
-/** POST OTP SMS via SMSIntegra (DLT template). */
+/** Send OTP SMS via configured DLT gateway (server-only credentials). */
 export async function sendOtpSms(mobileDigits: string, otp: string): Promise<void> {
-  if (!isSmsConfigured()) {
+  if (!isOtpSmsConfigured()) {
     throw new HttpError(503, 'SMS login is not configured yet. Try email login or try again later.');
   }
 
   const msg = buildOtpMessage(otp);
   const body = new URLSearchParams({
-    uid: env.SMSINTEGRA_UID,
-    pwd: env.SMSINTEGRA_PWD,
+    uid: env.OTP_SMS_UID,
+    pwd: env.OTP_SMS_PWD,
     mobile: mobileDigits,
     msg,
-    sid: env.SMSINTEGRA_SID,
+    sid: env.OTP_SMS_SENDER_ID,
     type: '0',
     dtTimeNow: formatDtTimeNow(),
-    entityid: env.SMSINTEGRA_ENTITY_ID,
-    tempid: env.SMSINTEGRA_OTP_TEMPLATE_ID,
+    entityid: env.OTP_SMS_ENTITY_ID,
+    tempid: env.OTP_SMS_TEMPLATE_ID,
   });
 
-  const url = env.SMSINTEGRA_API_URL;
+  const url = env.OTP_SMS_GATEWAY_URL;
   if (!url) {
     throw new HttpError(503, 'SMS login is not configured yet. Try email login or try again later.');
   }
@@ -61,13 +61,13 @@ export async function sendOtpSms(mobileDigits: string, otp: string): Promise<voi
     });
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.error('[smsintegra] network error:', err);
+    console.error('[otp-sms] gateway network error:', err);
     throw new HttpError(502, 'Could not send the verification code. Please try again.');
   }
 
   const text = (await response.text()).trim();
   // eslint-disable-next-line no-console
-  console.info('[smsintegra] send response:', response.status, text.slice(0, 200));
+  console.info('[otp-sms] gateway response status:', response.status);
 
   if (!response.ok) {
     throw new HttpError(502, 'Could not send the verification code. Please try again.');

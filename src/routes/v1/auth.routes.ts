@@ -11,8 +11,8 @@ function clientIp(req: { headers: Record<string, unknown>; ip?: string }): strin
   return forwarded || req.ip || 'unknown';
 }
 
-/** POST /api/v1/auth/phone/send-otp — send 6-digit SMS OTP (India +91 only). */
-authRouter.post('/auth/phone/send-otp', phoneOtpSendRateLimit, async (req, res, next) => {
+/** POST /api/v1/auth/mobile/send-code — send 6-digit mobile verification code (India +91). */
+authRouter.post('/auth/mobile/send-code', phoneOtpSendRateLimit, async (req, res, next) => {
   try {
     const phone = String(req.body?.phone || '').trim();
     if (!phone) {
@@ -25,8 +25,8 @@ authRouter.post('/auth/phone/send-otp', phoneOtpSendRateLimit, async (req, res, 
   }
 });
 
-/** POST /api/v1/auth/phone/verify-otp — verify SMS OTP and return Supabase session tokens. */
-authRouter.post('/auth/phone/verify-otp', phoneOtpVerifyRateLimit, async (req, res, next) => {
+/** POST /api/v1/auth/mobile/verify-code — verify mobile code and return session tokens. */
+authRouter.post('/auth/mobile/verify-code', phoneOtpVerifyRateLimit, async (req, res, next) => {
   try {
     const phone = String(req.body?.phone || '').trim();
     const otp = String(req.body?.otp || '').trim();

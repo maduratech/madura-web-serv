@@ -34,8 +34,8 @@ function clientIp(req: { headers: Record<string, unknown>; ip?: string }): strin
   return forwarded || req.ip || 'unknown';
 }
 
-/** POST /api/v1/account/phone/send-otp — verify ownership before saving a new mobile. */
-accountRouter.post('/account/phone/send-otp', requireAuth, phoneOtpSendRateLimit, async (req, res, next) => {
+/** POST /api/v1/account/mobile/send-code — verify ownership before saving a new mobile. */
+accountRouter.post('/account/mobile/send-code', requireAuth, phoneOtpSendRateLimit, async (req, res, next) => {
   try {
     const phone = String(req.body?.phone || '').trim();
     if (!phone) {
@@ -48,8 +48,8 @@ accountRouter.post('/account/phone/send-otp', requireAuth, phoneOtpSendRateLimit
   }
 });
 
-/** POST /api/v1/account/phone/verify-otp — confirm SMS OTP for profile mobile update. */
-accountRouter.post('/account/phone/verify-otp', requireAuth, phoneOtpVerifyRateLimit, async (req, res, next) => {
+/** POST /api/v1/account/mobile/verify-code — confirm mobile code for profile update. */
+accountRouter.post('/account/mobile/verify-code', requireAuth, phoneOtpVerifyRateLimit, async (req, res, next) => {
   try {
     const phone = String(req.body?.phone || '').trim();
     const otp = String(req.body?.otp || '').trim();

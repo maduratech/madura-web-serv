@@ -23,11 +23,13 @@ export const env = {
     process.env.MADURA_WEB_PUBLIC_URL ||
     process.env.WEB_PUBLIC_BASE_URL ||
     'https://maduratravel.com',
-  SMSINTEGRA_UID: process.env.SMSINTEGRA_UID || '',
-  SMSINTEGRA_PWD: process.env.SMSINTEGRA_PWD || '',
-  SMSINTEGRA_SID: process.env.SMSINTEGRA_SID || '',
-  SMSINTEGRA_ENTITY_ID: process.env.SMSINTEGRA_ENTITY_ID || '',
-  SMSINTEGRA_OTP_TEMPLATE_ID: process.env.SMSINTEGRA_OTP_TEMPLATE_ID || '',
-  SMSINTEGRA_API_URL: process.env.SMSINTEGRA_API_URL || '',
+  /** OTP SMS gateway (server-only). Legacy SMSINTEGRA_* env names still accepted. */
+  OTP_SMS_UID: process.env.OTP_SMS_UID || process.env.SMSINTEGRA_UID || '',
+  OTP_SMS_PWD: process.env.OTP_SMS_PWD || process.env.SMSINTEGRA_PWD || '',
+  OTP_SMS_SENDER_ID: process.env.OTP_SMS_SENDER_ID || process.env.SMSINTEGRA_SID || '',
+  OTP_SMS_ENTITY_ID: process.env.OTP_SMS_ENTITY_ID || process.env.SMSINTEGRA_ENTITY_ID || '',
+  OTP_SMS_TEMPLATE_ID:
+    process.env.OTP_SMS_TEMPLATE_ID || process.env.SMSINTEGRA_OTP_TEMPLATE_ID || '',
+  OTP_SMS_GATEWAY_URL: process.env.OTP_SMS_GATEWAY_URL || process.env.SMSINTEGRA_API_URL || '',
   PHONE_OTP_PEPPER: process.env.PHONE_OTP_PEPPER || '',
 };

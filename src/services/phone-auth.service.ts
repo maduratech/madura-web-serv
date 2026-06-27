@@ -4,7 +4,7 @@ import { HttpError } from '../lib/http-error';
 import { normalizeIndianMobile, phoneLast10, phonesMatchLast10 } from '../lib/indian-phone';
 import { supabase } from '../lib/supabase';
 import { fetchCrmHistoryForProfile } from './account.service';
-import { sendOtpSms } from './smsintegra.service';
+import { sendOtpSms } from './otp-sms-gateway.service';
 
 const OTP_TTL_MS = 10 * 60 * 1000;
 const RESEND_COOLDOWN_MS = 30 * 1000;
