@@ -4,7 +4,7 @@ import { env } from '../../config/env';
 
 const healthRouter = Router();
 
-.healthRouter.get('/health', async (_req, res) => {
+healthRouter.get('/health', async (_req, res) => {
   let supabase_ok = false;
   let crm_ok = false;
   let supabase_error: string | null = null;
