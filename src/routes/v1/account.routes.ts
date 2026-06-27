@@ -1,8 +1,8 @@
 import { Router } from 'express';
-import { env } from '../../config/env';
 import { requireAuth } from '../../middlewares/auth.middleware';
 import { documentUploadRateLimit } from '../../middlewares/rate-limit.middleware';
 import { validateCustomerDocumentUpload } from '../../lib/document-upload.validation';
+import { CUSTOMER_DOCUMENT_UPLOAD_ENABLED } from '../../lib/customer-document-upload';
 import {
   buildAccountMeForUser,
   CUSTOMER_DOCUMENT_TYPES,
@@ -78,7 +78,7 @@ accountRouter.get('/account/documents', requireAuth, async (req, res, next) => {
 /** POST /api/v1/account/documents — upload a document to the linked CRM customer. */
 accountRouter.post('/account/documents', requireAuth, documentUploadRateLimit, async (req, res, next) => {
   try {
-    if (!env.CUSTOMER_DOCUMENT_UPLOAD_ENABLED) {
+    if (!CUSTOMER_DOCUMENT_UPLOAD_ENABLED) {
       return res.status(403).json({
         message:
           'Customer uploads are temporarily unavailable. Your travel consultant can still share documents with you here.',

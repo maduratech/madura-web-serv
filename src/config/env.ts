@@ -23,6 +23,4 @@ export const env = {
     process.env.MADURA_WEB_PUBLIC_URL ||
     process.env.WEB_PUBLIC_BASE_URL ||
     'https://maduratravel.com',
-  /** Set CUSTOMER_DOCUMENT_UPLOAD_ENABLED=true to allow customer self-uploads. */
-  CUSTOMER_DOCUMENT_UPLOAD_ENABLED: process.env.CUSTOMER_DOCUMENT_UPLOAD_ENABLED === 'true',
 };
