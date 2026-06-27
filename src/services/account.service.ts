@@ -8,6 +8,7 @@ export type CrmAssignedStaff = {
   phone: string;
   email: string;
   extension_no: number | string | null;
+  avatar_url?: string | null;
 };
 
 /** CRM lead row returned by `/api/customer/by-phone` / `by-email`. */
@@ -333,6 +334,33 @@ export async function fetchCrmHistoryForProfile(
   return { customer: null, leads: [] };
 }
 
+/** Fetch a single CRM lead with assigned consultant (website integration). */
+export async function fetchCrmLeadById(leadId: number): Promise<CrmHistoryLead | null> {
+  const id = Number(leadId);
+  if (!Number.isFinite(id) || id <= 0) return null;
+
+  let base: string;
+  let secret: string;
+  try {
+    ({ base, secret } = requireCrmIntegration());
+  } catch {
+    return null;
+  }
+
+  try {
+    const response = await crmFetch(`${base}/api/lead/${encodeURIComponent(String(id))}/website`, {
+      method: 'GET',
+      headers: { 'x-integration-secret': secret },
+    });
+    if (!response.ok) return null;
+    return (await response.json()) as CrmHistoryLead;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[account] CRM lead-by-id fetch failed:', err);
+    return null;
+  }
+}
+
 /** @deprecated use fetchCrmHistoryForProfile — kept for direct callers */
 export async function fetchCrmHistoryForPhone(phone: string): Promise<CrmHistoryResult> {
   return fetchCrmHistoryForProfile(phone, null);
@@ -481,6 +509,10 @@ export type DashboardBooking = {
   crm_lead_id: number | null;
   rooms: number | null;
   room_details: unknown;
+  travel_date: string | null;
+  return_date: string | null;
+  departure_city: string | null;
+  collection_tier_id: string | null;
   created_at: string;
   payment_verified_at: string | null;
   tour: { id: number; title: string; destination: string | null } | null;
@@ -494,16 +526,64 @@ export type DashboardBooking = {
 
 /** Bookings + tour/departure info for a given user. Service-role read so RLS doesn't matter here. */
 export async function fetchBookingsForUser(userId: string): Promise<DashboardBooking[]> {
-  const { data, error } = await supabase
-    .from('bookings')
-    .select(
-      'id,status,payment_status,total_price,payment_amount,payment_currency,display_currency,display_fx_rate,mts_id,crm_lead_id,rooms,room_details,created_at,payment_verified_at,tour:tours(id,title,destination),departure:departures(id,city,start_date,end_date)'
-    )
-    .eq('user_id', userId)
-    .order('created_at', { ascending: false })
-    .limit(100);
+  const selectWide =
+    'id,status,payment_status,total_price,payment_amount,payment_currency,display_currency,display_fx_rate,mts_id,crm_lead_id,rooms,room_details,travel_date,return_date,departure_city,collection_tier_id,created_at,payment_verified_at,tour:tours(id,title,destination),departure:departures(id,city,start_date,end_date)';
+  const selectMid =
+    'id,status,payment_status,total_price,payment_amount,payment_currency,display_currency,display_fx_rate,mts_id,crm_lead_id,rooms,room_details,created_at,payment_verified_at,tour:tours(id,title,destination),departure:departures(id,city,start_date,end_date)';
+
+  let data: unknown[] | null = null;
+  let error: { message?: string } | null = null;
+
+  const wideRes = await supabase.from('bookings').select(selectWide).eq('user_id', userId).order('created_at', { ascending: false }).limit(100);
+  if (wideRes.error && /column .* does not exist/i.test(String(wideRes.error.message || ''))) {
+    const midRes = await supabase.from('bookings').select(selectMid).eq('user_id', userId).order('created_at', { ascending: false }).limit(100);
+    data = midRes.data;
+    error = midRes.error;
+  } else {
+    data = wideRes.data;
+    error = wideRes.error;
+  }
+
   if (error) throw new Error(`Failed to load bookings: ${error.message}`);
-  return ((data || []) as unknown) as DashboardBooking[];
+  const bookings = ((data || []) as unknown) as DashboardBooking[];
+
+  const leadIdsNeedingDates = [
+    ...new Set(
+      bookings
+        .filter((b) => {
+          const hasDepartureDates = Boolean(b.departure?.start_date);
+          const hasStoredDates = Boolean(String(b.travel_date || '').trim());
+          return !hasDepartureDates && !hasStoredDates && Number(b.crm_lead_id) > 0;
+        })
+        .map((b) => Number(b.crm_lead_id))
+    ),
+  ];
+
+  if (leadIdsNeedingDates.length > 0) {
+    const leadDates = new Map<number, { travel_date: string | null; return_date: string | null }>();
+    await Promise.all(
+      leadIdsNeedingDates.map(async (leadId) => {
+        const lead = await fetchCrmLeadById(leadId);
+        if (!lead) return;
+        leadDates.set(leadId, {
+          travel_date: lead.travel_date ?? null,
+          return_date: lead.return_date ?? null,
+        });
+      })
+    );
+    for (const booking of bookings) {
+      const leadId = Number(booking.crm_lead_id);
+      if (!leadId || booking.travel_date || booking.departure?.start_date) continue;
+      const fromLead = leadDates.get(leadId);
+      if (!fromLead?.travel_date) continue;
+      booking.travel_date = fromLead.travel_date;
+      if (!booking.return_date && fromLead.return_date) {
+        booking.return_date = fromLead.return_date;
+      }
+    }
+  }
+
+  return bookings;
 }
 
 export type DashboardEnquiry = {

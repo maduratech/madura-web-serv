@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { fetchCrmLeadById, type CrmAssignedStaff } from './account.service';
 import { parseTourCmsMeta, resolveListingTourType, tourTaxPercentsFromMeta } from '../lib/tour-meta';
 import { loadActiveSidebarBadgeMap, resolvePromoBadgeLabel } from '../lib/sidebar-badge';
 import { lookupDeparturePricingUsd } from '../lib/departure-pricing-key';
@@ -140,6 +141,10 @@ export type CreateBookingInput = {
   include_flight?: boolean;
   /** Group-slab FIT tours: Comfort / Signature / Royal collection id. */
   collection_tier_id?: string | null;
+  /** Preferred travel date when no scheduled departure is selected. */
+  travel_date?: string | null;
+  return_date?: string | null;
+  departure_city?: string | null;
 };
 
 /** Server-side fallback INR → market rates (used when client didn't snapshot a rate). Keep in sync with `madura-web/src/config/market.ts`. */
@@ -3265,18 +3270,48 @@ export async function createBooking(input: CreateBookingInput) {
   if (input.user_id) {
     roomPatch.user_id = input.user_id;
   }
+
+  let travelDateStored = String(input.travel_date || '').trim();
+  let returnDateStored = String(input.return_date || '').trim();
+  let departureCityStored = String(input.departure_city || '').trim();
+  if (departureId) {
+    const { data: depRow } = await supabase
+      .from('departures')
+      .select('start_date,end_date,city')
+      .eq('id', departureId)
+      .maybeSingle();
+    if (depRow) {
+      if (!travelDateStored) {
+        travelDateStored = String((depRow as { start_date?: string }).start_date || '').trim();
+      }
+      if (!returnDateStored) {
+        returnDateStored = String((depRow as { end_date?: string }).end_date || '').trim();
+      }
+      if (!departureCityStored) {
+        departureCityStored = String((depRow as { city?: string }).city || '').trim();
+      }
+    }
+  }
+  if (travelDateStored) roomPatch.travel_date = travelDateStored;
+  if (returnDateStored) roomPatch.return_date = returnDateStored;
+  if (departureCityStored) roomPatch.departure_city = departureCityStored;
+  if (String(input.collection_tier_id || '').trim()) {
+    roomPatch.collection_tier_id = String(input.collection_tier_id).trim();
+  }
+
   if (Object.keys(roomPatch).length > 0) {
     const tryUpdate = await supabase.from('bookings').update(roomPatch).eq('id', booking.id);
     let roomUpdateError = tryUpdate.error;
     // Forward-compatible: if optional columns don't exist yet, retry without them.
-    if (
-      roomUpdateError &&
-      /column .*(display_currency|display_fx_rate|user_id).* does not exist/i.test(String(roomUpdateError.message || ''))
-    ) {
+    if (roomUpdateError && /column .* does not exist/i.test(String(roomUpdateError.message || ''))) {
       const slimPatch: Record<string, unknown> = { ...roomPatch };
       delete slimPatch.display_currency;
       delete slimPatch.display_fx_rate;
       delete slimPatch.user_id;
+      delete slimPatch.travel_date;
+      delete slimPatch.return_date;
+      delete slimPatch.departure_city;
+      delete slimPatch.collection_tier_id;
       if (Object.keys(slimPatch).length > 0) {
         const retry = await supabase.from('bookings').update(slimPatch).eq('id', booking.id);
         roomUpdateError = retry.error || null;
@@ -3592,20 +3627,27 @@ async function getBookingPaymentContext(bookingId: number) {
   let bookingError: { message?: string } | null = null;
 
   const bookingSelectWide =
-    'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id,rooms,room_details,display_currency,display_fx_rate,mts_id,crm_lead_id,created_at,updated_at,payment_verified_at';
+    'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id,rooms,room_details,travel_date,return_date,departure_city,collection_tier_id,display_currency,display_fx_rate,mts_id,crm_lead_id,created_at,updated_at,payment_verified_at';
   const bookingSelectMid =
+    'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id,rooms,room_details,travel_date,return_date,departure_city,collection_tier_id';
+  const bookingSelectMidLegacy =
     'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id,rooms,room_details';
   const bookingSelectNarrow =
     'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id';
 
   const wideRes = await supabase.from('bookings').select(bookingSelectWide).eq('id', bookingId).single();
   if (wideRes.error && /column .* does not exist/i.test(String(wideRes.error.message || ''))) {
-    // Some columns are missing — try mid (drops display_*), then narrow (drops rooms/room_details too).
     const midRes = await supabase.from('bookings').select(bookingSelectMid).eq('id', bookingId).single();
     if (midRes.error && /column .* does not exist/i.test(String(midRes.error.message || ''))) {
-      const narrowRes = await supabase.from('bookings').select(bookingSelectNarrow).eq('id', bookingId).single();
-      booking = (narrowRes.data as Record<string, unknown>) || null;
-      bookingError = narrowRes.error;
+      const midLegacyRes = await supabase.from('bookings').select(bookingSelectMidLegacy).eq('id', bookingId).single();
+      if (midLegacyRes.error && /column .* does not exist/i.test(String(midLegacyRes.error.message || ''))) {
+        const narrowRes = await supabase.from('bookings').select(bookingSelectNarrow).eq('id', bookingId).single();
+        booking = (narrowRes.data as Record<string, unknown>) || null;
+        bookingError = narrowRes.error;
+      } else {
+        booking = (midLegacyRes.data as Record<string, unknown>) || null;
+        bookingError = midLegacyRes.error;
+      }
     } else {
       booking = (midRes.data as Record<string, unknown>) || null;
       bookingError = midRes.error;
@@ -3656,9 +3698,16 @@ async function getBookingPaymentContext(bookingId: number) {
   const continent = String(
     (tour as { destination_ref?: { continent?: string | null } | null })?.destination_ref?.continent || ''
   ).trim();
-  const departureCity = String((departure as { city?: string })?.city || '').trim();
-  const travelDate = String((departure as { start_date?: string })?.start_date || '').trim();
-  const returnDate = String((departure as { end_date?: string })?.end_date || '').trim();
+  const departureCity =
+    String((departure as { city?: string })?.city || '').trim() ||
+    String((booking as { departure_city?: string }).departure_city || '').trim();
+  const travelDate =
+    String((departure as { start_date?: string })?.start_date || '').trim() ||
+    String((booking as { travel_date?: string }).travel_date || '').trim();
+  const returnDate =
+    String((departure as { end_date?: string })?.end_date || '').trim() ||
+    String((booking as { return_date?: string }).return_date || '').trim();
+  const collectionTierId = String((booking as { collection_tier_id?: string }).collection_tier_id || '').trim();
   const derivedDurationNights =
     travelDate && returnDate
       ? Math.max(
@@ -3723,6 +3772,7 @@ async function getBookingPaymentContext(bookingId: number) {
     displayCurrency,
     displayFxRate,
     formatInr,
+    collectionTierId,
   };
 }
 
@@ -3884,6 +3934,73 @@ export async function getBookingActivity(input: { booking_id: number }): Promise
   }[];
 }
 
+const PUBLIC_DESK_EMAIL = 'mail@maduratravel.com';
+const PUBLIC_DESK_PHONE_LAST10 = '9092949494';
+
+function isPublicDeskStaff(staff: CrmAssignedStaff): boolean {
+  const mail = String(staff.email || '')
+    .trim()
+    .toLowerCase();
+  const name = String(staff.name || '')
+    .trim()
+    .toLowerCase();
+  const phoneLast10 = String(staff.phone || '').replace(/\D/g, '').slice(-10);
+  return (
+    phoneLast10 === PUBLIC_DESK_PHONE_LAST10 ||
+    mail === PUBLIC_DESK_EMAIL ||
+    name === 'madura travel service'
+  );
+}
+
+function collectionTierLabelFromId(tierId: string | null | undefined): string | null {
+  const id = String(tierId || '').trim();
+  if (!id) return null;
+  const labels: Record<string, string> = {
+    comfort: 'Comfort',
+    signature: 'Signature',
+    royal_retreat: 'Royal Retreat',
+  };
+  return labels[id] || id.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function countBookingPax(context: Awaited<ReturnType<typeof getBookingPaymentContext>>) {
+  const rooms = context.roomDetailsStored;
+  if (rooms?.length) {
+    let adults = 0;
+    let children = 0;
+    for (const room of rooms) {
+      adults += Number(room.adults || 0);
+      children += Number(room.children || 0);
+    }
+    return {
+      adults,
+      children,
+      infants: 0,
+      rooms: rooms.length,
+    };
+  }
+  const travellers = context.travellersForCrm || [];
+  const adults = travellers.filter((t) => String(t.traveller_type || 'adult').toLowerCase() === 'adult').length;
+  const children = travellers.filter((t) => String(t.traveller_type || '').toLowerCase() === 'child').length;
+  const infants = travellers.filter((t) => String(t.traveller_type || '').toLowerCase() === 'infant').length;
+  const roomsStored =
+    (context.booking as { rooms?: number | null }).rooms != null
+      ? Number((context.booking as { rooms?: number | null }).rooms)
+      : null;
+  return { adults, children, infants, rooms: roomsStored };
+}
+
+async function resolveAssignedConsultantForBooking(
+  context: Awaited<ReturnType<typeof getBookingPaymentContext>>
+): Promise<CrmAssignedStaff | null> {
+  const crmLeadId = Number((context.booking as { crm_lead_id?: number | null }).crm_lead_id) || 0;
+  if (crmLeadId <= 0) return null;
+  const lead = await fetchCrmLeadById(crmLeadId);
+  const staff = lead?.assigned_staff;
+  if (!staff || isPublicDeskStaff(staff)) return null;
+  return staff;
+}
+
 export async function getBookingPaymentSummary(input: CreateBookingPaymentOrderInput) {
   if (!input.booking_id) throw new Error('booking_id is required.');
   const context = await getBookingPaymentContext(input.booking_id);
@@ -3895,6 +4012,21 @@ export async function getBookingPaymentSummary(input: CreateBookingPaymentOrderI
   if (!mtsId) {
     mtsId = await ensureBookingMtsReference(context);
   }
+
+  let travelDate = context.travelDate || null;
+  let returnDate = context.returnDate || null;
+  if (!travelDate) {
+    const crmLeadId = Number((context.booking as { crm_lead_id?: number | null }).crm_lead_id) || 0;
+    if (crmLeadId > 0) {
+      const lead = await fetchCrmLeadById(crmLeadId);
+      if (lead?.travel_date) travelDate = String(lead.travel_date).trim();
+      if (!returnDate && lead?.return_date) returnDate = String(lead.return_date).trim();
+    }
+  }
+
+  const pax = countBookingPax(context);
+  const assignedConsultant = await resolveAssignedConsultantForBooking(context);
+
   return {
     booking_id: context.booking.id,
     tour_id: Number(context.booking.tour_id) > 0 ? Number(context.booking.tour_id) : null,
@@ -3913,6 +4045,20 @@ export async function getBookingPaymentSummary(input: CreateBookingPaymentOrderI
           (context.booking as { created_at?: string | null }).created_at ||
           ''
       ).trim() || null,
+    trip_summary: {
+      tour_title: context.tourTitle || null,
+      destination: context.destination || null,
+      travel_date: travelDate,
+      return_date: returnDate,
+      departure_city: context.departureCity || null,
+      duration_label: context.durationDaysLabel || context.durationLabel || null,
+      adults: pax.adults,
+      children: pax.children,
+      infants: pax.infants,
+      rooms: pax.rooms,
+      collection_tier_label: collectionTierLabelFromId(context.collectionTierId),
+    },
+    assigned_consultant: assignedConsultant,
   };
 }
 
