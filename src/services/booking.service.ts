@@ -3935,21 +3935,22 @@ export async function getBookingActivity(input: { booking_id: number }): Promise
 }
 
 const PUBLIC_DESK_EMAIL = 'mail@maduratravel.com';
-const PUBLIC_DESK_PHONE_LAST10 = '9092949494';
+const PUBLIC_DESK_PHONE = '+91 90929 49494';
 
-function isPublicDeskStaff(staff: CrmAssignedStaff): boolean {
-  const mail = String(staff.email || '')
-    .trim()
-    .toLowerCase();
-  const name = String(staff.name || '')
-    .trim()
-    .toLowerCase();
-  const phoneLast10 = String(staff.phone || '').replace(/\D/g, '').slice(-10);
-  return (
-    phoneLast10 === PUBLIC_DESK_PHONE_LAST10 ||
-    mail === PUBLIC_DESK_EMAIL ||
-    name === 'madura travel service'
-  );
+function isAssignedConsultantName(name: string | null | undefined): boolean {
+  const n = String(name || '').trim().toLowerCase();
+  return Boolean(n) && n !== 'madura travel service';
+}
+
+function normalizeConsultantForWebsite(staff: CrmAssignedStaff | null): CrmAssignedStaff | null {
+  if (!staff || !isAssignedConsultantName(staff.name)) return null;
+  return {
+    name: staff.name,
+    phone: PUBLIC_DESK_PHONE,
+    email: PUBLIC_DESK_EMAIL,
+    extension_no: staff.extension_no ?? null,
+    avatar_url: staff.avatar_url ?? null,
+  };
 }
 
 function collectionTierLabelFromId(tierId: string | null | undefined): string | null {
@@ -3997,8 +3998,7 @@ async function resolveAssignedConsultantForBooking(
   if (crmLeadId <= 0) return null;
   const lead = await fetchCrmLeadById(crmLeadId);
   const staff = lead?.assigned_staff;
-  if (!staff || isPublicDeskStaff(staff)) return null;
-  return staff;
+  return normalizeConsultantForWebsite(staff ?? null);
 }
 
 export async function getBookingPaymentSummary(input: CreateBookingPaymentOrderInput) {
