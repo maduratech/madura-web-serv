@@ -80,6 +80,7 @@ import { normalizeMediaUrl } from '../lib/media-url';
 import { normalizeDestinationNavBadge, type DestinationNavBadgeId } from '../lib/destination-nav-badge';
 import {
   isTourListedPublicly,
+  isTourReachableByLink,
   parseTourVisibility,
   type TourVisibilityStatus,
 } from '../lib/tour-visibility';
@@ -2719,6 +2720,12 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
     'id,title,slug,flow_type,destination,destination_id,tour_region,tour_includes,tour_exclusions,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,sales_price,discounted_price,duration_days,max_travellers,min_age,starting_city,hero_image_url,gallery_image_urls,overview,itinerary_days',
     'id,title,flow_type,destination,destination_id,tour_region,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price',
     'id,title,flow_type,destination,destination_id,tour_region,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,child_price,youth_price',
+    'id,title,slug,flow_type,visibility_status,destination,tour_includes,hero_image_url,gallery_image_urls,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
+    'id,title,slug,flow_type,destination,tour_includes,hero_image_url,gallery_image_urls,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
+    'id,title,slug,flow_type,visibility_status,destination,tour_includes,hero_image_url,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
+    'id,title,slug,flow_type,destination,tour_includes,hero_image_url,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
+    'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,overview',
+    'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price',
   ];
 
   type DetailRow = ListingTourRow & {
@@ -2757,7 +2764,7 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
   if (!row) return null;
 
   const visibility = parseTourVisibility(row as ListingTourRow);
-  if (visibility === 'inactive') return null;
+  if (!isTourReachableByLink(visibility)) return null;
 
   const departures = Array.isArray(row.departures) ? row.departures : [];
   const prices = departures
