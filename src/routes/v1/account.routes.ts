@@ -1,8 +1,16 @@
 import { Router } from 'express';
 import { requireAuth } from '../../middlewares/auth.middleware';
-import { documentUploadRateLimit } from '../../middlewares/rate-limit.middleware';
+import {
+  documentUploadRateLimit,
+  phoneOtpSendRateLimit,
+  phoneOtpVerifyRateLimit,
+} from '../../middlewares/rate-limit.middleware';
 import { validateCustomerDocumentUpload } from '../../lib/document-upload.validation';
 import { CUSTOMER_DOCUMENT_UPLOAD_ENABLED } from '../../lib/customer-document-upload';
+import {
+  sendProfilePhoneOtp,
+  verifyProfilePhoneOtp,
+} from '../../services/phone-auth.service';
 import {
   buildAccountMeForUser,
   CUSTOMER_DOCUMENT_TYPES,
@@ -18,6 +26,42 @@ import {
 } from '../../services/account.service';
 
 const accountRouter = Router();
+
+function clientIp(req: { headers: Record<string, unknown>; ip?: string }): string {
+  const forwarded = String(req.headers['x-forwarded-for'] || '')
+    .split(',')[0]
+    ?.trim();
+  return forwarded || req.ip || 'unknown';
+}
+
+/** POST /api/v1/account/phone/send-otp — verify ownership before saving a new mobile. */
+accountRouter.post('/account/phone/send-otp', requireAuth, phoneOtpSendRateLimit, async (req, res, next) => {
+  try {
+    const phone = String(req.body?.phone || '').trim();
+    if (!phone) {
+      return res.status(400).json({ message: 'Mobile number is required.' });
+    }
+    const result = await sendProfilePhoneOtp(req.auth!.userId, phone, clientIp(req));
+    return res.status(200).json(result);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+/** POST /api/v1/account/phone/verify-otp — confirm SMS OTP for profile mobile update. */
+accountRouter.post('/account/phone/verify-otp', requireAuth, phoneOtpVerifyRateLimit, async (req, res, next) => {
+  try {
+    const phone = String(req.body?.phone || '').trim();
+    const otp = String(req.body?.otp || '').trim();
+    if (!phone || !otp) {
+      return res.status(400).json({ message: 'Invalid or expired code.' });
+    }
+    const result = await verifyProfilePhoneOtp(req.auth!.userId, phone, otp);
+    return res.status(200).json({ data: result });
+  } catch (err) {
+    return next(err);
+  }
+});
 
 /** GET /api/v1/account/me — auth check + profile merged with CRM when configured. */
 accountRouter.get('/account/me', requireAuth, async (req, res, next) => {

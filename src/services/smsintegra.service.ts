@@ -18,7 +18,14 @@ export function buildOtpMessage(otp: string): string {
 }
 
 function isSmsConfigured(): boolean {
-  return Boolean(env.SMSINTEGRA_UID && env.SMSINTEGRA_PWD);
+  return Boolean(
+    env.SMSINTEGRA_UID &&
+      env.SMSINTEGRA_PWD &&
+      env.SMSINTEGRA_SID &&
+      env.SMSINTEGRA_ENTITY_ID &&
+      env.SMSINTEGRA_OTP_TEMPLATE_ID &&
+      env.SMSINTEGRA_API_URL
+  );
 }
 
 /** POST OTP SMS via SMSIntegra (DLT template). */
@@ -40,7 +47,10 @@ export async function sendOtpSms(mobileDigits: string, otp: string): Promise<voi
     tempid: env.SMSINTEGRA_OTP_TEMPLATE_ID,
   });
 
-  const url = env.SMSINTEGRA_API_URL || 'https://www.smsintegra.com/api/smsapi.aspx';
+  const url = env.SMSINTEGRA_API_URL;
+  if (!url) {
+    throw new HttpError(503, 'SMS login is not configured yet. Try email login or try again later.');
+  }
 
   let response: Response;
   try {

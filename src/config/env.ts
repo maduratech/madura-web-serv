@@ -25,9 +25,9 @@ export const env = {
     'https://maduratravel.com',
   SMSINTEGRA_UID: process.env.SMSINTEGRA_UID || '',
   SMSINTEGRA_PWD: process.env.SMSINTEGRA_PWD || '',
-  SMSINTEGRA_SID: process.env.SMSINTEGRA_SID || 'MADUTS',
-  SMSINTEGRA_ENTITY_ID: process.env.SMSINTEGRA_ENTITY_ID || '1601810177331127233',
-  SMSINTEGRA_OTP_TEMPLATE_ID: process.env.SMSINTEGRA_OTP_TEMPLATE_ID || '1607100000000377669',
-  SMSINTEGRA_API_URL: process.env.SMSINTEGRA_API_URL || 'https://www.smsintegra.com/api/smsapi.aspx',
+  SMSINTEGRA_SID: process.env.SMSINTEGRA_SID || '',
+  SMSINTEGRA_ENTITY_ID: process.env.SMSINTEGRA_ENTITY_ID || '',
+  SMSINTEGRA_OTP_TEMPLATE_ID: process.env.SMSINTEGRA_OTP_TEMPLATE_ID || '',
+  SMSINTEGRA_API_URL: process.env.SMSINTEGRA_API_URL || '',
   PHONE_OTP_PEPPER: process.env.PHONE_OTP_PEPPER || '',
 };

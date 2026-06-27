@@ -24,7 +24,11 @@ type PhoneOtpChallenge = {
   attempt_count: number;
   consumed_at: string | null;
   created_at: string;
+  purpose?: string | null;
+  user_id?: string | null;
 };
+
+type OtpPurpose = 'login' | 'profile';
 
 type ProfileMatch = {
   id: string;
@@ -74,31 +78,209 @@ function consumeRateLimit(
   return { allowed: true, retryAfterMs: 0 };
 }
 
-async function invalidateOpenChallenges(phoneE164: string): Promise<void> {
+async function invalidateOpenChallenges(phoneE164: string, purpose: OtpPurpose = 'login'): Promise<void> {
   const nowIso = new Date().toISOString();
-  await supabase
+  let query = supabase
     .from('phone_otp_challenges')
     .update({ consumed_at: nowIso })
     .eq('phone_e164', phoneE164)
     .is('consumed_at', null);
+  query = query.eq('purpose', purpose);
+  await query;
 }
 
-async function getRecentChallenge(phoneE164: string): Promise<PhoneOtpChallenge | null> {
+async function getRecentChallenge(phoneE164: string, purpose: OtpPurpose = 'login'): Promise<PhoneOtpChallenge | null> {
   const { data, error } = await supabase
     .from('phone_otp_challenges')
-    .select('id,phone_e164,otp_hash,expires_at,attempt_count,consumed_at,created_at')
+    .select('id,phone_e164,otp_hash,expires_at,attempt_count,consumed_at,created_at,purpose,user_id')
     .eq('phone_e164', phoneE164)
+    .eq('purpose', purpose)
     .is('consumed_at', null)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
 
   if (error) {
-    // eslint-disable-next-line no-console
-    console.error('[phone-auth] challenge lookup failed:', error.message);
-    throw new HttpError(500, 'Could not send the verification code. Please try again.');
+    const fallback = await supabase
+      .from('phone_otp_challenges')
+      .select('id,phone_e164,otp_hash,expires_at,attempt_count,consumed_at,created_at')
+      .eq('phone_e164', phoneE164)
+      .is('consumed_at', null)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (fallback.error) {
+      // eslint-disable-next-line no-console
+      console.error('[phone-auth] challenge lookup failed:', fallback.error.message);
+      throw new HttpError(500, 'Could not send the verification code. Please try again.');
+    }
+    return (fallback.data as PhoneOtpChallenge | null) ?? null;
   }
   return (data as PhoneOtpChallenge | null) ?? null;
+}
+
+async function insertChallenge(row: {
+  id: string;
+  phone_e164: string;
+  otp_hash: string;
+  expires_at: string;
+  purpose: OtpPurpose;
+  user_id?: string | null;
+}): Promise<void> {
+  const fullRow = {
+    id: row.id,
+    phone_e164: row.phone_e164,
+    otp_hash: row.otp_hash,
+    expires_at: row.expires_at,
+    attempt_count: 0,
+    purpose: row.purpose,
+    user_id: row.user_id ?? null,
+  };
+  let insertError = (await supabase.from('phone_otp_challenges').insert(fullRow)).error;
+  if (insertError) {
+    insertError = (
+      await supabase.from('phone_otp_challenges').insert({
+        id: row.id,
+        phone_e164: row.phone_e164,
+        otp_hash: row.otp_hash,
+        expires_at: row.expires_at,
+        attempt_count: 0,
+      })
+    ).error;
+  }
+  if (insertError) {
+    // eslint-disable-next-line no-console
+    console.error('[phone-auth] challenge insert failed:', insertError.message);
+    throw new HttpError(500, 'Could not send the verification code. Please try again.');
+  }
+}
+
+async function assertPhoneAvailableForUser(userId: string, last10: string): Promise<void> {
+  const matches = await findProfilesByPhone(last10);
+  const taken = matches.find((row) => row.id !== userId);
+  if (taken) {
+    throw new HttpError(409, 'This mobile number is already linked to another account.');
+  }
+}
+
+async function verifyChallengeOtp(
+  normalized: NonNullable<ReturnType<typeof normalizeIndianMobile>>,
+  otp: string,
+  purpose: OtpPurpose,
+  userId?: string
+): Promise<void> {
+  let query = supabase
+    .from('phone_otp_challenges')
+    .select('id,phone_e164,otp_hash,expires_at,attempt_count,consumed_at,purpose,user_id')
+    .eq('phone_e164', normalized.e164)
+    .is('consumed_at', null)
+    .order('created_at', { ascending: false })
+    .limit(1);
+
+  if (purpose) {
+    query = query.eq('purpose', purpose);
+  }
+
+  const { data: challenge, error } = await query.maybeSingle();
+
+  if (error || !challenge) {
+    throw new HttpError(400, 'Invalid or expired code.');
+  }
+
+  const row = challenge as PhoneOtpChallenge;
+
+  if (purpose === 'profile' && userId && row.user_id && row.user_id !== userId) {
+    throw new HttpError(400, 'Invalid or expired code.');
+  }
+
+  if (row.attempt_count >= MAX_VERIFY_ATTEMPTS) {
+    throw new HttpError(400, 'Invalid or expired code.');
+  }
+
+  if (new Date(row.expires_at).getTime() < Date.now()) {
+    throw new HttpError(400, 'Invalid or expired code.');
+  }
+
+  const valid = verifyOtpHash(row.id, row.phone_e164, otp, row.otp_hash);
+
+  await supabase
+    .from('phone_otp_challenges')
+    .update({ attempt_count: row.attempt_count + 1 })
+    .eq('id', row.id);
+
+  if (!valid) {
+    throw new HttpError(400, 'Invalid or expired code.');
+  }
+
+  await supabase
+    .from('phone_otp_challenges')
+    .update({ consumed_at: new Date().toISOString() })
+    .eq('id', row.id);
+}
+
+async function sendOtpCore(
+  rawPhone: string,
+  clientIp: string,
+  purpose: OtpPurpose,
+  userId?: string
+): Promise<SendPhoneOtpResult> {
+  const normalized = normalizeIndianMobile(rawPhone);
+  if (!normalized) {
+    throw new HttpError(400, 'Enter a valid 10-digit Indian mobile number.');
+  }
+
+  requireOtpPepper();
+
+  if (purpose === 'profile' && userId) {
+    await assertPhoneAvailableForUser(userId, normalized.last10);
+  }
+
+  const rateKey = purpose === 'profile' && userId ? `${purpose}:${userId}` : normalized.e164;
+  const phoneRate = consumeRateLimit(sendByPhoneStore, rateKey, SEND_LIMIT_PER_PHONE, SEND_WINDOW_MS);
+  if (!phoneRate.allowed) {
+    throw new HttpError(
+      429,
+      `Too many code requests. Try again in ${Math.ceil(phoneRate.retryAfterMs / 1000)} seconds.`
+    );
+  }
+
+  const ipKey = clientIp || 'unknown';
+  const ipRate = consumeRateLimit(sendByIpStore, ipKey, SEND_LIMIT_PER_IP, SEND_WINDOW_MS);
+  if (!ipRate.allowed) {
+    throw new HttpError(
+      429,
+      `Too many code requests. Try again in ${Math.ceil(ipRate.retryAfterMs / 1000)} seconds.`
+    );
+  }
+
+  const recent = await getRecentChallenge(normalized.e164, purpose);
+  if (recent?.created_at) {
+    const ageMs = Date.now() - new Date(recent.created_at).getTime();
+    if (ageMs < RESEND_COOLDOWN_MS) {
+      const retryAfterSec = Math.ceil((RESEND_COOLDOWN_MS - ageMs) / 1000);
+      throw new HttpError(429, `Please wait ${retryAfterSec} seconds before requesting a new code.`);
+    }
+  }
+
+  await invalidateOpenChallenges(normalized.e164, purpose);
+
+  const otp = String(randomInt(100000, 1000000));
+  const challengeId = randomUUID();
+  const otpHash = hashOtp(challengeId, normalized.e164, otp);
+  const expiresAt = new Date(Date.now() + OTP_TTL_MS).toISOString();
+
+  await insertChallenge({
+    id: challengeId,
+    phone_e164: normalized.e164,
+    otp_hash: otpHash,
+    expires_at: expiresAt,
+    purpose,
+    user_id: userId ?? null,
+  });
+
+  await sendOtpSms(normalized.smsDigits, otp);
+
+  return { ok: true };
 }
 
 async function findProfilesByPhone(last10: string): Promise<ProfileMatch[]> {
@@ -232,59 +414,37 @@ export async function sendPhoneOtp(rawPhone: string, clientIp: string): Promise<
       'Enter a valid 10-digit Indian mobile number, or use email login for numbers outside India.'
     );
   }
+  return sendOtpCore(rawPhone, clientIp, 'login');
+}
+
+export async function sendProfilePhoneOtp(
+  userId: string,
+  rawPhone: string,
+  clientIp: string
+): Promise<SendPhoneOtpResult> {
+  return sendOtpCore(rawPhone, clientIp, 'profile', userId);
+}
+
+export async function verifyProfilePhoneOtp(
+  userId: string,
+  rawPhone: string,
+  rawOtp: string
+): Promise<{ phone: string }> {
+  const normalized = normalizeIndianMobile(rawPhone);
+  if (!normalized) {
+    throw new HttpError(400, 'Invalid or expired code.');
+  }
+
+  const otp = String(rawOtp || '').trim();
+  if (!/^\d{6}$/.test(otp)) {
+    throw new HttpError(400, 'Invalid or expired code.');
+  }
 
   requireOtpPepper();
+  await assertPhoneAvailableForUser(userId, normalized.last10);
+  await verifyChallengeOtp(normalized, otp, 'profile', userId);
 
-  const phoneRate = consumeRateLimit(sendByPhoneStore, normalized.e164, SEND_LIMIT_PER_PHONE, SEND_WINDOW_MS);
-  if (!phoneRate.allowed) {
-    throw new HttpError(
-      429,
-      `Too many code requests. Try again in ${Math.ceil(phoneRate.retryAfterMs / 1000)} seconds.`
-    );
-  }
-
-  const ipKey = clientIp || 'unknown';
-  const ipRate = consumeRateLimit(sendByIpStore, ipKey, SEND_LIMIT_PER_IP, SEND_WINDOW_MS);
-  if (!ipRate.allowed) {
-    throw new HttpError(
-      429,
-      `Too many code requests. Try again in ${Math.ceil(ipRate.retryAfterMs / 1000)} seconds.`
-    );
-  }
-
-  const recent = await getRecentChallenge(normalized.e164);
-  if (recent?.created_at) {
-    const ageMs = Date.now() - new Date(recent.created_at).getTime();
-    if (ageMs < RESEND_COOLDOWN_MS) {
-      const retryAfterSec = Math.ceil((RESEND_COOLDOWN_MS - ageMs) / 1000);
-      throw new HttpError(429, `Please wait ${retryAfterSec} seconds before requesting a new code.`);
-    }
-  }
-
-  await invalidateOpenChallenges(normalized.e164);
-
-  const otp = String(randomInt(100000, 1000000));
-  const challengeId = randomUUID();
-  const otpHash = hashOtp(challengeId, normalized.e164, otp);
-  const expiresAt = new Date(Date.now() + OTP_TTL_MS).toISOString();
-
-  const { error: insertError } = await supabase.from('phone_otp_challenges').insert({
-    id: challengeId,
-    phone_e164: normalized.e164,
-    otp_hash: otpHash,
-    expires_at: expiresAt,
-    attempt_count: 0,
-  });
-
-  if (insertError) {
-    // eslint-disable-next-line no-console
-    console.error('[phone-auth] challenge insert failed:', insertError.message);
-    throw new HttpError(500, 'Could not send the verification code. Please try again.');
-  }
-
-  await sendOtpSms(normalized.smsDigits, otp);
-
-  return { ok: true };
+  return { phone: normalized.e164 };
 }
 
 export type VerifyPhoneOtpResult = {
@@ -311,45 +471,7 @@ export async function verifyPhoneOtp(rawPhone: string, rawOtp: string): Promise<
   }
 
   requireOtpPepper();
-
-  const { data: challenge, error } = await supabase
-    .from('phone_otp_challenges')
-    .select('id,phone_e164,otp_hash,expires_at,attempt_count,consumed_at')
-    .eq('phone_e164', normalized.e164)
-    .is('consumed_at', null)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (error || !challenge) {
-    throw new HttpError(400, 'Invalid or expired code.');
-  }
-
-  const row = challenge as PhoneOtpChallenge;
-
-  if (row.attempt_count >= MAX_VERIFY_ATTEMPTS) {
-    throw new HttpError(400, 'Invalid or expired code.');
-  }
-
-  if (new Date(row.expires_at).getTime() < Date.now()) {
-    throw new HttpError(400, 'Invalid or expired code.');
-  }
-
-  const valid = verifyOtpHash(row.id, row.phone_e164, otp, row.otp_hash);
-
-  await supabase
-    .from('phone_otp_challenges')
-    .update({ attempt_count: row.attempt_count + 1 })
-    .eq('id', row.id);
-
-  if (!valid) {
-    throw new HttpError(400, 'Invalid or expired code.');
-  }
-
-  await supabase
-    .from('phone_otp_challenges')
-    .update({ consumed_at: new Date().toISOString() })
-    .eq('id', row.id);
+  await verifyChallengeOtp(normalized, otp, 'login');
 
   const userId = await resolveUserIdForPhone(normalized.e164, normalized.last10);
 
