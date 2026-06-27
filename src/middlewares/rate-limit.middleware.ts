@@ -70,3 +70,11 @@ export const bookingCreateRateLimit = createRateLimit({
   max: 8,
   message: 'Too many booking attempts. Please wait a few minutes and try again.',
 });
+
+/** Account document upload — 15 per hour per signed-in user (or IP if auth missing). */
+export const documentUploadRateLimit = createRateLimit({
+  keyPrefix: 'document-upload',
+  windowMs: 60 * 60 * 1000,
+  max: 15,
+  message: 'Too many document uploads. Please wait before uploading more files.',
+});

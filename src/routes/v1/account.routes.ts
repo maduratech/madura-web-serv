@@ -1,5 +1,8 @@
 import { Router } from 'express';
+import { env } from '../../config/env';
 import { requireAuth } from '../../middlewares/auth.middleware';
+import { documentUploadRateLimit } from '../../middlewares/rate-limit.middleware';
+import { validateCustomerDocumentUpload } from '../../lib/document-upload.validation';
 import {
   buildAccountMeForUser,
   CUSTOMER_DOCUMENT_TYPES,
@@ -73,8 +76,14 @@ accountRouter.get('/account/documents', requireAuth, async (req, res, next) => {
 });
 
 /** POST /api/v1/account/documents — upload a document to the linked CRM customer. */
-accountRouter.post('/account/documents', requireAuth, async (req, res, next) => {
+accountRouter.post('/account/documents', requireAuth, documentUploadRateLimit, async (req, res, next) => {
   try {
+    if (!env.CUSTOMER_DOCUMENT_UPLOAD_ENABLED) {
+      return res.status(403).json({
+        message:
+          'Customer uploads are temporarily unavailable. Your travel consultant can still share documents with you here.',
+      });
+    }
     const body = req.body || {};
     const docType = String(body.doc_type || '').trim() as CustomerDocumentType;
     if (!CUSTOMER_DOCUMENT_TYPES.includes(docType)) {
@@ -88,9 +97,13 @@ accountRouter.post('/account/documents', requireAuth, async (req, res, next) => 
     if (!name || !content) {
       return res.status(400).json({ message: 'File name and content are required.' });
     }
+    const validation = validateCustomerDocumentUpload({ name, type, content });
+    if (!validation.ok) {
+      return res.status(400).json({ message: validation.message });
+    }
     const data = await uploadAccountDocument(req.auth!, {
       doc_type: docType,
-      file: { name, type, size, content },
+      file: { name, type: validation.mime, size, content },
       label: typeof body.label === 'string' ? body.label.trim() : undefined,
       notes: typeof body.notes === 'string' ? body.notes.trim() : undefined,
     });
