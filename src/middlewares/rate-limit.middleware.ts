@@ -78,3 +78,19 @@ export const documentUploadRateLimit = createRateLimit({
   max: 15,
   message: 'Too many document uploads. Please wait before uploading more files.',
 });
+
+/** SMS OTP send — 12 per 10 minutes per IP. */
+export const phoneOtpSendRateLimit = createRateLimit({
+  keyPrefix: 'phone-otp-send',
+  windowMs: 10 * 60 * 1000,
+  max: 12,
+  message: 'Too many code requests. Please wait a few minutes and try again.',
+});
+
+/** SMS OTP verify — 20 per 10 minutes per IP. */
+export const phoneOtpVerifyRateLimit = createRateLimit({
+  keyPrefix: 'phone-otp-verify',
+  windowMs: 10 * 60 * 1000,
+  max: 20,
+  message: 'Too many verification attempts. Please wait a few minutes and try again.',
+});

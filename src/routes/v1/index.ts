@@ -10,6 +10,7 @@ import { integrationRouter } from './integration.routes';
 import { pricingRouter } from './pricing.routes';
 import { siteRouter } from './site.routes';
 import { itineraryEngagementRouter } from './itinerary-engagement.routes';
+import { authRouter } from './auth.routes';
 
 const v1Router = Router();
 v1Router.use(pricingRouter);
@@ -18,6 +19,7 @@ v1Router.use(toursRouter);
 v1Router.use(blogsRouter);
 v1Router.use(visasRouter);
 v1Router.use(bookingsRouter);
+v1Router.use(authRouter);
 v1Router.use(accountRouter);
 v1Router.use('/cms', cmsRouter);
 v1Router.use('/integration', integrationRouter);
