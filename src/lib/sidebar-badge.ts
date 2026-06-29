@@ -39,7 +39,18 @@ export function resolvePromoBadgeLabel(
   return legacy || null;
 }
 
+let activeBadgeMapCache: { map: Map<number, string>; at: number } | null = null;
+const ACTIVE_BADGE_MAP_CACHE_MS = 5 * 60 * 1000;
+
+function invalidateActiveSidebarBadgeMapCache(): void {
+  activeBadgeMapCache = null;
+}
+
 export async function loadActiveSidebarBadgeMap(): Promise<Map<number, string>> {
+  if (activeBadgeMapCache && Date.now() - activeBadgeMapCache.at < ACTIVE_BADGE_MAP_CACHE_MS) {
+    return activeBadgeMapCache.map;
+  }
+
   const { data, error } = await supabase
     .from('cms_sidebar_badges')
     .select('id,label')
@@ -56,6 +67,7 @@ export async function loadActiveSidebarBadgeMap(): Promise<Map<number, string>> 
     const label = normalizeLabel(row.label);
     if (Number.isFinite(id) && id > 0 && label) map.set(id, label);
   }
+  activeBadgeMapCache = { map, at: Date.now() };
   return map;
 }
 
@@ -99,10 +111,12 @@ export async function addSidebarBadge(label: string): Promise<SidebarBadgeRow> {
     }
     throw new Error(error.message);
   }
+  invalidateActiveSidebarBadgeMapCache();
   return data as SidebarBadgeRow;
 }
 
 export async function deleteSidebarBadge(id: number): Promise<void> {
   const { error } = await supabase.from('cms_sidebar_badges').delete().eq('id', id);
   if (error) throw new Error(error.message);
+  invalidateActiveSidebarBadgeMapCache();
 }

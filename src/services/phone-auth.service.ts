@@ -16,6 +16,23 @@ const SEND_WINDOW_MS = 15 * 60 * 1000;
 const sendByPhoneStore = new Map<string, number[]>();
 const sendByIpStore = new Map<string, number[]>();
 
+export function sweepPhoneAuthRateStores(now = Date.now()): void {
+  prunePhoneAuthRateMap(sendByPhoneStore, SEND_WINDOW_MS, now);
+  prunePhoneAuthRateMap(sendByIpStore, SEND_WINDOW_MS, now);
+}
+
+function prunePhoneAuthRateMap(
+  store: Map<string, number[]>,
+  windowMs: number,
+  now: number
+): void {
+  for (const [key, hits] of store) {
+    const fresh = hits.filter((ts) => now - ts < windowMs);
+    if (fresh.length === 0) store.delete(key);
+    else if (fresh.length !== hits.length) store.set(key, fresh);
+  }
+}
+
 type PhoneOtpChallenge = {
   id: string;
   phone_e164: string;

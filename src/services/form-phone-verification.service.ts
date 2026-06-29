@@ -19,6 +19,14 @@ type StoredFormToken = {
 
 const formTokenStore = new Map<string, StoredFormToken>();
 
+export function sweepFormTokenStore(now = Date.now()): void {
+  for (const [jti, entry] of formTokenStore) {
+    if (entry.consumed || now >= entry.expiresAt) {
+      formTokenStore.delete(jti);
+    }
+  }
+}
+
 function requireTokenPepper(): string {
   const pepper = String(env.PHONE_OTP_PEPPER || '').trim();
   if (!pepper) {

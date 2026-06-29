@@ -1,6 +1,9 @@
 import 'dotenv/config';
 import { app as expressApp } from './app';
 import { probeCatalogTourCount } from './lib/supabase';
+import { startRuntimeMemoryMaintenance } from './lib/runtime-memory';
+
+startRuntimeMemoryMaintenance();
 
 const port = parseInt(process.env.PORT || '4000', 10);
 

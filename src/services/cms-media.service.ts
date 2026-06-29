@@ -82,6 +82,16 @@ export type StockImageResult = {
 type StockCacheEntry = { data: { items: StockImageResult[]; page: number; has_more: boolean }; at: number };
 const stockSearchCache = new Map<string, StockCacheEntry>();
 const STOCK_CACHE_TTL_MS = 15 * 60 * 1000;
+const STOCK_CACHE_MAX_ENTRIES = 200;
+
+function trimStockCache<T>(store: Map<string, T>): void {
+  if (store.size <= STOCK_CACHE_MAX_ENTRIES) return;
+  const excess = store.size - STOCK_CACHE_MAX_ENTRIES;
+  const keys = [...store.keys()];
+  for (let i = 0; i < excess; i++) {
+    store.delete(keys[i]!);
+  }
+}
 
 export async function searchStockImages(query: string, page = 1): Promise<{
   items: StockImageResult[];
@@ -159,6 +169,7 @@ export async function searchStockImages(query: string, page = 1): Promise<{
     has_more: Boolean(body.next_page),
   };
   stockSearchCache.set(cacheKey, { data: result, at: Date.now() });
+  trimStockCache(stockSearchCache);
   return result;
 }
 
@@ -179,6 +190,15 @@ type StockVideoCacheEntry = {
   at: number;
 };
 const stockVideoSearchCache = new Map<string, StockVideoCacheEntry>();
+
+export function sweepStockSearchCaches(now = Date.now()): void {
+  for (const [key, entry] of stockSearchCache) {
+    if (now - entry.at >= STOCK_CACHE_TTL_MS) stockSearchCache.delete(key);
+  }
+  for (const [key, entry] of stockVideoSearchCache) {
+    if (now - entry.at >= STOCK_CACHE_TTL_MS) stockVideoSearchCache.delete(key);
+  }
+}
 
 function pickPexelsVideoFileUrl(
   files: Array<{ quality?: string; file_type?: string; width?: number | null; height?: number | null; link?: string }>
@@ -296,5 +316,6 @@ export async function searchStockVideos(query: string, page = 1): Promise<{
     has_more: Boolean(body.next_page),
   };
   stockVideoSearchCache.set(cacheKey, { data: result, at: Date.now() });
+  trimStockCache(stockVideoSearchCache);
   return result;
 }

@@ -4,8 +4,15 @@
   "private": true,
   "scripts": {
     "dev": "ts-node src/server.ts",
-    "start": "ts-node src/server.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "start:pm2": "pm2 start ecosystem.config.cjs",
+    "reload:pm2": "pm2 reload ecosystem.config.cjs --update-env",
+    "deploy": "bash scripts/deploy-pm2.sh",
     "lint": "eslint ."
+  },
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.8",

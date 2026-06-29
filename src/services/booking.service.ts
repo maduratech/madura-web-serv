@@ -333,6 +333,28 @@ const enquiryPhoneRateMap = new Map<string, number[]>();
 const plannerLeadDedupeMap = new Map<string, number>();
 const ENQUIRY_RATE_WINDOW_MS = 10 * 60 * 1000; // 10 min
 const PLANNER_LEAD_DEDUPE_WINDOW_MS = 30 * 60 * 1000; // 30 min
+
+export function sweepBookingMemoryStores(now = Date.now()): void {
+  pruneSlidingWindowMap(enquiryIpRateMap, ENQUIRY_RATE_WINDOW_MS, now);
+  pruneSlidingWindowMap(enquiryPhoneRateMap, ENQUIRY_RATE_WINDOW_MS, now);
+  for (const [key, at] of plannerLeadDedupeMap) {
+    if (now - at >= PLANNER_LEAD_DEDUPE_WINDOW_MS) {
+      plannerLeadDedupeMap.delete(key);
+    }
+  }
+}
+
+function pruneSlidingWindowMap(
+  store: Map<string, number[]>,
+  windowMs: number,
+  now: number
+): void {
+  for (const [key, hits] of store) {
+    const fresh = hits.filter((ts) => now - ts < windowMs);
+    if (fresh.length === 0) store.delete(key);
+    else if (fresh.length !== hits.length) store.set(key, fresh);
+  }
+}
 const ENQUIRY_IP_RATE_MAX = 12;
 const ENQUIRY_PHONE_RATE_MAX = 5;
 type AdvanceRegion = 'domestic' | 'sea_middle_east' | 'international';

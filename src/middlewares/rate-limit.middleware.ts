@@ -9,6 +9,24 @@ type RateLimitOptions = {
 
 const stores = new Map<string, Map<string, number[]>>();
 
+/** Longest rate-limit window among all middleware limits (document upload = 1 h). */
+const RATE_LIMIT_SWEEP_WINDOW_MS = 60 * 60 * 1000;
+
+function pruneTimestampMap(store: Map<string, number[]>, windowMs: number, now = Date.now()): void {
+  for (const [key, hits] of store) {
+    const fresh = hits.filter((ts) => now - ts < windowMs);
+    if (fresh.length === 0) store.delete(key);
+    else if (fresh.length !== hits.length) store.set(key, fresh);
+  }
+}
+
+export function sweepRateLimitStores(): void {
+  const now = Date.now();
+  for (const store of stores.values()) {
+    pruneTimestampMap(store, RATE_LIMIT_SWEEP_WINDOW_MS, now);
+  }
+}
+
 function consumeSlidingWindow(
   store: Map<string, number[]>,
   key: string,
