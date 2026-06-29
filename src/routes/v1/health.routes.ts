@@ -15,6 +15,7 @@ healthRouter.get('/health', async (_req, res) => {
   let supabase_error: string | null = null;
   let crm_error: string | null = null;
   let tours_count: number | null = null;
+  let destinations_count: number | null = null;
   const using_service_role = Boolean(env.SUPABASE_SERVICE_ROLE_KEY);
   const supabase_key_kind = classifySupabaseKey(
     env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_KEY
@@ -27,6 +28,14 @@ healthRouter.get('/health', async (_req, res) => {
     null;
   const key_misconfiguration = catalogKeyMisconfigured(env.SUPABASE_SERVICE_ROLE_KEY);
 
+  const supabase_url_host = (() => {
+    try {
+      return new URL(env.SUPABASE_URL).host;
+    } catch {
+      return null;
+    }
+  })();
+
   try {
     if (key_misconfiguration) {
       supabase_error = key_misconfiguration;
@@ -38,12 +47,18 @@ healthRouter.get('/health', async (_req, res) => {
         supabase_error = error.message;
       } else {
         tours_count = count ?? 0;
+        const destProbe = await supabase
+          .from('destinations')
+          .select('id', { count: 'exact', head: true });
+        destinations_count = destProbe.error ? null : destProbe.count ?? 0;
+
         if (tours_count === 0 && !using_service_role) {
           supabase_error =
             'tours table returned 0 rows — SUPABASE_SERVICE_ROLE_KEY is likely missing (anon key blocked by RLS)';
         } else if (tours_count === 0) {
           supabase_error =
-            'tours table is empty — packages and tour listings will not load until tours are restored in Supabase';
+            'PostgREST returned 0 tours/destinations. If SQL Editor shows rows, the api server SUPABASE_URL or ' +
+            'SUPABASE_SERVICE_ROLE_KEY is wrong or stale — update .env on api1 and run: pm2 restart madura-web-serv --update-env';
         } else {
           supabase_ok = true;
         }
@@ -83,7 +98,9 @@ healthRouter.get('/health', async (_req, res) => {
       using_service_role,
       supabase_key_kind,
       supabase_project_ref,
+      supabase_url_host,
       tours_count,
+      destinations_count,
     },
     checks: [
       {
@@ -91,6 +108,8 @@ healthRouter.get('/health', async (_req, res) => {
         ok: supabase_ok,
         error: supabase_error,
         tours_count,
+        destinations_count,
+        supabase_url_host,
         using_service_role,
         supabase_key_kind,
         supabase_project_ref,
