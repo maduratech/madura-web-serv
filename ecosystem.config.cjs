@@ -1,12 +1,16 @@
 /**
  * PM2 production config for madura-web-serv.
  *
- * Deploy:
- *   npm ci --omit=dev
- *   npm run build
+ * Deploy on the VPS:
+ *   npm run deploy
+ *
+ * Or manually:
+ *   npm ci && npm run build && npm prune --omit=dev
  *   pm2 start ecosystem.config.cjs   # first time
- *   pm2 reload ecosystem.config.cjs --update-env   # subsequent deploys
+ *   pm2 reload ecosystem.config.cjs --update-env
  *   pm2 save
+ *
+ * Do NOT run `npm ci --omit=dev` before `npm run build` — TypeScript is a devDependency.
  */
 const path = require('path');
 
