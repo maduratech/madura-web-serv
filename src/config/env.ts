@@ -32,4 +32,6 @@ export const env = {
     process.env.OTP_SMS_TEMPLATE_ID || process.env.SMSINTEGRA_OTP_TEMPLATE_ID || '',
   OTP_SMS_GATEWAY_URL: process.env.OTP_SMS_GATEWAY_URL || process.env.SMSINTEGRA_API_URL || '',
   PHONE_OTP_PEPPER: process.env.PHONE_OTP_PEPPER || '',
+  /** Comma-separated emails auto-promoted to CMS super_admin on first /cms/me (server-only). */
+  CMS_BOOTSTRAP_SUPER_ADMIN_EMAILS: process.env.CMS_BOOTSTRAP_SUPER_ADMIN_EMAILS || '',
 };

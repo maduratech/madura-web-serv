@@ -1,6 +1,11 @@
 import { Router } from 'express';
 import { supabase } from '../../lib/supabase';
 import { env } from '../../config/env';
+import {
+  catalogKeyMisconfigured,
+  classifySupabaseKey,
+  supabaseProjectRef,
+} from '../../lib/supabase-key';
 
 const healthRouter = Router();
 
@@ -11,20 +16,37 @@ healthRouter.get('/health', async (_req, res) => {
   let crm_error: string | null = null;
   let tours_count: number | null = null;
   const using_service_role = Boolean(env.SUPABASE_SERVICE_ROLE_KEY);
+  const supabase_key_kind = classifySupabaseKey(
+    env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_KEY
+  );
+  const supabase_project_ref =
+    supabaseProjectRef(env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_KEY) ||
+    String(env.SUPABASE_URL || '')
+      .replace(/^https?:\/\//, '')
+      .split('.')[0] ||
+    null;
+  const key_misconfiguration = catalogKeyMisconfigured(env.SUPABASE_SERVICE_ROLE_KEY);
 
   try {
-    const { count, error } = await supabase
-      .from('tours')
-      .select('id', { count: 'exact', head: true });
-    if (error) {
-      supabase_error = error.message;
+    if (key_misconfiguration) {
+      supabase_error = key_misconfiguration;
     } else {
-      supabase_ok = true;
-      tours_count = count ?? 0;
-      if (tours_count === 0 && !using_service_role) {
-        supabase_error =
-          'tours table returned 0 rows — SUPABASE_SERVICE_ROLE_KEY is likely missing (anon key blocked by RLS)';
-        supabase_ok = false;
+      const { count, error } = await supabase
+        .from('tours')
+        .select('id', { count: 'exact', head: true });
+      if (error) {
+        supabase_error = error.message;
+      } else {
+        tours_count = count ?? 0;
+        if (tours_count === 0 && !using_service_role) {
+          supabase_error =
+            'tours table returned 0 rows — SUPABASE_SERVICE_ROLE_KEY is likely missing (anon key blocked by RLS)';
+        } else if (tours_count === 0) {
+          supabase_error =
+            'tours table is empty — packages and tour listings will not load until tours are restored in Supabase';
+        } else {
+          supabase_ok = true;
+        }
       }
     }
   } catch (err) {
@@ -59,10 +81,20 @@ healthRouter.get('/health', async (_req, res) => {
       crm_ok,
       overall_ok: supabase_ok && crm_ok,
       using_service_role,
+      supabase_key_kind,
+      supabase_project_ref,
       tours_count,
     },
     checks: [
-      { service: 'supabase', ok: supabase_ok, error: supabase_error, tours_count, using_service_role },
+      {
+        service: 'supabase',
+        ok: supabase_ok,
+        error: supabase_error,
+        tours_count,
+        using_service_role,
+        supabase_key_kind,
+        supabase_project_ref,
+      },
       { service: 'crm', ok: crm_ok, error: crm_error },
     ],
   });

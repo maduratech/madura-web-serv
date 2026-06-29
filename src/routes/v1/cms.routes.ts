@@ -12,6 +12,7 @@ import {
   duplicateDestination,
   duplicateTour,
   deleteTour,
+  ensureBootstrapCmsStaff,
   getCmsStaffByUserId,
   getDestination,
   getTour,
@@ -81,7 +82,14 @@ cmsRouter.get('/me', async (req, res, next) => {
       res.json({ is_staff: false, role: null });
       return;
     }
-    const staff = await getCmsStaffByUserId(base.userId);
+    let staff = await getCmsStaffByUserId(base.userId);
+    if (!staff?.is_active) {
+      staff = await ensureBootstrapCmsStaff({
+        userId: base.userId,
+        email: base.email || '',
+        full_name: base.fullName,
+      });
+    }
     if (!staff || !staff.is_active) {
       res.json({ is_staff: false, role: null, email: base.email });
       return;

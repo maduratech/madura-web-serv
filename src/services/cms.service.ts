@@ -1,3 +1,4 @@
+import { env } from '../config/env';
 import { supabase } from '../lib/supabase';
 import { childPricesFromDb, childPricesToDb } from '../lib/tour-price-db';
 import { normalizeDestinationSlug } from '../lib/destination-slug';
@@ -50,6 +51,30 @@ export async function getCmsStaffByUserId(userId: string): Promise<CmsStaffRow |
     .maybeSingle();
   if (error || !data) return null;
   return data as CmsStaffRow;
+}
+
+function parseBootstrapSuperAdminEmails(): Set<string> {
+  return new Set(
+    env.CMS_BOOTSTRAP_SUPER_ADMIN_EMAILS.split(',')
+      .map((email) => email.trim().toLowerCase())
+      .filter(Boolean)
+  );
+}
+
+/** First sign-in for allowlisted emails — grants website CMS super_admin (not CRM admin). */
+export async function ensureBootstrapCmsStaff(input: {
+  userId: string;
+  email: string;
+  full_name?: string | null;
+}): Promise<CmsStaffRow | null> {
+  const allowlist = parseBootstrapSuperAdminEmails();
+  const email = input.email.trim().toLowerCase();
+  if (!allowlist.has(email)) return null;
+
+  const existing = await getCmsStaffByUserId(input.userId);
+  if (existing?.is_active) return existing;
+
+  return upsertCmsStaffForUser(input.userId, input.email, input.full_name, 'super_admin');
 }
 
 export async function listCmsStaff(): Promise<CmsStaffRow[]> {

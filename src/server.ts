@@ -9,8 +9,8 @@ expressApp.listen(port, () => {
   void probeCatalogTourCount().then((count) => {
     if (count === 0) {
       console.error(
-        '[catalog-health] tours table returned 0 rows — check SUPABASE_SERVICE_ROLE_KEY on this server. ' +
-          'Without it, packages and destination images will not load on the website.'
+        '[catalog-health] tours table returned 0 rows. If SUPABASE_SERVICE_ROLE_KEY is set, restore tour data in Supabase. ' +
+          'Without tours, packages, planner destinations, and listing pages will be empty or stale.'
       );
     } else if (count > 0) {
       console.log(`[catalog-health] tours indexed: ${count}`);

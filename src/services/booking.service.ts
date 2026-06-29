@@ -810,12 +810,17 @@ type DestinationListRawRow = {
   destination_type?: string | null;
   parent_id?: number | null;
   country_region?: string | null;
+  continent?: string | null;
   description?: string | null;
   /** Explicit ISO 3166-1 alpha-2 on website destinations (preferred for flags). */
   flag_iso?: string | null;
   /** Direct flag asset URL stored in Website Supabase */
   flag_image_url?: string | null;
 };
+
+function destinationRegionHint(row: DestinationListRawRow): string {
+  return String(row.country_region || row.continent || '').trim();
+}
 
 function enrichDestinationHierarchyRow(row: DestinationListRawRow): DestinationListRawRow {
   const meta = parseHierarchyFromDescription(row.description);
@@ -1141,7 +1146,7 @@ function buildDestinationListItems(rows: DestinationListRawRow[]): DestinationLi
     const label = buildDestinationDisplayLabel(r, byId);
     if (!label) continue;
 
-    let flagHint = r.country_region ? String(r.country_region).trim() : '';
+    let flagHint = destinationRegionHint(r);
 
     if (kind === 'city' || kind === 'state' || kind === 'other') {
       const parentCountry = resolveParentCountryRow(r, byId);
@@ -1157,7 +1162,7 @@ function buildDestinationListItems(rows: DestinationListRawRow[]): DestinationLi
     const flag_iso =
       normalizeFlagIsoStored(r.flag_iso) ||
       resolveIso2FromCountryHint(flagHint) ||
-      resolveIso2FromCountryHint(r.country_region ? String(r.country_region) : null) ||
+      resolveIso2FromCountryHint(destinationRegionHint(r)) ||
       resolveIso2FromCountryHint(countryPartComma) ||
       resolveIso2FromCountryHint(label);
 
@@ -1178,7 +1183,7 @@ function buildDestinationListItems(rows: DestinationListRawRow[]): DestinationLi
       parent_id: r.parent_id != null ? Number(r.parent_id) : null,
       country_id: parents.country_id,
       state_id: parents.state_id,
-      country_region: r.country_region ? String(r.country_region).trim() : null,
+      country_region: destinationRegionHint(r) || null,
       nav_badge,
     });
   }
@@ -1199,15 +1204,9 @@ function normalizeHttpImageUrl(value: unknown): string | null {
 
 export async function getDestinations(): Promise<DestinationListItem[]> {
   const fullAttempts = [
-    'id,name,slug,destination_type,parent_id,country_region,flag_iso,flag_image_url,description',
-    'id,name,slug,destination_type,parent_id,country_region,flag_iso,flag_image_url',
-    'id,name,slug,destination_type,parent_id,country_region,flag_iso',
-    'id,name,slug,destination_type,parent_id,country_region',
-    'id,name,destination_type,parent_id,country_region,flag_iso,flag_image_url,description',
-    'id,name,destination_type,parent_id,country_region,flag_iso,flag_image_url',
-    'id,name,destination_type,parent_id,country_region,flag_iso',
-    'id,name,destination_type,parent_id,country_region',
-    'id,name,slug,country_region,flag_iso,flag_image_url,description',
+    'id,name,slug,destination_type,parent_id,continent,flag_iso,flag_image_url,description',
+    'id,name,slug,destination_type,parent_id,flag_iso,flag_image_url,description',
+    'id,name,slug,destination_type,parent_id,continent,flag_iso,flag_image_url',
     'id,name,slug,flag_iso,flag_image_url,description',
     'id,name,slug,flag_iso,flag_image_url',
     'id,name,flag_iso',
@@ -1332,14 +1331,13 @@ export async function getDestinationBySlug(slug: string) {
 
   const slugVariants = destinationSlugVariants(slug);
   const selectTries = [
-    'id,name,slug,description,image_url,cover_image_url,flag_image_url,flag_iso,is_active',
-    'id,name,slug,description,image_url,cover_image_url,flag_image_url,is_active',
-    'id,name,slug,description,image_url,cover_image_url,flag_image_url,flag_iso',
-    'id,name,slug,description,image_url,cover_image_url,flag_image_url',
-    'id,name,slug,description,cover_image_url,flag_image_url',
-    'id,name,slug,description,image_url,cover_image_url',
+    'id,name,slug,description,image_url,flag_image_url,flag_iso,is_active',
+    'id,name,slug,description,image_url,flag_image_url,is_active',
+    'id,name,slug,description,image_url,flag_image_url,flag_iso',
+    'id,name,slug,description,image_url,flag_image_url',
+    'id,name,slug,description,image_url',
     'id,name,slug,description',
-    'id,name,slug,cover_image_url,image_url',
+    'id,name,slug,image_url',
     'id,name,slug',
   ];
 
@@ -1424,11 +1422,8 @@ export async function getHeroSearchOptions() {
 
 async function fetchDestinationRowsForShowcase(): Promise<DestinationShowcaseRow[]> {
   const tries = [
-    'id,name,slug,destination_type,parent_id,continent,image_url,cover_image_url,description',
     'id,name,slug,destination_type,parent_id,continent,image_url,description',
-    'id,name,slug,destination_type,parent_id,continent,image_url,cover_image_url',
     'id,name,slug,destination_type,parent_id,continent,image_url',
-    'id,name,slug,destination_type,parent_id,continent,cover_image_url',
     'id,name,slug,destination_type,parent_id,continent,description',
     'id,name,slug,destination_type,parent_id,continent',
     'id,name,slug,image_url,description',
