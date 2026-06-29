@@ -28,7 +28,7 @@ type PhoneOtpChallenge = {
   user_id?: string | null;
 };
 
-type OtpPurpose = 'login' | 'profile';
+type OtpPurpose = 'login' | 'profile' | 'form_submit';
 
 type ProfileMatch = {
   id: string;
@@ -423,6 +423,31 @@ export async function sendProfilePhoneOtp(
   clientIp: string
 ): Promise<SendPhoneOtpResult> {
   return sendOtpCore(rawPhone, clientIp, 'profile', userId);
+}
+
+export async function sendFormSubmitPhoneOtp(rawPhone: string, clientIp: string): Promise<SendPhoneOtpResult> {
+  return sendOtpCore(rawPhone, clientIp, 'form_submit');
+}
+
+export async function verifyFormSubmitPhoneOtp(rawPhone: string, rawOtp: string): Promise<{ phone: string }> {
+  const normalized = normalizeIndianMobile(rawPhone);
+  if (!normalized) {
+    throw new HttpError(400, 'Invalid or expired code.');
+  }
+
+  const otp = String(rawOtp || '').trim();
+  if (!/^\d{6}$/.test(otp)) {
+    throw new HttpError(400, 'Invalid or expired code.');
+  }
+
+  requireOtpPepper();
+  await verifyChallengeOtp(normalized, otp, 'form_submit');
+
+  return { phone: normalized.e164 };
+}
+
+export async function saveVerifiedProfilePhone(userId: string, phoneE164: string): Promise<void> {
+  await ensureProfilePhone(userId, phoneE164);
 }
 
 export async function verifyProfilePhoneOtp(

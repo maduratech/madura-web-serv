@@ -99,6 +99,7 @@ import {
 } from '../lib/tour-market-audience';
 import { foreignAmountToInr, STATIC_RATES_TO_INR } from '../lib/fx-rates-to-inr';
 import type { TourCmsMeta } from '../lib/tour-meta';
+import { resolveFormPhoneVerification } from './form-phone-verification.service';
 
 export type TravellerInput = {
   type: 'adult' | 'child' | 'infant';
@@ -259,10 +260,19 @@ export type CreateEnquiryInput = {
   nationality?: string | null;
   ip_address?: string;
   user_agent?: string;
+  /** Storefront market slug (`in` / `au`) for SMS verification rules. */
+  market?: string | null;
   forex_currency_have?: string | null;
   forex_currency_required?: string | null;
   /** Optional: auth.users id when the enquiry is filed by a signed-in customer (P2). */
   user_id?: string;
+  /** Optional profile phone from auth context (skip OTP when it matches). */
+  profile_phone?: string | null;
+  /** India IN-market SMS verification (guests / users without saved phone). */
+  otp?: string | null;
+  form_verification_token?: string | null;
+  /** Resolved server-side after verification; forwarded to CRM when true. */
+  phone_verified?: boolean;
 };
 
 export type CreateWebsiteLeadInput = {
@@ -290,6 +300,11 @@ export type CreateWebsiteLeadInput = {
   forex_currency_have?: string | null;
   forex_currency_required?: string | null;
   forex_amount?: number | null;
+  user_id?: string | null;
+  profile_phone?: string | null;
+  otp?: string | null;
+  form_verification_token?: string | null;
+  phone_verified?: boolean;
 };
 
 export type CreatePlannerLeadInput = {
@@ -4848,10 +4863,11 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
     ...(input.occupancy_notes ? { occupancy_notes: input.occupancy_notes } : {}),
     ...(input.forex_currency_have ? { forex_currency_have: input.forex_currency_have } : {}),
     ...(input.forex_currency_required ? { forex_currency_required: input.forex_currency_required } : {}),
+    ...(input.phone_verified ? { phone_verified: true } : {}),
     notes: [
       {
         type: 'note',
-        content: noteContent,
+        content: input.phone_verified ? `${noteContent} | Phone verified: yes` : noteContent,
         timestamp: new Date().toISOString(),
       },
     ],
@@ -4893,6 +4909,17 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
 
 export async function createEnquiry(input: CreateEnquiryInput) {
   validateCreateEnquiryPayload(input);
+
+  const verification = await resolveFormPhoneVerification({
+    market: input.market || input.departure_city,
+    phone: String(input.phone || '').trim(),
+    userId: input.user_id,
+    profilePhone: input.profile_phone,
+    form_verification_token: input.form_verification_token,
+    otp: input.otp,
+  });
+  input.phone_verified = verification.phoneVerified;
+
   const isMissingTableError = (message: string) =>
     /relation .* does not exist/i.test(message) ||
     /could not find the table .* in the schema cache/i.test(message);
@@ -5142,6 +5169,16 @@ export async function createEnquiry(input: CreateEnquiryInput) {
 export async function createWebsiteLead(input: CreateWebsiteLeadInput) {
   validateWebsiteLeadPayload(input);
 
+  const verification = await resolveFormPhoneVerification({
+    market: input.market,
+    phone: String(input.phone || '').trim(),
+    userId: input.user_id,
+    profilePhone: input.profile_phone,
+    form_verification_token: input.form_verification_token,
+    otp: input.otp,
+  });
+  input.phone_verified = verification.phoneVerified;
+
   const normalizedPhone = normalizePhoneNumber(String(input.phone || ''));
   const ipKey = String(input.ip_address || '').trim() || 'unknown';
   const phoneKey = normalizedPhone.toLowerCase();
@@ -5230,6 +5267,7 @@ export async function createWebsiteLead(input: CreateWebsiteLeadInput) {
       nationality: isMice || isForex ? null : String(input.message || input.nationality || '').trim() || null,
       ip_address: input.ip_address,
       user_agent: input.user_agent,
+      phone_verified: input.phone_verified,
     });
     // eslint-disable-next-line no-console
     console.info('[website-lead] CRM forward success');

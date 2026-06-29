@@ -178,6 +178,7 @@ bookingsRouter.post('/enquiries', attachAuthIfPresent, async (req, res, next) =>
       ip_address: req.ip,
       user_agent: req.get('user-agent') || '',
       user_id: req.auth?.userId,
+      profile_phone: req.auth?.phone,
     });
     return res.status(201).json({
       message: 'Enquiry submitted successfully.',
@@ -188,12 +189,14 @@ bookingsRouter.post('/enquiries', attachAuthIfPresent, async (req, res, next) =>
   }
 });
 
-bookingsRouter.post('/leads/website', async (req, res, next) => {
+bookingsRouter.post('/leads/website', attachAuthIfPresent, async (req, res, next) => {
   try {
     const result = await createWebsiteLead({
       ...req.body,
       ip_address: req.ip,
       user_agent: req.get('user-agent') || '',
+      user_id: req.auth?.userId,
+      profile_phone: req.auth?.phone,
     });
     return res.status(201).json({
       message: 'Lead submitted successfully.',
