@@ -63,6 +63,11 @@ import {
 } from '../lib/destination-seed-hierarchy';
 import { destinationSlugVariants, normalizeDestinationSlug } from '../lib/destination-slug';
 import {
+  DESTINATION_DETAIL_SELECT_TRIES,
+  DESTINATION_LIST_SELECT_TRIES,
+  DESTINATION_SHOWCASE_SELECT_TRIES,
+} from '../lib/destination-db-schema';
+import {
   expandDestinationSlugs,
   readTourDestinationIds,
   type DestinationHierarchyRow,
@@ -1203,16 +1208,7 @@ function normalizeHttpImageUrl(value: unknown): string | null {
 }
 
 export async function getDestinations(): Promise<DestinationListItem[]> {
-  const fullAttempts = [
-    'id,name,slug,destination_type,parent_id,continent,flag_iso,flag_image_url,description',
-    'id,name,slug,destination_type,parent_id,flag_iso,flag_image_url,description',
-    'id,name,slug,destination_type,parent_id,continent,flag_iso,flag_image_url',
-    'id,name,slug,flag_iso,flag_image_url,description',
-    'id,name,slug,flag_iso,flag_image_url',
-    'id,name,flag_iso',
-    'id,name,flag_image_url',
-    'id,name',
-  ];
+  const fullAttempts = [...DESTINATION_LIST_SELECT_TRIES];
 
   let lastErr = '';
   for (const cols of fullAttempts) {
@@ -1330,16 +1326,7 @@ export async function getDestinationBySlug(slug: string) {
   if (!normalized) return null;
 
   const slugVariants = destinationSlugVariants(slug);
-  const selectTries = [
-    'id,name,slug,description,image_url,flag_image_url,flag_iso,is_active',
-    'id,name,slug,description,image_url,flag_image_url,is_active',
-    'id,name,slug,description,image_url,flag_image_url,flag_iso',
-    'id,name,slug,description,image_url,flag_image_url',
-    'id,name,slug,description,image_url',
-    'id,name,slug,description',
-    'id,name,slug,image_url',
-    'id,name,slug',
-  ];
+  const selectTries = [...DESTINATION_DETAIL_SELECT_TRIES];
 
   let lastErr = '';
   for (const cols of selectTries) {
@@ -1421,16 +1408,7 @@ export async function getHeroSearchOptions() {
 }
 
 async function fetchDestinationRowsForShowcase(): Promise<DestinationShowcaseRow[]> {
-  const tries = [
-    'id,name,slug,destination_type,parent_id,continent,image_url,description',
-    'id,name,slug,destination_type,parent_id,continent,image_url',
-    'id,name,slug,destination_type,parent_id,continent,description',
-    'id,name,slug,destination_type,parent_id,continent',
-    'id,name,slug,image_url,description',
-    'id,name,slug,image_url',
-    'id,name,slug,description',
-    'id,name,slug',
-  ];
+  const tries = [...DESTINATION_SHOWCASE_SELECT_TRIES];
   let lastError = '';
   for (const cols of tries) {
     const { data, error } = await supabase.from('destinations').select(cols).order('name', { ascending: true });

@@ -2,6 +2,7 @@ import { env } from '../config/env';
 import { supabase } from '../lib/supabase';
 import { childPricesFromDb, childPricesToDb } from '../lib/tour-price-db';
 import { normalizeDestinationSlug } from '../lib/destination-slug';
+import { DESTINATION_SELECT_TRIES } from '../lib/destination-db-schema';
 import {
   buildDestinationDisplayLabel,
   destinationKind,
@@ -488,12 +489,13 @@ type DestinationRaw = {
   name?: string | null;
   slug?: string | null;
   country?: string | null;
-  country_region?: string | null;
+  continent?: string | null;
   destination_type?: string | null;
   parent_id?: number | null;
   description?: string | null;
   is_active?: boolean | null;
   flag_image_url?: string | null;
+  flag_iso?: string | null;
   created_at?: string | null;
 };
 
@@ -582,10 +584,7 @@ function mapDestinationRow(row: DestinationRaw, allRows: DestinationRaw[] = []):
   };
 
   const countryRow = country_id ? byId.get(country_id) : undefined;
-  let countryName =
-    String(row.country ?? row.country_region ?? '').trim() ||
-    countryRow?.name?.trim() ||
-    null;
+  let countryName = String(row.country ?? '').trim() || countryRow?.name?.trim() || null;
 
   if (!countryName && seedHint?.country_name) {
     countryName = seedHint.country_name;
@@ -666,7 +665,6 @@ async function tryPersistDestinationHierarchy(
   hierarchy: {
     destination_type: CmsDestinationType;
     parent_id: number | null;
-    country_region: string | null;
     country_id?: number | null;
     state_id?: number | null;
   },
@@ -676,15 +674,9 @@ async function tryPersistDestinationHierarchy(
     {
       destination_type: hierarchy.destination_type,
       parent_id: hierarchy.parent_id,
-      country_region: hierarchy.country_region,
-    },
-    {
-      destination_type: hierarchy.destination_type,
-      parent_id: hierarchy.parent_id,
     },
     { destination_type: hierarchy.destination_type },
     { parent_id: hierarchy.parent_id },
-    { country_region: hierarchy.country_region },
   ];
 
   for (const patch of patchAttempts) {
@@ -782,19 +774,7 @@ function attachPackageCounts(
 }
 
 export async function listDestinations(): Promise<CmsDestination[]> {
-  const tries = [
-    'id,name,slug,destination_type,parent_id,country_region,flag_image_url,description,is_active,created_at',
-    'id,name,slug,destination_type,parent_id,country_region,flag_image_url,description,created_at',
-    'id,name,slug,destination_type,parent_id,country_region,flag_image_url,created_at',
-    'id,name,slug,country_region,flag_image_url,description,created_at',
-    'id,name,slug,flag_image_url,description,created_at',
-    'id,name,slug,country_region,flag_image_url,created_at',
-    'id,name,slug,flag_image_url,created_at',
-    'id,name,slug,country_region,flag_iso,created_at',
-    'id,name,slug,created_at',
-    'id,name,slug',
-    'id,name',
-  ];
+  const tries = [...DESTINATION_SELECT_TRIES];
   let lastErr = '';
   for (const cols of tries) {
     const { data, error } = await selectDestinations(cols);
@@ -815,18 +795,7 @@ export async function getDestination(id: number): Promise<CmsDestination | null>
   const fromList = all.find((d) => d.id === id);
   if (fromList) return fromList;
 
-  const tries = [
-    'id,name,slug,destination_type,parent_id,country_region,flag_image_url,description,is_active,created_at',
-    'id,name,slug,destination_type,parent_id,country_region,flag_image_url,description,created_at',
-    'id,name,slug,destination_type,parent_id,country_region,flag_image_url,created_at',
-    'id,name,slug,country_region,flag_image_url,description,created_at',
-    'id,name,slug,flag_image_url,description,created_at',
-    'id,name,slug,country_region,flag_image_url,created_at',
-    'id,name,slug,flag_image_url,created_at',
-    'id,name,slug,created_at',
-    'id,name,slug',
-    'id,name',
-  ];
+  const tries = [...DESTINATION_SELECT_TRIES];
   let lastErr = '';
   for (const cols of tries) {
     const { data, error } = await supabase.from('destinations').select(cols).eq('id', id).maybeSingle();
@@ -837,7 +806,6 @@ export async function getDestination(id: number): Promise<CmsDestination | null>
         slug: d.slug,
         destination_type: d.destination_type,
         parent_id: d.parent_id,
-        country_region: d.country,
       })) as DestinationRaw[];
       const mapped = mapDestinationRow(data as unknown as DestinationRaw, rawRows);
       const counts = await fetchPackageCountsByDestination(all.length ? all : [mapped]);
@@ -854,16 +822,9 @@ function slugify(name: string): string {
   return normalizeDestinationSlug(name);
 }
 
-async function resolveCountryNameById(countryId: number | null | undefined): Promise<string | null> {
-  if (!Number.isFinite(Number(countryId)) || Number(countryId) <= 0) return null;
-  const row = await getDestination(Number(countryId));
-  return row?.name?.trim() || null;
-}
-
 type DestinationHierarchyWrite = {
   destination_type: CmsDestinationType;
   parent_id: number | null;
-  country_region: string | null;
 };
 
 async function resolveDestinationWriteFields(
@@ -877,7 +838,6 @@ async function resolveDestinationWriteFields(
   const stateIdRaw = input.state_id;
 
   let parent_id: number | null = null;
-  let country_region: string | null = input.country?.trim() || null;
 
   if (destination_type === 'state') {
     const countryId = Number(countryIdRaw);
@@ -885,7 +845,6 @@ async function resolveDestinationWriteFields(
       throw new Error('Select a country for this state.');
     }
     parent_id = countryId;
-    country_region = (await resolveCountryNameById(countryId)) || country_region;
   } else if (destination_type === 'city') {
     const countryId = Number(countryIdRaw);
     if (!Number.isFinite(countryId) || countryId <= 0) {
@@ -897,16 +856,13 @@ async function resolveDestinationWriteFields(
     } else {
       parent_id = countryId;
     }
-    country_region = (await resolveCountryNameById(countryId)) || country_region;
   } else {
     parent_id = null;
-    country_region = country_region || String(input.name || '').trim() || null;
   }
 
   return {
     destination_type,
     parent_id,
-    country_region,
   };
 }
 
@@ -918,7 +874,6 @@ async function insertDestinationWithFallback(payload: Record<string, unknown>): 
       slug: payload.slug,
       destination_type: hierarchy.destination_type,
       parent_id: hierarchy.parent_id,
-      country_region: hierarchy.country_region,
       flag_image_url: payload.flag_image_url,
       description: payload.description,
       is_active: payload.is_active,
@@ -928,29 +883,27 @@ async function insertDestinationWithFallback(payload: Record<string, unknown>): 
       slug: payload.slug,
       destination_type: hierarchy.destination_type,
       parent_id: hierarchy.parent_id,
-      country_region: hierarchy.country_region,
       flag_image_url: payload.flag_image_url,
       description: payload.description,
     },
     {
       name: payload.name,
       slug: payload.slug,
-      country_region: hierarchy.country_region,
-      flag_image_url: payload.flag_image_url,
+      destination_type: hierarchy.destination_type,
+      parent_id: hierarchy.parent_id,
       description: payload.description,
+    },
+    {
+      name: payload.name,
+      slug: payload.slug,
+      destination_type: hierarchy.destination_type,
+      parent_id: hierarchy.parent_id,
     },
     { name: payload.name, slug: payload.slug },
     { name: payload.name, slug: payload.slug, description: payload.description },
     {
       name: payload.name,
       slug: payload.slug,
-      flag_image_url: payload.flag_image_url,
-      description: payload.description,
-    },
-    {
-      name: payload.name,
-      slug: payload.slug,
-      country_region: payload.country,
       flag_image_url: payload.flag_image_url,
       description: payload.description,
     },
@@ -974,7 +927,6 @@ async function insertDestinationWithFallback(payload: Record<string, unknown>): 
         {
           destination_type: hierarchy.destination_type,
           parent_id: hierarchy.parent_id,
-          country_region: hierarchy.country_region,
           country_id:
             payload.country_id != null && payload.country_id !== ''
               ? Number(payload.country_id)
@@ -1027,7 +979,6 @@ export async function updateDestination(id: number, input: Partial<CmsDestinatio
     basePatch.slug =
       normalizeDestinationSlug(String(input.slug).trim()) || slugify(String(input.name || ''));
   }
-  if (input.country !== undefined) basePatch.country_region = input.country?.trim() || null;
   if (input.flag_image_url !== undefined) basePatch.flag_image_url = input.flag_image_url?.trim() || null;
   if (input.is_active !== undefined) basePatch.is_active = Boolean(input.is_active);
 
@@ -1049,7 +1000,6 @@ export async function updateDestination(id: number, input: Partial<CmsDestinatio
     });
     basePatch.destination_type = resolvedHierarchy.destination_type;
     basePatch.parent_id = resolvedHierarchy.parent_id;
-    basePatch.country_region = resolvedHierarchy.country_region;
   }
 
   if (input.description !== undefined) {
@@ -1064,7 +1014,6 @@ export async function updateDestination(id: number, input: Partial<CmsDestinatio
       {
         destination_type: resolvedHierarchy.destination_type,
         parent_id: resolvedHierarchy.parent_id,
-        country_region: resolvedHierarchy.country_region,
         country_id: input.country_id ?? null,
         state_id: input.state_id ?? null,
       },
@@ -1074,27 +1023,13 @@ export async function updateDestination(id: number, input: Partial<CmsDestinatio
 
   const patchVariants: Record<string, unknown>[] = [
     basePatch,
+    Object.fromEntries(Object.entries(basePatch).filter(([key]) => key !== 'is_active')),
     Object.fromEntries(
-      Object.entries(basePatch).filter(([key]) => key !== 'country_region' && key !== 'is_active')
-    ),
-    Object.fromEntries(
-      Object.entries(basePatch).filter(([key]) => key !== 'is_active')
-    ),
-    Object.fromEntries(
-      Object.entries(basePatch).filter(
-        ([key]) => !['country_region', 'flag_image_url', 'is_active'].includes(key)
-      )
+      Object.entries(basePatch).filter(([key]) => !['flag_image_url', 'is_active'].includes(key))
     ),
   ];
 
-  const selectTries = [
-    'id,name,slug,country_region,flag_image_url,description,is_active,created_at',
-    'id,name,slug,country_region,flag_image_url,description,created_at',
-    'id,name,slug,flag_image_url,description,created_at',
-    'id,name,slug,flag_image_url,created_at',
-    'id,name,slug,created_at',
-    'id,name,slug',
-  ];
+  const selectTries = [...DESTINATION_SELECT_TRIES];
 
   let lastErr = '';
   for (const patch of patchVariants) {

@@ -6,7 +6,6 @@ export type DestinationHierarchyRow = {
   slug?: string | null;
   destination_type?: string | null;
   parent_id?: number | null;
-  country_region?: string | null;
 };
 
 export function destinationKind(row: DestinationHierarchyRow): DestinationKind {
@@ -133,9 +132,7 @@ export function buildDestinationDisplayLabel(
 
   if (kind === 'state') {
     const country = resolveParentCountryRow(row, byId);
-    const countryName =
-      country?.name?.trim() ||
-      (row.country_region ? String(row.country_region).trim() : '');
+    const countryName = country?.name?.trim() || '';
     if (countryName && countryName.toLowerCase() !== name.toLowerCase()) {
       return `${name}, ${countryName}`;
     }
@@ -149,9 +146,7 @@ export function buildDestinationDisplayLabel(
       parts.push(state.name.trim());
     }
     const country = resolveParentCountryRow(row, byId);
-    const countryName =
-      country?.name?.trim() ||
-      (row.country_region ? String(row.country_region).trim() : '');
+    const countryName = country?.name?.trim() || '';
     if (countryName && !parts.some((p) => p.toLowerCase() === countryName.toLowerCase())) {
       parts.push(countryName);
     }
@@ -160,9 +155,7 @@ export function buildDestinationDisplayLabel(
 
   // Legacy / untyped rows
   const country = resolveParentCountryRow(row, byId);
-  const countryName =
-    country?.name?.trim() ||
-    (row.country_region ? String(row.country_region).trim() : '');
+  const countryName = country?.name?.trim() || '';
   if (countryName && countryName.toLowerCase() !== name.toLowerCase()) {
     return `${name}, ${countryName}`;
   }
