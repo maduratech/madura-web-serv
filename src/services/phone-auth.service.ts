@@ -484,6 +484,31 @@ export type VerifyPhoneOtpResult = {
   };
 };
 
+/** Find or create a customer by verified Indian mobile and return a Supabase session (no OTP step). */
+export async function issueSessionForIndianPhone(rawPhone: string): Promise<VerifyPhoneOtpResult> {
+  const normalized = normalizeIndianMobile(rawPhone);
+  if (!normalized) {
+    throw new HttpError(400, 'Enter a valid 10-digit Indian mobile number.');
+  }
+
+  const userId = await resolveUserIdForPhone(normalized.e164, normalized.last10);
+  const sessionData = await createSessionForUser(userId, normalized.e164);
+  const session = sessionData.session!;
+  const user = sessionData.user ?? session.user;
+
+  return {
+    access_token: session.access_token,
+    refresh_token: session.refresh_token,
+    expires_in: session.expires_in ?? 3600,
+    token_type: session.token_type ?? 'bearer',
+    user: {
+      id: userId,
+      phone: user?.phone ?? normalized.e164,
+      email: user?.email ?? null,
+    },
+  };
+}
+
 export async function verifyPhoneOtp(rawPhone: string, rawOtp: string): Promise<VerifyPhoneOtpResult> {
   const normalized = normalizeIndianMobile(rawPhone);
   if (!normalized) {

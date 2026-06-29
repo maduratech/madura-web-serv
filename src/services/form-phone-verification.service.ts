@@ -2,7 +2,9 @@ import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { env } from '../config/env';
 import { HttpError } from '../lib/http-error';
 import { normalizeIndianMobile, phonesMatchLast10 } from '../lib/indian-phone';
+import type { VerifyPhoneOtpResult } from './phone-auth.service';
 import {
+  issueSessionForIndianPhone,
   saveVerifiedProfilePhone,
   verifyFormSubmitPhoneOtp,
 } from './phone-auth.service';
@@ -119,7 +121,30 @@ export type ResolveFormPhoneVerificationInput = {
 export type ResolveFormPhoneVerificationResult = {
   phoneVerified: boolean;
   profilePhoneSaved: boolean;
+  /** Session for guests who verified by SMS — auto sign-in after enquiry submit. */
+  guestAuth?: VerifyPhoneOtpResult | null;
+  guestUserId?: string | null;
 };
+
+async function guestSessionAfterPhoneVerify(
+  phone: string,
+  existingUserId?: string | null
+): Promise<Pick<ResolveFormPhoneVerificationResult, 'guestAuth' | 'guestUserId' | 'profilePhoneSaved'>> {
+  if (existingUserId) {
+    const normalized = normalizeIndianMobile(phone);
+    if (normalized) {
+      await saveVerifiedProfilePhone(existingUserId, normalized.e164);
+    }
+    return { guestAuth: null, guestUserId: null, profilePhoneSaved: true };
+  }
+
+  const guestAuth = await issueSessionForIndianPhone(phone);
+  return {
+    guestAuth,
+    guestUserId: guestAuth.user.id,
+    profilePhoneSaved: true,
+  };
+}
 
 export async function resolveFormPhoneVerification(
   input: ResolveFormPhoneVerificationInput
@@ -132,7 +157,7 @@ export async function resolveFormPhoneVerification(
         input.userId &&
         phonesMatchLast10(String(input.profilePhone || ''), normalized.e164)
     );
-    return { phoneVerified, profilePhoneSaved: false };
+    return { phoneVerified, profilePhoneSaved: false, guestAuth: null, guestUserId: null };
   }
 
   const normalized = normalizeIndianMobile(input.phone);
@@ -145,12 +170,8 @@ export async function resolveFormPhoneVerification(
     if (!consumeFormVerificationToken(token, normalized.e164)) {
       throw new HttpError(400, 'Phone verification required. Please verify your mobile number.');
     }
-    let profilePhoneSaved = false;
-    if (input.userId) {
-      await saveVerifiedProfilePhone(input.userId, normalized.e164);
-      profilePhoneSaved = true;
-    }
-    return { phoneVerified: true, profilePhoneSaved };
+    const guest = await guestSessionAfterPhoneVerify(input.phone, input.userId);
+    return { phoneVerified: true, ...guest };
   }
 
   const otp = String(input.otp || '').trim();
@@ -159,12 +180,8 @@ export async function resolveFormPhoneVerification(
     const issued = issueFormVerificationToken(normalized.e164);
     consumeFormVerificationToken(issued, normalized.e164);
 
-    let profilePhoneSaved = false;
-    if (input.userId) {
-      await saveVerifiedProfilePhone(input.userId, normalized.e164);
-      profilePhoneSaved = true;
-    }
-    return { phoneVerified: true, profilePhoneSaved };
+    const guest = await guestSessionAfterPhoneVerify(input.phone, input.userId);
+    return { phoneVerified: true, ...guest };
   }
 
   throw new HttpError(400, 'Phone verification required. Please verify your mobile number.');

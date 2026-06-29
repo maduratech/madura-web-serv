@@ -99,7 +99,8 @@ import {
 } from '../lib/tour-market-audience';
 import { foreignAmountToInr, STATIC_RATES_TO_INR } from '../lib/fx-rates-to-inr';
 import type { TourCmsMeta } from '../lib/tour-meta';
-import { resolveFormPhoneVerification } from './form-phone-verification.service';
+import { resolveFormPhoneVerification, type ResolveFormPhoneVerificationResult } from './form-phone-verification.service';
+import type { VerifyPhoneOtpResult } from './phone-auth.service';
 
 export type TravellerInput = {
   type: 'adult' | 'child' | 'infant';
@@ -4741,6 +4742,34 @@ function validateWebsiteLeadPayload(input: CreateWebsiteLeadInput): void {
   }
 }
 
+async function applyGuestLeadContext(
+  input: { user_id?: string | null; name?: string; email?: string | null; phone?: string },
+  verification: ResolveFormPhoneVerificationResult
+): Promise<VerifyPhoneOtpResult | null> {
+  if (verification.guestUserId) {
+    input.user_id = verification.guestUserId;
+    const { normalizeIndianMobile } = await import('../lib/indian-phone');
+    const normalized = normalizeIndianMobile(String(input.phone || ''));
+    const row: Record<string, string> = { id: verification.guestUserId };
+    const name = String(input.name || '').trim();
+    const email = String(input.email || '').trim();
+    if (name) row.full_name = name;
+    if (email) row.email = email;
+    if (normalized) row.phone = normalized.e164;
+    if (Object.keys(row).length > 1) {
+      await supabase.from('profiles').upsert(row, { onConflict: 'id' });
+    }
+  }
+  return verification.guestAuth ?? null;
+}
+
+function withGuestAuth<T extends Record<string, unknown>>(
+  payload: T,
+  auth: VerifyPhoneOtpResult | null
+): T & { auth?: VerifyPhoneOtpResult } {
+  return auth ? { ...payload, auth } : payload;
+}
+
 function consumeSlidingWindowRateLimit(
   store: Map<string, number[]>,
   key: string,
@@ -4919,6 +4948,7 @@ export async function createEnquiry(input: CreateEnquiryInput) {
     otp: input.otp,
   });
   input.phone_verified = verification.phoneVerified;
+  const guestAuth = await applyGuestLeadContext(input, verification);
 
   const isMissingTableError = (message: string) =>
     /relation .* does not exist/i.test(message) ||
@@ -5052,7 +5082,7 @@ export async function createEnquiry(input: CreateEnquiryInput) {
       // eslint-disable-next-line no-console
       console.error('[tour-enquiry] CRM forward failed:', err);
     }
-    return { enquiry: primary.data };
+    return withGuestAuth({ enquiry: primary.data }, guestAuth);
   }
 
   // Fallback for environments using an alternate table name.
@@ -5116,7 +5146,7 @@ export async function createEnquiry(input: CreateEnquiryInput) {
         // eslint-disable-next-line no-console
         console.error('[tour-enquiry] CRM forward failed:', err);
       }
-      return { enquiry: fallback.data };
+      return withGuestAuth({ enquiry: fallback.data }, guestAuth);
     }
 
     const fallbackMessage = String(fallback.error?.message || '');
@@ -5137,7 +5167,7 @@ export async function createEnquiry(input: CreateEnquiryInput) {
         // eslint-disable-next-line no-console
         console.error('[tour-enquiry] CRM forward failed (no DB table):', err);
       }
-      return { enquiry: null };
+      return withGuestAuth({ enquiry: null }, guestAuth);
     }
 
     throw new Error(`Failed to create enquiry: ${fallback.error?.message || 'Unknown error'}`);
@@ -5160,7 +5190,7 @@ export async function createEnquiry(input: CreateEnquiryInput) {
       // eslint-disable-next-line no-console
       console.error('[tour-enquiry] CRM forward failed (no DB table):', err);
     }
-    return { enquiry: null };
+    return withGuestAuth({ enquiry: null }, guestAuth);
   }
 
   throw new Error(`Failed to create enquiry: ${primary.error?.message || 'Unknown error'}`);
@@ -5178,6 +5208,7 @@ export async function createWebsiteLead(input: CreateWebsiteLeadInput) {
     otp: input.otp,
   });
   input.phone_verified = verification.phoneVerified;
+  const guestAuth = await applyGuestLeadContext(input, verification);
 
   const normalizedPhone = normalizePhoneNumber(String(input.phone || ''));
   const ipKey = String(input.ip_address || '').trim() || 'unknown';
@@ -5274,16 +5305,22 @@ export async function createWebsiteLead(input: CreateWebsiteLeadInput) {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('[website-lead] CRM forward failed', err);
-    return {
-      success: true,
-      forwarded: false,
-    };
+    return withGuestAuth(
+      {
+        success: true,
+        forwarded: false,
+      },
+      guestAuth
+    );
   }
 
-  return {
-    success: true,
-    forwarded: true,
-  };
+  return withGuestAuth(
+    {
+      success: true,
+      forwarded: true,
+    },
+    guestAuth
+  );
 }
 
 const PLANNER_MONTH_LABELS = [
