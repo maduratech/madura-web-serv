@@ -113,6 +113,11 @@ import {
   readCmsCostingCurrency,
 } from '../lib/cms-costing-currency';
 import {
+  branchIdForMarket,
+  resolveBranchIdForLead,
+  resolveMarketForLead,
+} from '../lib/market-branch';
+import {
   marketDisplayCurrency,
   normalizeMarketCountry,
   type MarketCountryCode,
@@ -126,6 +131,17 @@ import { getStorefrontFxRates } from '../lib/storefront-fx-rates';
 import type { TourCmsMeta } from '../lib/tour-meta';
 import { resolveFormPhoneVerification, type ResolveFormPhoneVerificationResult } from './form-phone-verification.service';
 import type { VerifyPhoneOtpResult } from './phone-auth.service';
+
+function crmBranchFieldsFromBookingContext(context: {
+  departureCity?: string;
+  displayCurrency?: string | null;
+}) {
+  const market = resolveMarketForLead({
+    departure_city: context.departureCity,
+    display_currency: context.displayCurrency,
+  });
+  return { market, branch_id: branchIdForMarket(market) };
+}
 
 export type TravellerInput = {
   type: 'adult' | 'child' | 'infant';
@@ -673,6 +689,8 @@ async function syncBookingPaymentToCrm(input: {
   display_currency?: string | null;
   /** INR-base FX rate snapshot (units of `display_currency` per 1 INR). */
   display_fx_rate?: number | null;
+  market?: string | null;
+  branch_id?: number | null;
   details_note: string;
   customer_phone?: string;
   customer_email?: string;
@@ -734,6 +752,8 @@ async function syncBookingPaymentToCrm(input: {
         paid_at: input.paid_at,
         display_currency: input.display_currency || undefined,
         display_fx_rate: input.display_fx_rate || undefined,
+        market: input.market || undefined,
+        branch_id: input.branch_id || undefined,
         customer_phone: input.customer_phone,
         customer_email: input.customer_email,
         customer_name: input.customer_name,
@@ -794,6 +814,8 @@ async function syncBookingPaymentToCrm(input: {
         summary: `Booking payment update | status=${input.payment_status} | booking=${input.booking_id} | amount=${input.amount}`,
         starting_point: input.starting_point || input.departure_city || undefined,
         tour_region: input.tour_region || undefined,
+        market: input.market || undefined,
+        branch_id: input.branch_id || undefined,
       }),
     });
 
@@ -3819,6 +3841,7 @@ async function ensureBookingMtsReference(
       travellers: context.travellersForCrm,
       room_details: context.roomDetailsStored,
       details_note: detailsNote,
+      ...crmBranchFieldsFromBookingContext(context),
     });
 
     if (crmSyncResult?.mts_id || crmSyncResult?.lead_id) {
@@ -4514,6 +4537,7 @@ async function verifySquareBookingPayment(
       travellers: context.travellersForCrm,
       room_details: context.roomDetailsStored,
       details_note: detailsNote,
+      ...crmBranchFieldsFromBookingContext(context),
     });
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -4726,6 +4750,7 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
       travellers: context.travellersForCrm,
       room_details: context.roomDetailsStored,
       details_note: detailsNote,
+      ...crmBranchFieldsFromBookingContext(context),
     });
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -4836,6 +4861,7 @@ export async function updateBookingPaymentStatus(input: UpdateBookingPaymentStat
       travellers: context.travellersForCrm,
       room_details: context.roomDetailsStored,
       details_note: detailsNote,
+      ...crmBranchFieldsFromBookingContext(context),
     });
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -5061,6 +5087,12 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
             input.nationality ? ` | Nationality: ${input.nationality}` : ''
           }${input.page_url ? ` | ${input.page_url}` : ''}`;
   const attendeeCount = Number(input.attendees ?? input.adults) || 1;
+  const market = resolveMarketForLead({
+    market: input.market,
+    page_url: input.page_url,
+    departure_city: input.departure_city,
+  });
+  const branch_id = branchIdForMarket(market);
   const basePayload = {
     name: input.name,
     phone: input.phone,
@@ -5072,6 +5104,9 @@ async function forwardEnquiryToCrm25(input: CreateEnquiryInput) {
     travel_date: input.travel_date,
     enquiry: enquiryLabel,
     services: serviceList,
+    market,
+    branch_id,
+    page_url: input.page_url || undefined,
     starting_point: input.departure_city,
     summary: isForexLead
       ? [
@@ -5510,6 +5545,7 @@ export async function createWebsiteLead(input: CreateWebsiteLeadInput) {
       infants: 0,
       rooms: 1,
       page_url: String(input.page_url || '').trim() || undefined,
+      market: input.market || undefined,
       enquiry_type: enquiryType,
       services: serviceList,
       event_type: input.event_type || null,
