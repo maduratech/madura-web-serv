@@ -2,7 +2,7 @@
 export const BOOKING_MIN_ADVANCE_DAYS = 7;
 
 export const BOOKING_ADVANCE_NOTICE =
-  'Online booking is available from 7 days before travel. For earlier dates, please send an enquiry.';
+  'Online booking is available when your travel date is at least 7 days from today. For departures within the next 7 days, please send an enquiry.';
 
 function isoDateLocal(date: Date): string {
   const y = date.getFullYear();
