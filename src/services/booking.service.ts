@@ -2,6 +2,14 @@ import { supabase } from '../lib/supabase';
 import { fetchCrmLeadById, type CrmAssignedStaff } from './account.service';
 import { parseTourCmsMeta, resolveListingTourType, tourTaxPercentsFromMeta } from '../lib/tour-meta';
 import { loadActiveSidebarBadgeMap, resolvePromoBadgeLabel } from '../lib/sidebar-badge';
+import {
+  getCachedDestinationHierarchy,
+  getCachedToursListing,
+  setCachedDestinationHierarchy,
+  setCachedToursListing,
+} from '../lib/catalog-cache';
+import { createListingProfiler } from '../lib/listing-profile';
+import { stripOverviewToMetaPrefix } from '../lib/tour-overview-meta';
 import { lookupDeparturePricingUsd } from '../lib/departure-pricing-key';
 import {
   bookingTotalWithFlightOption,
@@ -1548,6 +1556,9 @@ function resolveShowcaseTourDestinationIds(
 }
 
 async function fetchDestinationHierarchyIndex(): Promise<Map<number, DestinationHierarchyRow>> {
+  const cached = getCachedDestinationHierarchy();
+  if (cached) return cached;
+
   const tries = ['id,slug,parent_id', 'id,slug'];
   let lastErr = '';
   for (const cols of tries) {
@@ -1563,12 +1574,83 @@ async function fetchDestinationHierarchyIndex(): Promise<Map<number, Destination
           parent_id: (row as { parent_id?: number | null }).parent_id ?? null,
         });
       }
+      setCachedDestinationHierarchy(map);
       return map;
     }
     lastErr = String(error.message || '');
     if (!/column .* does not exist/i.test(lastErr)) break;
   }
   throw new Error(`Failed to fetch destination hierarchy: ${lastErr || 'Unknown error'}`);
+}
+
+function listingTodayIsoDate(): string {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return today.toISOString().slice(0, 10);
+}
+
+function stripListingRowOverviewBodies(rows: ListingTourRow[]): void {
+  for (const row of rows) {
+    if (row.overview) row.overview = stripOverviewToMetaPrefix(row.overview);
+  }
+}
+
+async function fetchListingTourRowsFromSupabase(): Promise<ListingTourRow[]> {
+  let data: ListingTourRow[] | null = null;
+  let error: { message: string } | null = null;
+  const today = listingTodayIsoDate();
+
+  const baseTries = [
+    'id,title,slug,destination_id,flow_type,visibility_status,destination,tour_includes,hero_image_url,gallery_image_urls,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
+    'id,title,slug,destination_id,flow_type,destination,tour_includes,hero_image_url,gallery_image_urls,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
+    'id,title,slug,flow_type,visibility_status,destination,tour_includes,hero_image_url,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
+    'id,title,slug,flow_type,destination,tour_includes,hero_image_url,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
+    'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,overview',
+    'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price',
+    'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,child_price,youth_price',
+  ];
+  const departuresPart =
+    'departures(id,price,twin_sharing_price,triple_sharing_price,single_sharing_price,start_date,end_date,city,departure_city:departure_cities(name))';
+  const destinationEmbedTries = [
+    'destination_ref:destinations(name,slug,image_url)',
+    'destination_ref:destinations(name,slug)',
+  ];
+
+  const runSelect = async (sel: string, filterPastDepartures: boolean) => {
+    let query = supabase.from('tours').select(sel).order('title', { ascending: true });
+    if (filterPastDepartures) {
+      query = query.or(`start_date.gte.${today},start_date.is.null`, { foreignTable: 'departures' });
+    }
+    return query;
+  };
+
+  outer: for (const filterPastDepartures of [true, false]) {
+    for (const base of baseTries) {
+      for (const embed of destinationEmbedTries) {
+        const sel = `${base},${embed},${departuresPart}`;
+        const attempt = await runSelect(sel, filterPastDepartures);
+        if (!attempt.error) {
+          data = ((attempt.data || []) as unknown) as ListingTourRow[];
+          error = null;
+          break outer;
+        }
+        error = attempt.error;
+        if (!/column .* does not exist/i.test(String(attempt.error.message || ''))) {
+          if (filterPastDepartures) continue;
+          break outer;
+        }
+      }
+    }
+    if (data) break;
+  }
+
+  if (error) {
+    throw new Error(`Failed to fetch tours listing: ${error.message}`);
+  }
+
+  const rows = data || [];
+  stripListingRowOverviewBodies(rows);
+  return rows;
 }
 
 function resolveBookingMarketFromRow(row: {
@@ -2473,55 +2555,68 @@ function mapUpcomingListingDepartures(
 }
 
 export async function getToursListing(marketCountry = 'in') {
-  let data: ListingTourRow[] | null = null;
-  let error: { message: string } | null = null;
-
-  const baseTries = [
-    'id,title,slug,flow_type,visibility_status,destination,tour_includes,hero_image_url,gallery_image_urls,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
-    'id,title,slug,flow_type,destination,tour_includes,hero_image_url,gallery_image_urls,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
-    'id,title,slug,flow_type,visibility_status,destination,tour_includes,hero_image_url,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
-    'id,title,slug,flow_type,destination,tour_includes,hero_image_url,duration_days,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,discounted_price,overview',
-    'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,overview',
-    'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price',
-    'id,title,flow_type,destination,tour_includes,twin_sharing_price,triple_sharing_price,single_sharing_price,child_price,youth_price',
-  ];
-  const departuresPart =
-    'departures(id,price,twin_sharing_price,triple_sharing_price,single_sharing_price,start_date,end_date,city,departure_city:departure_cities(name))';
-  const destinationEmbedTries = [
-    'destination_ref:destinations(name,slug,image_url)',
-    'destination_ref:destinations(name,slug)',
-  ];
-
-  outer: for (const base of baseTries) {
-    for (const embed of destinationEmbedTries) {
-      const sel = `${base},${embed},${departuresPart}`;
-      const attempt = await supabase.from('tours').select(sel).order('title', { ascending: true });
-      if (!attempt.error) {
-        data = ((attempt.data || []) as unknown) as ListingTourRow[];
-        error = null;
-        break outer;
-      }
-      error = attempt.error;
-      if (!/column .* does not exist/i.test(String(attempt.error.message || ''))) {
-        break outer;
-      }
+  const profiler = createListingProfiler(marketCountry);
+  const cached = getCachedToursListing(marketCountry);
+  if (cached) {
+    const listing = cached as ReturnType<typeof buildToursListingResult>;
+    if (profiler) {
+      const responseBytes = Buffer.byteLength(JSON.stringify({ data: listing }), 'utf8');
+      profiler.mark('cache-hit');
+      profiler.finish({
+        market: marketCountry,
+        responseBytes,
+        tourCount: listing.length,
+        cacheHit: true,
+      });
     }
+    return listing;
   }
 
-  if (error) {
-    throw new Error(`Failed to fetch tours listing: ${error.message}`);
-  }
+  profiler?.mark('queries-start');
+  const [data, destinationHierarchy, sidebarBadgeMap] = await Promise.all([
+    fetchListingTourRowsFromSupabase(),
+    fetchDestinationHierarchyIndex().catch(() => new Map<number, DestinationHierarchyRow>()),
+    loadActiveSidebarBadgeMap(),
+  ]);
+  profiler?.mark('queries-end');
 
-  const destinationHierarchy = await fetchDestinationHierarchyIndex().catch(() => new Map());
+  profiler?.mark('transform-start');
+  const result = buildToursListingResult(
+    data,
+    marketCountry,
+    destinationHierarchy,
+    sidebarBadgeMap
+  );
+  profiler?.mark('transform-end');
 
-  const rows = ((data || []) as ListingTourRow[])
+  const responseBytes = Buffer.byteLength(JSON.stringify({ data: result }), 'utf8');
+  profiler?.mark('serialize-end');
+
+  setCachedToursListing(marketCountry, result);
+  profiler?.finish({
+    market: marketCountry,
+    responseBytes,
+    tourCount: result.length,
+    cacheHit: false,
+  });
+
+  return result;
+}
+
+function buildToursListingResult(
+  data: ListingTourRow[],
+  marketCountry: string,
+  destinationHierarchy: Map<number, DestinationHierarchyRow>,
+  sidebarBadgeMap: Map<number, string>
+) {
+  const rows = data
     .filter((row) => isTourListedPublicly(parseTourVisibility(row)))
     .filter((row) => {
       const meta = parseTourCmsMeta((row as { overview?: string | null }).overview);
       if (crmMetaHasCrmItinerary(meta)) return true;
       return tourVisibleForMarket(meta.market_audience, marketCountry);
     });
-  const sidebarBadgeMap = await loadActiveSidebarBadgeMap();
+
   return rows.map((row) => {
     const departures = Array.isArray(row.departures) ? row.departures : [];
     const startEndPair = departures.find((d) => d.start_date && d.end_date);

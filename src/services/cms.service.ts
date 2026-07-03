@@ -22,6 +22,12 @@ import { splitOverviewWithMeta } from '../lib/tour-overview-meta';
 import { ensureTourTaxonomyFromMeta } from './cms-taxonomy.service';
 import { normalizeTourMarketAudience, type TourMarketAudience } from '../lib/tour-market-audience';
 import { listTourDepartures, replaceTourDepartures } from './cms-departures.service';
+import { invalidateDestinationHierarchyCache, invalidateToursListingCache } from '../lib/catalog-cache';
+
+function invalidatePublicCatalogCaches(): void {
+  invalidateToursListingCache();
+  invalidateDestinationHierarchyCache();
+}
 
 /** PostgREST / Supabase wording when a column or embed is missing on this project. */
 function isSchemaColumnMismatch(errMsg: string): boolean {
@@ -1496,6 +1502,7 @@ export async function createTour(input: Partial<CmsTour>): Promise<CmsTour> {
   const db = tourInputToDb({ ...input, title, slug }, destinationName);
   const created = await insertTourWithFallback(db);
   await maybeEnsureTourTaxonomyFromOverview(db.overview);
+  invalidatePublicCatalogCaches();
   return created;
 }
 
@@ -1534,6 +1541,7 @@ export async function updateTour(id: number, input: Partial<CmsTour>): Promise<C
       if (db.overview !== undefined) {
         await maybeEnsureTourTaxonomyFromOverview(db.overview);
       }
+      invalidatePublicCatalogCaches();
       return mapTourRow(row);
     }
     lastErr = String(error?.message || '');
@@ -1544,7 +1552,10 @@ export async function updateTour(id: number, input: Partial<CmsTour>): Promise<C
 
 export async function deleteTour(id: number): Promise<void> {
   const { error } = await supabase.from('tours').delete().eq('id', id);
-  if (!error) return;
+  if (!error) {
+    invalidatePublicCatalogCaches();
+    return;
+  }
 
   const message = String(error.message || '');
   const blockedByBookings =
@@ -1562,7 +1573,10 @@ export async function deleteTour(id: number): Promise<void> {
     let archiveError = '';
     for (const patch of archiveTries) {
       const { error: updErr } = await supabase.from('tours').update(patch).eq('id', id);
-      if (!updErr) return;
+      if (!updErr) {
+        invalidatePublicCatalogCaches();
+        return;
+      }
       archiveError = String(updErr.message || '');
       if (!isSchemaColumnMismatch(archiveError)) break;
     }

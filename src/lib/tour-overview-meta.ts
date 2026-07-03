@@ -79,6 +79,15 @@ export function splitOverviewWithMeta(raw: string | null | undefined): {
   }
 }
 
+/** Drop itinerary HTML; keep only the cms-meta prefix (listing/catalog paths). */
+export function stripOverviewToMetaPrefix(raw: string | null | undefined): string {
+  const text = String(raw || '').trim();
+  if (!text) return '';
+  const match = text.match(META_B64_RE);
+  if (!match) return text;
+  return match[0].trimEnd();
+}
+
 export function joinOverviewWithMeta(body: string, meta: TourCmsMeta): string {
   const html = body.trim();
   const payload = Object.fromEntries(

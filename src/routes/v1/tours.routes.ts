@@ -34,6 +34,7 @@ toursRouter.get('/tours-listing', async (req, res, next) => {
     const raw = String(req.query.market || 'in').trim().toLowerCase();
     const market = raw.split('-')[0] || 'in';
     const tours = await getToursListing(market);
+    res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=60');
     return res.json({ data: tours });
   } catch (error) {
     return next(error);
