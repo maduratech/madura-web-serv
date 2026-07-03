@@ -10,6 +10,7 @@ import {
 } from '../lib/catalog-cache';
 import { createListingProfiler } from '../lib/listing-profile';
 import { stripOverviewToMetaPrefix } from '../lib/tour-overview-meta';
+import { assertBookableTravelDate } from '../lib/booking-advance';
 import { lookupDeparturePricingUsd } from '../lib/departure-pricing-key';
 import {
   bookingTotalWithFlightOption,
@@ -3291,6 +3292,19 @@ export async function createBooking(input: CreateBookingInput) {
         : [{ adults, children: children + infants }];
     const paying = countPayingTravellers(rooms);
     totalPrice = bookingTotalWithFlightOption(totalPrice, flightCostPerPerson, false, paying);
+  }
+
+  {
+    let travelDateCheck = String(input.travel_date || '').trim();
+    if (!travelDateCheck && departureId) {
+      const { data: depDateRow } = await supabase
+        .from('departures')
+        .select('start_date')
+        .eq('id', departureId)
+        .maybeSingle();
+      travelDateCheck = String((depDateRow as { start_date?: string } | null)?.start_date || '').trim();
+    }
+    if (travelDateCheck) assertBookableTravelDate(travelDateCheck);
   }
 
   const bookingBaseInsert: Record<string, unknown> = {
