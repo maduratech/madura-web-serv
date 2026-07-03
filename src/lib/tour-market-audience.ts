@@ -1,3 +1,5 @@
+import { normalizeTourStorefronts, tourVisibleOnStorefront } from './tour-storefront';
+
 /** Fallback when live FX is unavailable (INR per 1 USD). Keep in sync with madura-web `market.ts`. */
 export const DEFAULT_INR_PER_USD = 83;
 
@@ -20,28 +22,23 @@ export function inrPerUsd(rate?: number | null): number {
   return Number.isFinite(r) && r > 0 ? r : DEFAULT_INR_PER_USD;
 }
 
-/**
- * Round global shelf USD up to a clean price (e.g. 736.02 → 750).
- * Used for auto-suggest until staff override in CMS.
- */
-export function roundUsdShelfPrice(usd: number): number {
-  if (!Number.isFinite(usd) || usd <= 0) return 0;
-  if (usd < 50) return Math.ceil(usd);
-  if (usd < 1000) return Math.ceil(usd / 50) * 50;
-  return Math.ceil(usd / 100) * 100;
-}
-
-/** Convert INR → USD at FX, then ×1.5 (50% on top of converted USD), then shelf round-up. */
+/** Convert INR → USD at live FX (no markup). */
 export function globalUsdDisplayFromInr(inr: number, inrPerUsdRate?: number | null): number {
   if (!Number.isFinite(inr) || inr <= 0) return 0;
   const rate = inrPerUsd(inrPerUsdRate);
-  const usdBase = inr / rate;
-  const withMarkup = usdBase * 1.5;
-  return roundUsdShelfPrice(withMarkup);
+  return Math.round(inr / rate);
 }
 
 export function suggestedUsdFromInr(inr: number, inrPerUsdRate?: number | null): number {
   return globalUsdDisplayFromInr(inr, inrPerUsdRate);
+}
+
+/** Convert INR → AUD at live FX (INR per 1 AUD). */
+export function audDisplayFromInr(inr: number, inrPerAudRate?: number | null): number {
+  if (!Number.isFinite(inr) || inr <= 0) return 0;
+  const rate = Number(inrPerAudRate);
+  if (!Number.isFinite(rate) || rate <= 0) return 0;
+  return Math.round(inr / rate);
 }
 
 /**
@@ -60,7 +57,7 @@ export function resolveGlobalUsdPrice(
 export function inrFromGlobalUsdDisplay(usd: number, inrPerUsdRate?: number | null): number {
   if (!Number.isFinite(usd) || usd <= 0) return 0;
   const rate = inrPerUsd(inrPerUsdRate);
-  return Math.round((usd * rate) / 1.5);
+  return Math.round(usd * rate);
 }
 
 export function normalizeTourMarketAudience(value: unknown): TourMarketAudience {
@@ -70,13 +67,13 @@ export function normalizeTourMarketAudience(value: unknown): TourMarketAudience 
 
 export function tourVisibleForMarket(
   audience: TourMarketAudience | undefined | null,
-  marketCountry: string
+  marketCountry: string,
+  storefronts?: unknown
 ): boolean {
-  const a = normalizeTourMarketAudience(audience);
-  const isIndiaMarket = marketCountry.toLowerCase() === 'in';
-  if (a === 'both') return true;
-  if (a === 'india') return isIndiaMarket;
-  return !isIndiaMarket;
+  return tourVisibleOnStorefront(
+    normalizeTourStorefronts(storefronts, audience),
+    marketCountry
+  );
 }
 
 export function readGlobalPricingFromMeta(meta: {

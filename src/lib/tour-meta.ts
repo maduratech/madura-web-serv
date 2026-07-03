@@ -46,7 +46,11 @@ export type TourCmsMeta = {
   child_bed_age_min?: number | null;
   flight_cost_inr?: number | null;
   flights?: Array<{ cost_inr?: number | null }>;
+  /** Currency staff enter costs in (CMS Basics). Storefront converts via daily FX. */
+  cms_costing_currency?: string;
   market_audience?: TourMarketAudience;
+  /** Multi-select storefronts (india / australia / global). */
+  storefronts?: Array<'india' | 'australia' | 'global'>;
   pricing_usd?: TourMarketPricing;
   pricing_aud?: TourMarketPricing;
   /** Per-departure USD overrides (key = city|start_date). Group tours with scheduled departures. */

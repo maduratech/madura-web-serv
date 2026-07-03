@@ -620,8 +620,9 @@ async function uniqueSlug(base: string, excludeTourId?: number): Promise<string>
   return `${base}-${Date.now()}`;
 }
 
-function storefrontMarketPrefix(marketAudience: TourCmsMeta['market_audience']): 'in' | 'au' {
-  return marketAudience === 'global' ? 'au' : 'in';
+function storefrontMarketPrefix(marketAudience: TourCmsMeta['market_audience']): 'in' | 'au' | 'gb' {
+  if (marketAudience === 'global') return 'gb';
+  return 'in';
 }
 
 function buildPublicTourUrl(
@@ -634,7 +635,7 @@ function buildPublicTourUrl(
     destinations?: { slug?: string | null } | { slug?: string | null }[] | null;
   } | null,
   destSlugFallback: string | null | undefined,
-  marketPrefix: 'in' | 'au'
+  marketPrefix: 'in' | 'au' | 'gb'
 ): string {
   const base = String(baseUrl || 'https://maduratravel.com').replace(/\/$/, '');
   const embed = tourRow?.destination_ref ?? tourRow?.destinations;

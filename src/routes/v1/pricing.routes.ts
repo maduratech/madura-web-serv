@@ -2,15 +2,15 @@ import { Router } from 'express';
 import { getForexDisplayRates } from '../../lib/forex-display-rates';
 import { getFxRatesPayload } from '../../lib/fx-rates';
 import { getStorefrontFxRates } from '../../lib/storefront-fx-rates';
-import { globalUsdDisplayFromInr, suggestedUsdFromInr } from '../../lib/tour-market-audience';
+import { audDisplayFromInr, globalUsdDisplayFromInr, suggestedUsdFromInr } from '../../lib/tour-market-audience';
 
-/** CMS-only helpers (INR → USD suggest). Storefront uses saved meta from Supabase — no live convert. */
+/** CMS + storefront helpers (INR → USD/AUD at daily cached FX). */
 export const pricingRouter = Router();
 
 pricingRouter.get('/pricing/forex-rates', async (_req, res, next) => {
   try {
     const payload = await getForexDisplayRates();
-    res.setHeader('Cache-Control', 'public, max-age=1800, s-maxage=1800');
+    res.setHeader('Cache-Control', 'public, max-age=86400, s-maxage=86400');
     return res.json(payload);
   } catch (error) {
     return next(error);
@@ -31,7 +31,7 @@ pricingRouter.get('/pricing/fx', async (_req, res, next) => {
       asOf: Math.max(storefront.asOf, usdLive.asOf),
       source: `${storefront.source};usd:${usdLive.source}`,
     };
-    res.setHeader('Cache-Control', 'public, max-age=1800, s-maxage=1800');
+    res.setHeader('Cache-Control', 'public, max-age=86400, s-maxage=86400');
     return res.json(payload);
   } catch (error) {
     return next(error);
@@ -50,8 +50,29 @@ pricingRouter.get('/pricing/suggest-usd', async (req, res, next) => {
       inr,
       usd,
       inr_per_usd: fx.rates.USD,
-      formula: 'INR ÷ FX × 1.5, rounded up to nearest USD 50 (under 1000)',
+      formula: 'INR ÷ daily FX rate (no markup)',
     });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+pricingRouter.post('/pricing/convert-markets', async (req, res, next) => {
+  try {
+    const amounts = Array.isArray(req.body?.amounts) ? req.body.amounts : [];
+    const inrList = amounts
+      .map((v: unknown) => Number(v))
+      .filter((n: number) => Number.isFinite(n) && n > 0);
+    const fx = await getStorefrontFxRates();
+    const converted: Record<string, { usd: number; aud: number }> = {};
+    for (const inr of inrList) {
+      const key = String(Math.round(inr));
+      converted[key] = {
+        usd: globalUsdDisplayFromInr(inr, fx.rates.USD),
+        aud: audDisplayFromInr(inr, fx.rates.AUD),
+      };
+    }
+    return res.json({ rates: fx.rates, converted });
   } catch (error) {
     return next(error);
   }

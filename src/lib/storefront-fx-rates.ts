@@ -9,8 +9,8 @@ export type StorefrontFxPayload = {
 };
 
 let cached: { payload: StorefrontFxPayload; at: number } | null = null;
-/** Storefront + Razorpay conversion — refresh often enough for production checkout. */
-const CACHE_MS = 30 * 60 * 1000;
+/** Daily index — open.er-api.com / Frankfurter rates cached for storefront display. */
+const CACHE_MS = 24 * 60 * 60 * 1000;
 
 const STOREFRONT_CURRENCIES = ['INR', 'USD', 'AUD'] as const;
 

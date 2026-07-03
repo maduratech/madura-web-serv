@@ -13,6 +13,7 @@ export const STATIC_RATES_TO_INR: Record<string, number> = {
   CHF: 103.21,
   CNY: 13.35,
   NZD: 50.92,
+  THB: 2.45,
 };
 
 let cachedRates: { map: Record<string, number>; at: number } | null = null;

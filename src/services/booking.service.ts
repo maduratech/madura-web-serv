@@ -99,6 +99,7 @@ import {
   type TourVisibilityStatus,
 } from '../lib/tour-visibility';
 import {
+  audDisplayFromInr,
   globalUsdDisplayFromInr,
   inrPerUsd,
   resolveGlobalUsdPrice,
@@ -106,7 +107,22 @@ import {
   tourVisibleForMarket,
   type TourMarketPricing,
 } from '../lib/tour-market-audience';
-import { foreignAmountToInr, STATIC_RATES_TO_INR } from '../lib/fx-rates-to-inr';
+import { foreignAmountToInr, fetchFxRatesToInr, STATIC_RATES_TO_INR } from '../lib/fx-rates-to-inr';
+import {
+  convertCostingAmountToDisplay,
+  readCmsCostingCurrency,
+} from '../lib/cms-costing-currency';
+import {
+  marketDisplayCurrency,
+  normalizeMarketCountry,
+  type MarketCountryCode,
+  type MarketFxSnapshot,
+} from '../lib/market-country';
+
+export type StorefrontFxContext = MarketFxSnapshot & {
+  ratesToInr: Record<string, number>;
+};
+import { getStorefrontFxRates } from '../lib/storefront-fx-rates';
 import type { TourCmsMeta } from '../lib/tour-meta';
 import { resolveFormPhoneVerification, type ResolveFormPhoneVerificationResult } from './form-phone-verification.service';
 import type { VerifyPhoneOtpResult } from './phone-auth.service';
@@ -503,11 +519,54 @@ function advancePaymentDescription(
   return `Booking fee — ${label}`;
 }
 
-function marketCountryForDisplayCurrency(currency: string): string {
+function marketCountryForDisplayCurrency(currency: string): MarketCountryCode {
   const c = String(currency || 'INR').toUpperCase().trim();
   if (c === 'INR') return 'in';
   if (c === 'AUD') return 'au';
-  return 'us';
+  return 'gb';
+}
+
+function storefrontFxSnapshot(rates?: { USD?: number; AUD?: number }): MarketFxSnapshot {
+  return {
+    inrPerUsd: Number(rates?.USD) > 0 ? Number(rates?.USD) : inrPerUsd(),
+    inrPerAud:
+      Number(rates?.AUD) > 0
+        ? Number(rates?.AUD)
+        : Number(STATIC_RATES_TO_INR.AUD) > 0
+          ? Number(STATIC_RATES_TO_INR.AUD)
+          : 64.73,
+  };
+}
+
+async function loadStorefrontFxContext(): Promise<StorefrontFxContext> {
+  const [payload, toInr] = await Promise.all([getStorefrontFxRates(), fetchFxRatesToInr()]);
+  const ratesToInr: Record<string, number> = { ...STATIC_RATES_TO_INR, ...toInr };
+  if (Number(payload.rates.USD) > 0) ratesToInr.USD = Number(payload.rates.USD);
+  if (Number(payload.rates.AUD) > 0) ratesToInr.AUD = Number(payload.rates.AUD);
+  return { ...storefrontFxSnapshot(payload.rates), ratesToInr };
+}
+
+function storefrontFxContextFromPayload(
+  payload: Awaited<ReturnType<typeof getStorefrontFxRates>>,
+  ratesToInr: Record<string, number> = STATIC_RATES_TO_INR
+): StorefrontFxContext {
+  const merged = { ...STATIC_RATES_TO_INR, ...ratesToInr };
+  if (Number(payload.rates.USD) > 0) merged.USD = Number(payload.rates.USD);
+  if (Number(payload.rates.AUD) > 0) merged.AUD = Number(payload.rates.AUD);
+  return { ...storefrontFxSnapshot(payload.rates), ratesToInr: merged };
+}
+
+function convertInrShelfForMarket(
+  inr: number | null | undefined,
+  market: MarketCountryCode,
+  fx: StorefrontFxContext,
+  costingCurrency = 'INR'
+): number | null {
+  return convertCostingAmountToDisplay(inr, costingCurrency, market, fx.ratesToInr);
+}
+
+function readAudPricingFromMeta(meta: { pricing_aud?: TourMarketPricing }): TourMarketPricing | undefined {
+  return meta.pricing_aud;
 }
 
 function priceSheetFromMarketBands(
@@ -1061,9 +1120,10 @@ type DepartureApiRow = ReturnType<typeof mapDepartureApiRow>;
 function mapDepartureForMarket(
   row: DepartureRow,
   marketCountry: string,
-  departureUsdById: Record<string, import('../lib/tour-market-audience').TourMarketPricing> | undefined
+  cmsMeta: TourCmsMeta,
+  fx: StorefrontFxContext = { ...storefrontFxSnapshot(), ratesToInr: { ...STATIC_RATES_TO_INR } }
 ): DepartureApiRow & {
-  display_currency?: 'INR' | 'USD';
+  display_currency?: 'INR' | 'USD' | 'AUD';
   twin_sharing_price_inr?: number;
   triple_sharing_price_inr?: number | null;
   single_sharing_price_inr?: number | null;
@@ -1073,48 +1133,35 @@ function mapDepartureForMarket(
   youth_price_inr?: number | null;
 } {
   const base = mapDepartureApiRow(row);
-  const isGlobal = marketCountry.toLowerCase() !== 'in';
-  if (!isGlobal) return base;
+  const market = normalizeMarketCountry(marketCountry);
+  const costingCurrency = readCmsCostingCurrency(cmsMeta);
+  const displayCurrency = marketDisplayCurrency(market);
+  const convert = (amount: number | null | undefined) =>
+    convertCostingAmountToDisplay(amount, costingCurrency, market, fx.ratesToInr);
 
-  const depUsd = lookupDeparturePricingUsd(departureUsdById, {
-    id: row.id,
-    city: row.departure_city?.name || row.city,
-    start_date: row.start_date,
-  });
-  const pick = (
-    inr: number | null | undefined,
-    keys: Array<keyof import('../lib/tour-market-audience').TourMarketPricing>
-  ) => {
-    for (const key of keys) {
-      const stored = depUsd?.[key];
-      if (stored != null && Number(stored) > 0) {
-        return resolveGlobalUsdPrice(inr, Number(stored));
-      }
-    }
-    return null;
-  };
+  if (costingCurrency === displayCurrency) return base;
 
-  const twinInr = base.twin_sharing_price ?? base.price;
-  const twinUsd = pick(twinInr, ['twin_sharing_price', 'price_from']) ?? 0;
+  const twinCosting = base.twin_sharing_price ?? base.price;
+  const twinDisplay = convert(twinCosting) ?? 0;
 
   return {
     ...base,
-    display_currency: 'USD',
-    twin_sharing_price_inr: twinInr,
+    display_currency: displayCurrency,
+    twin_sharing_price_inr: twinCosting,
     triple_sharing_price_inr: base.triple_sharing_price,
     single_sharing_price_inr: base.single_sharing_price,
     quad_sharing_price_inr: base.quad_sharing_price,
     infant_price_inr: base.infant_price,
     child_price_inr: base.child_price,
     youth_price_inr: base.youth_price,
-    twin_sharing_price: twinUsd,
-    price: twinUsd,
-    triple_sharing_price: pick(base.triple_sharing_price, ['triple_sharing_price']),
-    single_sharing_price: pick(base.single_sharing_price, ['single_sharing_price']),
-    quad_sharing_price: pick(base.quad_sharing_price, ['quad_sharing_price']),
-    infant_price: pick(base.infant_price, ['infant_price']),
-    child_price: pick(base.child_price, ['child_price']),
-    youth_price: pick(base.youth_price, ['youth_price']),
+    twin_sharing_price: twinDisplay,
+    price: twinDisplay,
+    triple_sharing_price: convert(base.triple_sharing_price),
+    single_sharing_price: convert(base.single_sharing_price),
+    quad_sharing_price: convert(base.quad_sharing_price),
+    infant_price: convert(base.infant_price),
+    child_price: convert(base.child_price),
+    youth_price: convert(base.youth_price),
   };
 }
 
@@ -1654,16 +1701,16 @@ async function fetchListingTourRowsFromSupabase(): Promise<ListingTourRow[]> {
   return rows;
 }
 
-function resolveBookingMarketFromRow(row: {
+function resolveBookingMarketCountryFromRow(row: {
   display_currency?: string | null;
   payment_currency?: string | null;
-}): PaymentStorefront {
+}): MarketCountryCode {
   const currency = String(row.payment_currency || row.display_currency || '').toUpperCase().trim();
-  return resolveStorefront(currency === 'AUD' ? 'AUD' : currency || 'INR');
+  return marketCountryForDisplayCurrency(currency);
 }
 
 async function fetchBookingCountsByTourId(marketCountry = 'in'): Promise<Map<number, number>> {
-  const market = marketCountry.toLowerCase() === 'au' ? 'au' : 'in';
+  const market = normalizeMarketCountry(marketCountry);
   const counts = new Map<number, number>();
   const tries = [
     'tour_id,display_currency,payment_currency',
@@ -1674,7 +1721,7 @@ async function fetchBookingCountsByTourId(marketCountry = 'in'): Promise<Map<num
     const { data, error } = await supabase.from('bookings').select(cols);
     if (!error) {
       for (const row of data || []) {
-        if (resolveBookingMarketFromRow(row as { display_currency?: string; payment_currency?: string }) !== market) {
+        if (resolveBookingMarketCountryFromRow(row as { display_currency?: string; payment_currency?: string }) !== market) {
           continue;
         }
         const tourId = Number((row as { tour_id?: number | null }).tour_id);
@@ -1689,7 +1736,7 @@ async function fetchBookingCountsByTourId(marketCountry = 'in'): Promise<Map<num
 }
 
 export async function getDestinationShowcase(marketCountry = 'in') {
-  const market = marketCountry.toLowerCase() === 'au' ? 'au' : 'in';
+  const market = normalizeMarketCountry(marketCountry);
   const [allDestinations, toursRaw, departuresRaw, bookingCountsByTourId] = await Promise.all([
     fetchDestinationRowsForShowcase(),
     fetchShowcaseTourRows(),
@@ -1701,7 +1748,7 @@ export async function getDestinationShowcase(marketCountry = 'in') {
     if (!isTourListedPublicly(parseTourVisibility(t))) return false;
     const meta = parseTourCmsMeta(t.overview);
     if (crmMetaHasCrmItinerary(meta)) return true;
-    return tourVisibleForMarket(meta.market_audience, market);
+    return tourVisibleForMarket(meta.market_audience, market, meta.storefronts);
   });
 
   const departuresByTourId = new Map<number, NonNullable<ListingTourRow['departures']>>();
@@ -1828,7 +1875,7 @@ export type TopDestinationItem = {
 /** Top destinations for header drawer / quick links — ranked by bookings then package count (market-specific). */
 export async function getTopDestinations(marketCountry = 'in', limit = 5): Promise<TopDestinationItem[]> {
   const safeLimit = Math.min(Math.max(Number(limit) || 5, 1), 20);
-  const market = marketCountry.toLowerCase() === 'au' ? 'au' : 'in';
+  const market = normalizeMarketCountry(marketCountry);
   const [allDestinations, toursRaw, departuresRaw, bookingCountsByTourId] = await Promise.all([
     fetchDestinationRowsForShowcase(),
     fetchShowcaseTourRows(),
@@ -1840,7 +1887,7 @@ export async function getTopDestinations(marketCountry = 'in', limit = 5): Promi
     if (!isTourListedPublicly(parseTourVisibility(t))) return false;
     const meta = parseTourCmsMeta(t.overview);
     if (crmMetaHasCrmItinerary(meta)) return true;
-    return tourVisibleForMarket(meta.market_audience, market);
+    return tourVisibleForMarket(meta.market_audience, market, meta.storefronts);
   });
 
   const departuresByTourId = new Map<number, NonNullable<ListingTourRow['departures']>>();
@@ -1924,7 +1971,7 @@ export type DestinationsDirectorySection = {
 
 /** All header destinations grouped by region (India, Mainland Europe, …) for /destination index. */
 export async function getDestinationsDirectory(marketCountry = 'in'): Promise<DestinationsDirectorySection[]> {
-  const market = marketCountry.toLowerCase() === 'au' ? 'au' : 'in';
+  const market = normalizeMarketCountry(marketCountry);
   const [allDestinations, toursRaw, departuresRaw, bookingCountsByTourId] = await Promise.all([
     fetchDestinationRowsForShowcase(),
     fetchShowcaseTourRows(),
@@ -1936,7 +1983,7 @@ export async function getDestinationsDirectory(marketCountry = 'in'): Promise<De
     if (!isTourListedPublicly(parseTourVisibility(t))) return false;
     const meta = parseTourCmsMeta(t.overview);
     if (crmMetaHasCrmItinerary(meta)) return true;
-    return tourVisibleForMarket(meta.market_audience, market);
+    return tourVisibleForMarket(meta.market_audience, market, meta.storefronts);
   });
 
   const departuresByTourId = new Map<number, NonNullable<ListingTourRow['departures']>>();
@@ -2083,16 +2130,18 @@ function crmStorefrontUsesUsd(cmsMeta: TourCmsMeta): boolean {
   return false;
 }
 
-export function resolveStorefrontPricingCurrency(cmsMeta: TourCmsMeta): 'INR' | 'USD' | 'AUD' {
+export function resolveStorefrontPricingCurrency(
+  cmsMeta: TourCmsMeta,
+  marketCountry?: string
+): 'INR' | 'USD' | 'AUD' {
+  const market = normalizeMarketCountry(marketCountry);
   const src = String(cmsMeta.crm_source_currency || '').toUpperCase().trim();
   if (crmMetaHasCrmItinerary(cmsMeta)) {
     if (src === 'INR') return 'INR';
-    if (src === 'AUD') return 'AUD';
-    if (src) return 'USD';
+    if (src === 'AUD' && market === 'au') return 'AUD';
+    if (src && src !== 'INR') return marketDisplayCurrency(market);
   }
-  if (crmStorefrontUsesUsd(cmsMeta)) return 'USD';
-  if (cmsMeta.market_audience === 'global') return 'USD';
-  return 'INR';
+  return marketDisplayCurrency(market);
 }
 
 function crmDisplayBandsFromMeta(
@@ -2201,10 +2250,11 @@ function resolveMarketPriceBands(
     youth_price?: number | null;
   },
   cmsMeta: TourCmsMeta,
-  marketCountry: string
+  marketCountry: string,
+  fx: StorefrontFxContext = { ...storefrontFxSnapshot(), ratesToInr: { ...STATIC_RATES_TO_INR } }
 ) {
   const bands = childPricesFromDb(row);
-  const isGlobalMarket = marketCountry.toLowerCase() !== 'in';
+  const market = normalizeMarketCountry(marketCountry);
   const crmSrc = String(cmsMeta.crm_source_currency || '').toUpperCase().trim();
   if (crmMetaHasCrmItinerary(cmsMeta) && crmSrc === 'AUD') {
     return crmDisplayBandsFromMeta(cmsMeta, row);
@@ -2213,7 +2263,7 @@ function resolveMarketPriceBands(
 
   if (crmUsd) {
     const stored = readGlobalPricingFromMeta(cmsMeta);
-    const rate = inrPerUsd();
+    const rate = fx.inrPerUsd;
     const fromCrmDisplay = twinUsdFromCrmDisplayMeta(cmsMeta, rate);
     return {
       twin:
@@ -2244,7 +2294,7 @@ function resolveMarketPriceBands(
 
   if (crmMetaHasCrmItinerary(cmsMeta) && cmsMeta.market_audience === 'global') {
     const stored = readGlobalPricingFromMeta(cmsMeta);
-    const rate = inrPerUsd();
+    const rate = fx.inrPerUsd;
     const fromCrmDisplay = twinUsdFromCrmDisplayMeta(cmsMeta, rate);
     return {
       twin:
@@ -2260,34 +2310,40 @@ function resolveMarketPriceBands(
     };
   }
 
-  if (!isGlobalMarket) {
+  const costingCurrency = readCmsCostingCurrency(cmsMeta);
+  const hasExplicitCostingCurrency = Boolean(String(cmsMeta.cms_costing_currency || '').trim());
+  const convert = (amount: number | null | undefined) =>
+    convertCostingAmountToDisplay(amount, costingCurrency, market, fx.ratesToInr);
+
+  if (!crmMetaHasCrmItinerary(cmsMeta) && !hasExplicitCostingCurrency && market !== 'in') {
+    const stored =
+      market === 'au' ? readAudPricingFromMeta(cmsMeta) : readGlobalPricingFromMeta(cmsMeta);
+    const pickLegacy = (amount: number | null | undefined, foreign?: number | null | undefined) => {
+      const legacy = Number(foreign);
+      if (Number.isFinite(legacy) && legacy > 0) return Math.round(legacy);
+      return convert(amount);
+    };
     return {
-      twin: row.twin_sharing_price,
-      triple: row.triple_sharing_price,
-      single: row.single_sharing_price,
-      quad: row.quad_sharing_price,
-      infant: bands.infant_price,
-      child: bands.child_price,
-      youth: bands.youth_price,
-      displayUsd: false,
+      twin: pickLegacy(row.twin_sharing_price, stored?.twin_sharing_price ?? stored?.price_from),
+      triple: pickLegacy(row.triple_sharing_price, stored?.triple_sharing_price),
+      single: pickLegacy(row.single_sharing_price, stored?.single_sharing_price),
+      quad: pickLegacy(row.quad_sharing_price, stored?.quad_sharing_price),
+      infant: pickLegacy(bands.infant_price, stored?.infant_price),
+      child: pickLegacy(bands.child_price, stored?.child_price),
+      youth: pickLegacy(bands.youth_price, stored?.youth_price),
+      displayUsd: market === 'gb',
     };
   }
 
-  const stored = readGlobalPricingFromMeta(cmsMeta);
-  const pick = (_inr: number | null | undefined, usd?: number | null | undefined) => {
-    if (usd != null && usd > 0) return usd;
-    return null;
-  };
-
   return {
-    twin: pick(row.twin_sharing_price, stored?.twin_sharing_price ?? stored?.price_from),
-    triple: pick(row.triple_sharing_price, stored?.triple_sharing_price),
-    single: pick(row.single_sharing_price, stored?.single_sharing_price),
-    quad: pick(row.quad_sharing_price, stored?.quad_sharing_price),
-    infant: pick(bands.infant_price, stored?.infant_price),
-    child: pick(bands.child_price, stored?.child_price),
-    youth: pick(bands.youth_price, stored?.youth_price),
-    displayUsd: true,
+    twin: convert(row.twin_sharing_price),
+    triple: convert(row.triple_sharing_price),
+    single: convert(row.single_sharing_price),
+    quad: convert(row.quad_sharing_price),
+    infant: convert(bands.infant_price),
+    child: convert(bands.child_price),
+    youth: convert(bands.youth_price),
+    displayUsd: market === 'gb',
   };
 }
 
@@ -2310,31 +2366,25 @@ async function loadTourMetaForBooking(booking: Record<string, unknown>): Promise
   return parseTourCmsMeta((tourRow as { overview?: string | null } | null)?.overview);
 }
 
-/** Group tours: “from” price = lowest departure (matches tour detail), not tour-level USD only. */
 function lowestStartingTwinFromDepartures(
   departures: NonNullable<ListingTourRow['departures']>,
   cmsMeta: TourCmsMeta,
   marketCountry: string,
-  discountPercent: number | null
+  discountPercent: number | null,
+  fx: StorefrontFxContext = { ...storefrontFxSnapshot(), ratesToInr: { ...STATIC_RATES_TO_INR } }
 ): number | null {
-  const depUsd = cmsMeta.departure_pricing_usd || {};
-  const isGlobal = marketCountry.toLowerCase() !== 'in';
+  const market = normalizeMarketCountry(marketCountry);
+  const costingCurrency = readCmsCostingCurrency(cmsMeta);
   const candidates: number[] = [];
 
   for (const dep of departures) {
-    const twinInr = Number(dep.twin_sharing_price ?? dep.price) || 0;
-    if (twinInr <= 0) continue;
+    const twinCosting = Number(dep.twin_sharing_price ?? dep.price) || 0;
+    if (twinCosting <= 0) continue;
 
-    const stored = lookupDeparturePricingUsd(depUsd, {
-      id: dep.id,
-      city: dep.city ?? dep.departure_city?.name,
-      start_date: dep.start_date,
-    });
-
-    const twinUsd = isGlobal
-      ? resolveGlobalUsdPrice(twinInr, stored?.twin_sharing_price ?? stored?.price_from)
-      : twinInr;
-    const display = twinSharingDisplayPrice({ twin_sharing_price: twinUsd }, discountPercent);
+    const twinDisplay =
+      convertCostingAmountToDisplay(twinCosting, costingCurrency, market, fx.ratesToInr) ??
+      twinCosting;
+    const display = twinSharingDisplayPrice({ twin_sharing_price: twinDisplay }, discountPercent);
     if (display > 0) candidates.push(display);
   }
 
@@ -2470,13 +2520,16 @@ function resolveTourListingStartingTwin(
   },
   departures: NonNullable<ListingTourRow['departures']>,
   marketCountry: string,
+  fx: StorefrontFxContext = { ...storefrontFxSnapshot(), ratesToInr: { ...STATIC_RATES_TO_INR } }
 ): number | null {
+  const market = normalizeMarketCountry(marketCountry);
   const prices = departures
     .map((d) => Number(d.price))
     .filter((price) => Number.isFinite(price) && price > 0);
   const derivedTwin = prices.length ? Math.min(...prices) : null;
   const cmsMeta = parseTourCmsMeta(row.overview);
-  const marketBands = resolveMarketPriceBands(row, cmsMeta, marketCountry);
+  const costingCurrency = readCmsCostingCurrency(cmsMeta);
+  const marketBands = resolveMarketPriceBands(row, cmsMeta, market, fx);
   const discountPercent = inferDiscountPercent(
     marketBands.twin ?? row.twin_sharing_price,
     row.discounted_price,
@@ -2488,28 +2541,38 @@ function resolveTourListingStartingTwin(
       defaultCollectionTierId(cmsMeta),
       discountPercent
     );
-    if (groupFrom.perPersonInr > 0) return groupFrom.perPersonInr;
+    if (groupFrom.perPersonInr > 0) {
+      return (
+        convertCostingAmountToDisplay(
+          groupFrom.perPersonInr,
+          costingCurrency,
+          market,
+          fx.ratesToInr
+        ) ?? groupFrom.perPersonInr
+      );
+    }
   }
-  const crmUsdListing = resolveStorefrontPricingCurrency(cmsMeta) === 'USD';
+  const storefrontCurrency = resolveStorefrontPricingCurrency(cmsMeta, market);
+  const crmForeignListing = storefrontCurrency !== 'INR';
   const listingSheet: TourPriceSheet = {
-    twin_sharing_price: marketBands.twin ?? (crmUsdListing ? null : derivedTwin),
+    twin_sharing_price: marketBands.twin ?? (crmForeignListing ? null : derivedTwin),
     triple_sharing_price: marketBands.triple,
     single_sharing_price: marketBands.single,
     quad_sharing_price: marketBands.quad,
     infant_price: marketBands.infant,
     child_price: marketBands.child,
     youth_price: marketBands.youth,
-    price: marketBands.twin ?? (crmUsdListing ? null : derivedTwin),
+    price: marketBands.twin ?? (crmForeignListing ? null : derivedTwin),
   };
   const fromDepartures =
     departures.length > 0
-      ? lowestStartingTwinFromDepartures(departures, cmsMeta, marketCountry, discountPercent)
+      ? lowestStartingTwinFromDepartures(departures, cmsMeta, market, discountPercent, fx)
       : null;
-  const isGlobalListing = marketCountry.toLowerCase() !== 'in';
+  const isForeignListing = market !== 'in';
   const lowestAdult = selectLowestAdultRate(listingSheet, discountPercent, fromDepartures);
-  return crmUsdListing
+  return crmForeignListing
     ? marketBands.twin ?? lowestAdult.value ?? null
-    : isGlobalListing
+    : isForeignListing
       ? lowestAdult.value
       : lowestAdult.value || row.twin_sharing_price || derivedTwin;
 }
@@ -2556,15 +2619,16 @@ function mapUpcomingListingDepartures(
 }
 
 export async function getToursListing(marketCountry = 'in') {
-  const profiler = createListingProfiler(marketCountry);
-  const cached = getCachedToursListing(marketCountry);
+  const market = normalizeMarketCountry(marketCountry);
+  const profiler = createListingProfiler(market);
+  const cached = getCachedToursListing(market);
   if (cached) {
     const listing = cached as ReturnType<typeof buildToursListingResult>;
     if (profiler) {
       const responseBytes = Buffer.byteLength(JSON.stringify({ data: listing }), 'utf8');
       profiler.mark('cache-hit');
       profiler.finish({
-        market: marketCountry,
+        market: market,
         responseBytes,
         tourCount: listing.length,
         cacheHit: true,
@@ -2574,28 +2638,30 @@ export async function getToursListing(marketCountry = 'in') {
   }
 
   profiler?.mark('queries-start');
-  const [data, destinationHierarchy, sidebarBadgeMap] = await Promise.all([
+  const [data, destinationHierarchy, sidebarBadgeMap, fx] = await Promise.all([
     fetchListingTourRowsFromSupabase(),
     fetchDestinationHierarchyIndex().catch(() => new Map<number, DestinationHierarchyRow>()),
     loadActiveSidebarBadgeMap(),
+    loadStorefrontFxContext(),
   ]);
   profiler?.mark('queries-end');
 
   profiler?.mark('transform-start');
   const result = buildToursListingResult(
     data,
-    marketCountry,
+    market,
     destinationHierarchy,
-    sidebarBadgeMap
+    sidebarBadgeMap,
+    fx
   );
   profiler?.mark('transform-end');
 
   const responseBytes = Buffer.byteLength(JSON.stringify({ data: result }), 'utf8');
   profiler?.mark('serialize-end');
 
-  setCachedToursListing(marketCountry, result);
+  setCachedToursListing(market, result);
   profiler?.finish({
-    market: marketCountry,
+    market: market,
     responseBytes,
     tourCount: result.length,
     cacheHit: false,
@@ -2608,14 +2674,16 @@ function buildToursListingResult(
   data: ListingTourRow[],
   marketCountry: string,
   destinationHierarchy: Map<number, DestinationHierarchyRow>,
-  sidebarBadgeMap: Map<number, string>
+  sidebarBadgeMap: Map<number, string>,
+  fx: StorefrontFxContext = { ...storefrontFxSnapshot(), ratesToInr: { ...STATIC_RATES_TO_INR } }
 ) {
+  const market = normalizeMarketCountry(marketCountry);
   const rows = data
     .filter((row) => isTourListedPublicly(parseTourVisibility(row)))
     .filter((row) => {
       const meta = parseTourCmsMeta((row as { overview?: string | null }).overview);
       if (crmMetaHasCrmItinerary(meta)) return true;
-      return tourVisibleForMarket(meta.market_audience, marketCountry);
+      return tourVisibleForMarket(meta.market_audience, market, meta.storefronts);
     });
 
   return rows.map((row) => {
@@ -2634,7 +2702,7 @@ function buildToursListingResult(
     }
 
     const cmsMeta = parseTourCmsMeta((row as { overview?: string | null }).overview);
-    const marketBands = resolveMarketPriceBands(row, cmsMeta, marketCountry);
+    const marketBands = resolveMarketPriceBands(row, cmsMeta, market, fx);
     const bandPrices = childPricesFromDb(row);
     const discountPercent = inferDiscountPercent(
       marketBands.twin ?? row.twin_sharing_price,
@@ -2645,10 +2713,19 @@ function buildToursListingResult(
     const groupPaxFrom = isGroupPaxSlabPricing(cmsMeta)
       ? groupPaxStartingFrom(cmsMeta, defaultCollectionTierId(cmsMeta), discountPercent)
       : null;
+    const groupPaxDisplay =
+      groupPaxFrom && groupPaxFrom.perPersonInr > 0
+        ? convertCostingAmountToDisplay(
+            groupPaxFrom.perPersonInr,
+            readCmsCostingCurrency(cmsMeta),
+            market,
+            fx.ratesToInr
+          )
+        : null;
     const startingTwin =
-      groupPaxFrom?.perPersonInr ||
+      groupPaxDisplay ||
       departureBands?.lowestAdult?.value ||
-      resolveTourListingStartingTwin(row, departures, marketCountry);
+      resolveTourListingStartingTwin(row, departures, market, fx);
     const startingTriple = resolveListingTriplePrice(
       cmsMeta,
       startingTwin,
@@ -2816,6 +2893,7 @@ export async function getTourByKey(key: string, marketCountry = 'in'): Promise<T
 }
 
 export async function getTourById(tourId: number, marketCountry = 'in'): Promise<TourDetail | null> {
+  const market = normalizeMarketCountry(marketCountry);
   const departuresPart =
     'departures(id,price,twin_sharing_price,triple_sharing_price,single_sharing_price,start_date,end_date,city,departure_city:departure_cities(name))';
   const destinationEmbedTries = [
@@ -2892,13 +2970,16 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
 
   const derivedTwin = prices.length ? Math.min(...prices) : null;
   const cmsMeta = parseTourCmsMeta(row.overview);
-  if (!crmMetaHasCrmItinerary(cmsMeta) && !tourVisibleForMarket(cmsMeta.market_audience, marketCountry)) {
+  if (!crmMetaHasCrmItinerary(cmsMeta) && !tourVisibleForMarket(cmsMeta.market_audience, market, cmsMeta.storefronts)) {
     return null;
   }
-  const sidebarBadgeMap = await loadActiveSidebarBadgeMap();
-  const marketBands = resolveMarketPriceBands(row, cmsMeta, marketCountry);
-  const storefrontCurrency = resolveStorefrontPricingCurrency(cmsMeta);
-  const crmUsdStorefront = storefrontCurrency === 'USD';
+  const [sidebarBadgeMap, fx] = await Promise.all([
+    loadActiveSidebarBadgeMap(),
+    loadStorefrontFxContext(),
+  ]);
+  const marketBands = resolveMarketPriceBands(row, cmsMeta, market, fx);
+  const storefrontCurrency = resolveStorefrontPricingCurrency(cmsMeta, market);
+  const crmForeignStorefront = storefrontCurrency !== 'INR';
   const crmSnap = cmsMeta.crm_costing_snapshot;
   const discountPercent = inferDiscountPercent(
     marketBands.twin ?? row.twin_sharing_price,
@@ -2906,32 +2987,41 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
     cmsMeta.discount_percent
   );
   const detailSheet: TourPriceSheet = {
-    twin_sharing_price: marketBands.twin ?? (crmUsdStorefront ? null : derivedTwin),
+    twin_sharing_price: marketBands.twin ?? (crmForeignStorefront ? null : derivedTwin),
     triple_sharing_price: marketBands.triple,
     single_sharing_price: marketBands.single,
     quad_sharing_price: marketBands.quad,
     infant_price: marketBands.infant,
     child_price: marketBands.child,
     youth_price: marketBands.youth,
-    price: marketBands.twin ?? (crmUsdStorefront ? null : derivedTwin),
+    price: marketBands.twin ?? (crmForeignStorefront ? null : derivedTwin),
   };
-  const isGlobalDetail = marketCountry.toLowerCase() !== 'in';
-  const fromDepartureUsd = departures.length
-    ? lowestStartingTwinFromDepartures(departures, cmsMeta, marketCountry, discountPercent)
+  const isForeignDetail = market !== 'in';
+  const fromDepartureForeign = departures.length
+    ? lowestStartingTwinFromDepartures(departures, cmsMeta, market, discountPercent, fx)
     : null;
   const departureBands = resolveDepartureShelfBandsMin(departures, discountPercent);
   const groupPaxFrom = isGroupPaxSlabPricing(cmsMeta)
     ? groupPaxStartingFrom(cmsMeta, defaultCollectionTierId(cmsMeta), discountPercent)
     : null;
+  const groupPaxDisplay =
+    groupPaxFrom && groupPaxFrom.perPersonInr > 0
+      ? convertCostingAmountToDisplay(
+          groupPaxFrom.perPersonInr,
+          readCmsCostingCurrency(cmsMeta),
+          market,
+          fx.ratesToInr
+        )
+      : null;
   const lowestAdult = departureBands?.lowestAdult
     ? { value: departureBands.lowestAdult.value, note: departureBands.lowestAdult.note }
-    : selectLowestAdultRate(detailSheet, discountPercent, fromDepartureUsd);
+    : selectLowestAdultRate(detailSheet, discountPercent, fromDepartureForeign);
   const tourTwinDisplay = twinSharingDisplayPrice(detailSheet, discountPercent);
-  const startingTwin = groupPaxFrom?.perPersonInr
-    ? groupPaxFrom.perPersonInr
-    : crmUsdStorefront
+  const startingTwin = groupPaxDisplay
+    ? groupPaxDisplay
+    : crmForeignStorefront
       ? marketBands.twin ?? lowestAdult.value ?? null
-      : isGlobalDetail
+      : isForeignDetail
         ? lowestAdult.value
         : lowestAdult.value ||
           tourTwinDisplay ||
@@ -3029,10 +3119,12 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
 }
 
 export async function getTourDepartures(tourId: number, marketCountry = 'in') {
-  const tour = await getTourById(tourId, marketCountry);
+  const market = normalizeMarketCountry(marketCountry);
+  const tour = await getTourById(tourId, market);
   if (!tour) return null;
   const cmsMeta = parseTourCmsMeta(tour.overview);
   const departureUsdById = cmsMeta.departure_pricing_usd;
+  const fx = await loadStorefrontFxContext();
   const selectTries = [
     'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,quad_sharing_price,infant_price,child_price,youth_price,max_travellers,departure_city:departure_cities(name)',
     'id,tour_id,city,start_date,end_date,price,twin_sharing_price,triple_sharing_price,single_sharing_price,infant_price,child_price,youth_price,max_travellers,departure_city:departure_cities(name)',
@@ -3048,7 +3140,7 @@ export async function getTourDepartures(tourId: number, marketCountry = 'in') {
       .order('start_date', { ascending: true });
     if (!error) {
       return ((data || []) as unknown as DepartureRow[]).map((row) =>
-        mapDepartureForMarket(row, marketCountry, departureUsdById)
+        mapDepartureForMarket(row, market, cmsMeta, fx)
       );
     }
     lastErr = String(error.message || '');
