@@ -9,6 +9,13 @@ const DESTINATION_HIERARCHY_TTL_MS = 5 * 60_000;
 const toursListingCache = new Map<string, CacheEntry<unknown[]>>();
 let destinationHierarchyCache: CacheEntry<Map<number, DestinationHierarchyRow>> | null = null;
 
+/**
+ * Stores the last successful non-empty result per market.  When Supabase goes
+ * stale or PostgREST briefly returns 0 rows, we fall back to this instead of
+ * serving an empty listing that breaks the entire website.
+ */
+const lastKnownGoodListing = new Map<string, unknown[]>();
+
 function normalizeListingMarketKey(marketCountry: string): string {
   const raw = String(marketCountry || 'in').trim().toLowerCase();
   return raw.split('-')[0] || 'in';
@@ -28,6 +35,15 @@ export function getCachedToursListing<T>(marketCountry: string): T[] | null {
 export function setCachedToursListing(marketCountry: string, value: unknown[]): void {
   const key = normalizeListingMarketKey(marketCountry);
   toursListingCache.set(key, { value, at: Date.now() });
+  if (value.length > 0) {
+    lastKnownGoodListing.set(key, value);
+  }
+}
+
+export function getLastKnownGoodListing<T>(marketCountry: string): T[] | null {
+  const key = normalizeListingMarketKey(marketCountry);
+  const stale = lastKnownGoodListing.get(key);
+  return stale && stale.length > 0 ? (stale as T[]) : null;
 }
 
 export function getCachedDestinationHierarchy(): Map<number, DestinationHierarchyRow> | null {

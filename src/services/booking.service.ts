@@ -5,6 +5,7 @@ import { loadActiveSidebarBadgeMap, resolvePromoBadgeLabel } from '../lib/sideba
 import {
   getCachedDestinationHierarchy,
   getCachedToursListing,
+  getLastKnownGoodListing,
   setCachedDestinationHierarchy,
   setCachedToursListing,
 } from '../lib/catalog-cache';
@@ -2659,14 +2660,42 @@ export async function getToursListing(marketCountry = 'in') {
     return listing;
   }
 
-  profiler?.mark('queries-start');
-  const [data, destinationHierarchy, sidebarBadgeMap, fx] = await Promise.all([
-    fetchListingTourRowsFromSupabase(),
-    fetchDestinationHierarchyIndex().catch(() => new Map<number, DestinationHierarchyRow>()),
-    loadActiveSidebarBadgeMap(),
-    loadStorefrontFxContext(),
-  ]);
-  profiler?.mark('queries-end');
+  let data: ListingTourRow[];
+  let destinationHierarchy: Map<number, DestinationHierarchyRow>;
+  let sidebarBadgeMap: Map<number, string>;
+  let fx: StorefrontFxContext;
+
+  try {
+    profiler?.mark('queries-start');
+    [data, destinationHierarchy, sidebarBadgeMap, fx] = await Promise.all([
+      fetchListingTourRowsFromSupabase(),
+      fetchDestinationHierarchyIndex().catch(() => new Map<number, DestinationHierarchyRow>()),
+      loadActiveSidebarBadgeMap(),
+      loadStorefrontFxContext(),
+    ]);
+    profiler?.mark('queries-end');
+  } catch (err) {
+    const stale = getLastKnownGoodListing(market);
+    if (stale) {
+      console.error(
+        `[tours-listing] Supabase fetch failed, serving last-known-good data (${stale.length} tours):`,
+        err instanceof Error ? err.message : err
+      );
+      return stale as ReturnType<typeof buildToursListingResult>;
+    }
+    throw err;
+  }
+
+  if (data.length === 0) {
+    const stale = getLastKnownGoodListing(market);
+    if (stale && stale.length > 0) {
+      console.error(
+        `[tours-listing] Supabase returned 0 tours but last-known-good has ${stale.length}. ` +
+          'Likely a stale connection or PostgREST issue — serving cached data.'
+      );
+      return stale as ReturnType<typeof buildToursListingResult>;
+    }
+  }
 
   profiler?.mark('transform-start');
   const result = buildToursListingResult(

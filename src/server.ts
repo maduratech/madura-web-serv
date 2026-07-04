@@ -3,6 +3,23 @@ import { app as expressApp } from './app';
 import { probeCatalogTourCount } from './lib/supabase';
 import { startRuntimeMemoryMaintenance } from './lib/runtime-memory';
 
+/* ------------------------------------------------------------------ */
+/*  Global crash handlers — without these, an unhandled rejection or  */
+/*  uncaught exception silently kills the process.  PM2 restarts it,  */
+/*  but we lose all context about what actually went wrong.           */
+/* ------------------------------------------------------------------ */
+
+process.on('uncaughtException', (err, origin) => {
+  console.error(`[FATAL] uncaughtException (${origin}):`, err);
+  // Give the log line a moment to flush, then exit so PM2 restarts cleanly.
+  setTimeout(() => process.exit(1), 500);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[FATAL] unhandledRejection at:', promise, 'reason:', reason);
+  setTimeout(() => process.exit(1), 500);
+});
+
 startRuntimeMemoryMaintenance();
 
 const port = parseInt(process.env.PORT || '4000', 10);
