@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { env } from '../config/env';
 import { catalogKeyMisconfigured, classifySupabaseKey } from './supabase-key';
 
@@ -28,8 +28,34 @@ if (!env.SUPABASE_URL || !supabaseKey) {
 
 export { configuredKeyKind };
 
-export const supabase = createClient(env.SUPABASE_URL, supabaseKey, {
-  auth: { persistSession: false },
+function createSupabaseClient(): SupabaseClient {
+  return createClient(env.SUPABASE_URL, supabaseKey || '', {
+    auth: { persistSession: false },
+  });
+}
+
+let supabaseClient = createSupabaseClient();
+
+/**
+ * Replace the singleton Supabase client with a fresh HTTP connection.
+ * All existing `import { supabase }` call sites keep working via the proxy below.
+ */
+export function refreshSupabaseClient(): SupabaseClient {
+  supabaseClient = createSupabaseClient();
+  // eslint-disable-next-line no-console
+  console.warn('[supabase] client refreshed (new HTTP connection)');
+  return supabaseClient;
+}
+
+/** Transparent proxy so `supabase.from(...)` always uses the current client instance. */
+export const supabase: SupabaseClient = new Proxy({} as SupabaseClient, {
+  get(_target, prop, receiver) {
+    const value = Reflect.get(supabaseClient as object, prop, receiver);
+    if (typeof value === 'function') {
+      return (value as (...args: unknown[]) => unknown).bind(supabaseClient);
+    }
+    return value;
+  },
 });
 
 /** Quick probe: returns tour row count or -1 on failure. Used at startup for catalog health. */
@@ -40,4 +66,3 @@ export async function probeCatalogTourCount(): Promise<number> {
   if (error) return -1;
   return count ?? 0;
 }
-

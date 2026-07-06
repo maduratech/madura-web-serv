@@ -1,6 +1,10 @@
 import 'dotenv/config';
 import { app as expressApp } from './app';
 import { probeCatalogTourCount } from './lib/supabase';
+import {
+  recordCatalogProbeSuccess,
+  startSupabaseRecoveryMaintenance,
+} from './lib/supabase-recovery';
 import { startRuntimeMemoryMaintenance } from './lib/runtime-memory';
 
 /* ------------------------------------------------------------------ */
@@ -21,6 +25,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 startRuntimeMemoryMaintenance();
+startSupabaseRecoveryMaintenance();
 
 const port = parseInt(process.env.PORT || '4000', 10);
 
@@ -33,6 +38,7 @@ expressApp.listen(port, () => {
           'Without tours, packages, planner destinations, and listing pages will be empty or stale.'
       );
     } else if (count > 0) {
+      recordCatalogProbeSuccess(count);
       console.log(`[catalog-health] tours indexed: ${count}`);
     }
   });

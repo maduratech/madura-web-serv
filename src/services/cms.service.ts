@@ -23,6 +23,7 @@ import { ensureTourTaxonomyFromMeta } from './cms-taxonomy.service';
 import { normalizeTourMarketAudience, type TourMarketAudience } from '../lib/tour-market-audience';
 import { listTourDepartures, replaceTourDepartures } from './cms-departures.service';
 import { invalidateDestinationHierarchyCache, invalidateToursListingCache } from '../lib/catalog-cache';
+import { requestSupabaseRecoveryOnCatalogStale } from '../lib/supabase-recovery';
 
 function invalidatePublicCatalogCaches(): void {
   invalidateToursListingCache();
@@ -1443,6 +1444,7 @@ async function selectTourById(id: number): Promise<TourRaw | null> {
   const quick = await selectTourByIdQuick(id);
   if (quick) return quick;
   if (lastErr.includes('0 rows') || lastErr.includes('JSON object requested')) return null;
+  requestSupabaseRecoveryOnCatalogStale(`cms tour ${id} fetch failed`);
   throw new Error(`Failed to fetch tour: ${lastErr}`);
 }
 

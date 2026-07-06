@@ -6,6 +6,7 @@ import {
   classifySupabaseKey,
   supabaseProjectRef,
 } from '../../lib/supabase-key';
+import { requestSupabaseRecoveryOnCatalogStale } from '../../lib/supabase-recovery';
 
 const healthRouter = Router();
 
@@ -66,6 +67,10 @@ healthRouter.get('/health', async (_req, res) => {
     }
   } catch (err) {
     supabase_error = err instanceof Error ? err.message : 'supabase check failed';
+  }
+
+  if (!supabase_ok && using_service_role && !key_misconfiguration) {
+    requestSupabaseRecoveryOnCatalogStale('health check failed');
   }
 
   try {

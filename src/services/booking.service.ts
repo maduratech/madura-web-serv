@@ -9,6 +9,7 @@ import {
   setCachedDestinationHierarchy,
   setCachedToursListing,
 } from '../lib/catalog-cache';
+import { requestSupabaseRecoveryOnCatalogStale } from '../lib/supabase-recovery';
 import { createListingProfiler } from '../lib/listing-profile';
 import { stripOverviewToMetaPrefix } from '../lib/tour-overview-meta';
 import { assertBookableTravelDate } from '../lib/booking-advance';
@@ -2675,6 +2676,7 @@ export async function getToursListing(marketCountry = 'in') {
     ]);
     profiler?.mark('queries-end');
   } catch (err) {
+    requestSupabaseRecoveryOnCatalogStale('tours-listing fetch error');
     const stale = getLastKnownGoodListing(market);
     if (stale) {
       console.error(
@@ -2687,6 +2689,7 @@ export async function getToursListing(marketCountry = 'in') {
   }
 
   if (data.length === 0) {
+    requestSupabaseRecoveryOnCatalogStale('tours-listing returned 0 rows');
     const stale = getLastKnownGoodListing(market);
     if (stale && stale.length > 0) {
       console.error(

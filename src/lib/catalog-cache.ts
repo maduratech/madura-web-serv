@@ -33,11 +33,13 @@ export function getCachedToursListing<T>(marketCountry: string): T[] | null {
 }
 
 export function setCachedToursListing(marketCountry: string, value: unknown[]): void {
+  if (value.length === 0) {
+    // Never cache an empty listing — keeps retrying Supabase and allows lastKnownGood fallback.
+    return;
+  }
   const key = normalizeListingMarketKey(marketCountry);
   toursListingCache.set(key, { value, at: Date.now() });
-  if (value.length > 0) {
-    lastKnownGoodListing.set(key, value);
-  }
+  lastKnownGoodListing.set(key, value);
 }
 
 export function getLastKnownGoodListing<T>(marketCountry: string): T[] | null {
