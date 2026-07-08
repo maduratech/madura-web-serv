@@ -1,11 +1,15 @@
 import 'dotenv/config';
+import { initSentry, captureServerException } from './lib/sentry';
 import { app as expressApp } from './app';
+import { env } from './config/env';
 import { probeCatalogTourCount } from './lib/supabase';
 import {
   recordCatalogProbeSuccess,
   startSupabaseRecoveryMaintenance,
 } from './lib/supabase-recovery';
 import { startRuntimeMemoryMaintenance } from './lib/runtime-memory';
+
+initSentry();
 
 /* ------------------------------------------------------------------ */
 /*  Global crash handlers — without these, an unhandled rejection or  */
@@ -15,17 +19,25 @@ import { startRuntimeMemoryMaintenance } from './lib/runtime-memory';
 
 process.on('uncaughtException', (err, origin) => {
   console.error(`[FATAL] uncaughtException (${origin}):`, err);
-  // Give the log line a moment to flush, then exit so PM2 restarts cleanly.
+  captureServerException(err, { origin: String(origin) });
   setTimeout(() => process.exit(1), 500);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL] unhandledRejection at:', promise, 'reason:', reason);
+  captureServerException(reason, { kind: 'unhandledRejection' });
   setTimeout(() => process.exit(1), 500);
 });
 
 startRuntimeMemoryMaintenance();
 startSupabaseRecoveryMaintenance();
+
+if (process.env.NODE_ENV === 'production' && !String(env.CORS_ORIGINS || '').trim()) {
+  console.error(
+    '[security] CORS_ORIGINS is empty in production. Mutating API routes may accept unintended browser origins. ' +
+      'Set CORS_ORIGINS to your website origins (comma-separated).'
+  );
+}
 
 const port = parseInt(process.env.PORT || '4000', 10);
 

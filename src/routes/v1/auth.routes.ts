@@ -1,5 +1,8 @@
 import { Router } from 'express';
 import { phoneOtpSendRateLimit, phoneOtpVerifyRateLimit } from '../../middlewares/rate-limit.middleware';
+import { requireTurnstile } from '../../middlewares/turnstile.middleware';
+import { validateBody } from '../../validation/validate-body.middleware';
+import { authPhoneBodySchema } from '../../validation/schemas';
 import { sendPhoneOtp, verifyPhoneOtp } from '../../services/phone-auth.service';
 
 const authRouter = Router();
@@ -12,7 +15,12 @@ function clientIp(req: { headers: Record<string, unknown>; ip?: string }): strin
 }
 
 /** POST /api/v1/auth/mobile/send-code — send 6-digit mobile verification code (India +91). */
-authRouter.post('/auth/mobile/send-code', phoneOtpSendRateLimit, async (req, res, next) => {
+authRouter.post(
+  '/auth/mobile/send-code',
+  phoneOtpSendRateLimit,
+  requireTurnstile,
+  validateBody(authPhoneBodySchema),
+  async (req, res, next) => {
   try {
     const phone = String(req.body?.phone || '').trim();
     if (!phone) {

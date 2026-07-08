@@ -7,6 +7,8 @@ import {
 } from '../../middlewares/rate-limit.middleware';
 import { validateCustomerDocumentUpload } from '../../lib/document-upload.validation';
 import { CUSTOMER_DOCUMENT_UPLOAD_ENABLED } from '../../lib/customer-document-upload';
+import { validateBody } from '../../validation/validate-body.middleware';
+import { profilePatchBodySchema } from '../../validation/schemas';
 import {
   sendProfilePhoneOtp,
   verifyProfilePhoneOtp,
@@ -194,7 +196,7 @@ accountRouter.delete('/account/documents/:docType/:docId', requireAuth, async (r
 });
 
 /** POST /api/v1/account/profile — update local profile and push the change to CRM. */
-accountRouter.post('/account/profile', requireAuth, async (req, res, next) => {
+accountRouter.post('/account/profile', requireAuth, validateBody(profilePatchBodySchema), async (req, res, next) => {
   try {
     const patch = req.body || {};
     const pickStr = (k: string) =>

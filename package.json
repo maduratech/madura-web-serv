@@ -15,16 +15,20 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@sentry/node": "^10.63.0",
     "@supabase/supabase-js": "^2.49.8",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "razorpay": "^2.9.6"
+    "razorpay": "^2.9.6",
+    "sanitize-html": "^2.17.5",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^20",
+    "@types/sanitize-html": "^2.16.1",
     "ts-node": "^10.9.2",
     "typescript": "5.9.3"
   }

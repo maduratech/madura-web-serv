@@ -34,4 +34,10 @@ export const env = {
   PHONE_OTP_PEPPER: process.env.PHONE_OTP_PEPPER || '',
   /** Comma-separated emails auto-promoted to CMS super_admin on first /cms/me (server-only). */
   CMS_BOOTSTRAP_SUPER_ADMIN_EMAILS: process.env.CMS_BOOTSTRAP_SUPER_ADMIN_EMAILS || '',
+  /** Cloudflare Turnstile secret — when unset, verification is skipped (local dev). */
+  TURNSTILE_SECRET_KEY: process.env.TURNSTILE_SECRET_KEY || '',
+  /** Optional bearer/header secret for detailed /health diagnostics. */
+  HEALTH_CHECK_SECRET: process.env.HEALTH_CHECK_SECRET || '',
+  /** Sentry DSN for error monitoring (optional). */
+  SENTRY_DSN: process.env.SENTRY_DSN || '',
 };

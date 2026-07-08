@@ -4,6 +4,10 @@ import { apiRouter } from './routes';
 import { errorMiddleware } from './middlewares/error.middleware';
 import { loggerMiddleware } from './middlewares/logger.middleware';
 import { securityHeadersMiddleware } from './middlewares/security-headers.middleware';
+import {
+  globalApiRateLimit,
+  publicCatalogRateLimit,
+} from './middlewares/rate-limit.middleware';
 import { env } from './config/env';
 
 const parseAllowedOrigins = (): string[] | null => {
@@ -108,7 +112,12 @@ app.set('trust proxy', 1);
 app.use(securityHeadersMiddleware);
 
 app.use((req, res, next) => {
-  if (isPublicGet(req)) return publicCors(req, res, next);
+  if (req.path === '/api/v1/health') return next();
+  return globalApiRateLimit(req, res, next);
+});
+
+app.use((req, res, next) => {
+  if (isPublicGet(req)) return publicCatalogRateLimit(req, res, () => publicCors(req, res, next));
   return strictCors(req, res, next);
 });
 app.use(express.json({ limit: '12mb' }));

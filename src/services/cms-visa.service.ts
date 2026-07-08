@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { sanitizeCmsHtml } from '../lib/html-sanitize';
 import { computeVisaListingMetaFromVisaTypes, inferFilterVisaTypeFromName } from './visa-listing-meta';
 
 export type VisaFilterVisaType = 'visa_free' | 'visa_on_arrival' | 'e_visa' | 'sticker';
@@ -578,7 +579,7 @@ function visaInputToDb(input: Partial<CmsVisaPage>, existing?: CmsVisaPage): Rec
         : null;
   }
   if (input.validity_label !== undefined) row.validity_label = input.validity_label?.trim() || null;
-  if (input.overview_html !== undefined) row.overview_html = input.overview_html || null;
+  if (input.overview_html !== undefined) row.overview_html = sanitizeCmsHtml(input.overview_html);
   if (input.visa_type_label !== undefined) row.visa_type_label = input.visa_type_label?.trim() || null;
   if (input.validity_period !== undefined) row.validity_period = input.validity_period?.trim() || null;
   if (input.length_of_stay !== undefined) row.length_of_stay = input.length_of_stay?.trim() || null;
@@ -644,7 +645,7 @@ export async function createVisaPage(input: Partial<CmsVisaPage>): Promise<CmsVi
     delivery_promise_text: input.delivery_promise_text?.trim() || null,
     starting_price_inr: listingMeta.starting_price_inr,
     validity_label: listingMeta.validity_label,
-    overview_html: input.overview_html || null,
+    overview_html: sanitizeCmsHtml(input.overview_html),
     visa_type_label: listingMeta.visa_type_label,
     validity_period: null,
     length_of_stay: null,

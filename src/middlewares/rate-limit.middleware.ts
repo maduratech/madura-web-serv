@@ -112,3 +112,27 @@ export const phoneOtpVerifyRateLimit = createRateLimit({
   max: 20,
   message: 'Too many verification attempts. Please wait a few minutes and try again.',
 });
+
+/** Public enquiry / website lead — 12 per 10 minutes per IP or user. */
+export const enquiryLeadRateLimit = createRateLimit({
+  keyPrefix: 'enquiry-lead',
+  windowMs: 10 * 60 * 1000,
+  max: 12,
+  message: 'Too many enquiries. Please wait a few minutes and try again.',
+});
+
+/** Global API cap — 300 requests per minute per IP (abuse / accidental load tests). */
+export const globalApiRateLimit = createRateLimit({
+  keyPrefix: 'global-api',
+  windowMs: 60 * 1000,
+  max: 300,
+  message: 'Too many requests. Please slow down and try again.',
+});
+
+/** Public catalog GET endpoints — 180 per minute per IP. */
+export const publicCatalogRateLimit = createRateLimit({
+  keyPrefix: 'public-catalog',
+  windowMs: 60 * 1000,
+  max: 180,
+  message: 'Too many requests. Please slow down and try again.',
+});

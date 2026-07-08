@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import { supabase } from '../../lib/supabase';
 import { env } from '../../config/env';
 import {
@@ -10,7 +10,17 @@ import { requestSupabaseRecoveryOnCatalogStale } from '../../lib/supabase-recove
 
 const healthRouter = Router();
 
-healthRouter.get('/health', async (_req, res) => {
+function healthSecretAuthorized(req: Request): boolean {
+  const secret = String(env.HEALTH_CHECK_SECRET || '').trim();
+  if (!secret) return false;
+  const header = String(req.headers['x-health-secret'] || '').trim();
+  const bearer = String(req.headers.authorization || '')
+    .replace(/^Bearer\s+/i, '')
+    .trim();
+  return header === secret || bearer === secret;
+}
+
+healthRouter.get('/health', async (req, res) => {
   let supabase_ok = false;
   let crm_ok = false;
   let supabase_error: string | null = null;
@@ -95,11 +105,22 @@ healthRouter.get('/health', async (_req, res) => {
     crm_error = err instanceof Error ? err.message : 'crm check failed';
   }
 
-  return res.status(200).json({
+  const overall_ok = supabase_ok && crm_ok;
+
+  if (!healthSecretAuthorized(req)) {
+    return res.status(overall_ok ? 200 : 503).json({
+      ok: overall_ok,
+      status: overall_ok ? 'healthy' : 'degraded',
+    });
+  }
+
+  return res.status(overall_ok ? 200 : 503).json({
+    ok: overall_ok,
+    status: overall_ok ? 'healthy' : 'degraded',
     summary: {
       supabase_ok,
       crm_ok,
-      overall_ok: supabase_ok && crm_ok,
+      overall_ok,
       using_service_role,
       supabase_key_kind,
       supabase_project_ref,
@@ -125,4 +146,3 @@ healthRouter.get('/health', async (_req, res) => {
 });
 
 export { healthRouter };
-

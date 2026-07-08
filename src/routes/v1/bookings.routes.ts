@@ -14,7 +14,14 @@ import {
 } from '../../services/booking.service';
 import { requireBookingAccess } from '../../middlewares/booking-access.middleware';
 import { attachAuthIfPresent, requireAuth } from '../../middlewares/auth.middleware';
-import { bookingCreateRateLimit, paymentRateLimit } from '../../middlewares/rate-limit.middleware';
+import {
+  bookingCreateRateLimit,
+  enquiryLeadRateLimit,
+  paymentRateLimit,
+} from '../../middlewares/rate-limit.middleware';
+import { requireTurnstile } from '../../middlewares/turnstile.middleware';
+import { validateBody } from '../../validation/validate-body.middleware';
+import { enquiryBodySchema, websiteLeadBodySchema } from '../../validation/schemas';
 
 const bookingsRouter = Router();
 
@@ -171,7 +178,13 @@ bookingsRouter.post('/payments/razorpay/webhook', async (req, res, next) => {
   }
 });
 
-bookingsRouter.post('/enquiries', attachAuthIfPresent, async (req, res, next) => {
+bookingsRouter.post(
+  '/enquiries',
+  attachAuthIfPresent,
+  enquiryLeadRateLimit,
+  requireTurnstile,
+  validateBody(enquiryBodySchema),
+  async (req, res, next) => {
   try {
     const result = await createEnquiry({
       ...req.body,
@@ -189,7 +202,13 @@ bookingsRouter.post('/enquiries', attachAuthIfPresent, async (req, res, next) =>
   }
 });
 
-bookingsRouter.post('/leads/website', attachAuthIfPresent, async (req, res, next) => {
+bookingsRouter.post(
+  '/leads/website',
+  attachAuthIfPresent,
+  enquiryLeadRateLimit,
+  requireTurnstile,
+  validateBody(websiteLeadBodySchema),
+  async (req, res, next) => {
   try {
     const result = await createWebsiteLead({
       ...req.body,

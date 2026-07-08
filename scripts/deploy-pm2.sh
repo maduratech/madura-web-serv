@@ -4,6 +4,37 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+PORT="${PORT:-4000}"
+HEALTH_URL="http://127.0.0.1:${PORT}/api/v1/health"
+HEALTH_SECRET="${HEALTH_CHECK_SECRET:-}"
+
+health_ok() {
+  local body
+  if [[ -n "$HEALTH_SECRET" ]]; then
+    body="$(curl -sf -H "x-health-secret: ${HEALTH_SECRET}" "$HEALTH_URL" || true)"
+  else
+    body="$(curl -sf "$HEALTH_URL" || true)"
+  fi
+  [[ -n "$body" ]] && echo "$body" | grep -q '"ok":true'
+}
+
+rollback_dist() {
+  if [[ -d dist.prev ]]; then
+    echo "==> Rolling back to previous dist/..."
+    rm -rf dist
+    mv dist.prev dist
+    if pm2 describe madura-web-serv >/dev/null 2>&1; then
+      pm2 reload ecosystem.config.cjs --update-env
+    fi
+  fi
+}
+
+if [[ -d dist ]]; then
+  echo "==> Backing up current dist/ to dist.prev..."
+  rm -rf dist.prev
+  cp -a dist dist.prev
+fi
+
 echo "==> Installing dependencies (including TypeScript for build)..."
 npm ci
 
@@ -12,6 +43,7 @@ npm run build
 
 if [[ ! -f dist/server.js ]]; then
   echo "ERROR: dist/server.js was not created. Build failed." >&2
+  rollback_dist
   exit 1
 fi
 
@@ -32,6 +64,14 @@ pm2 save
 
 echo "==> Health check..."
 sleep 2
-curl -sf "http://127.0.0.1:${PORT:-4000}/api/v1/health" | head -c 500 || true
-echo ""
-echo "Done. Verify: pm2 describe madura-web-serv  (script should be dist/server.js)"
+if health_ok; then
+  rm -rf dist.prev
+  echo "Deploy healthy."
+  curl -sf "${HEALTH_URL}" | head -c 200 || true
+  echo ""
+  echo "Done. Verify: pm2 describe madura-web-serv  (script should be dist/server.js)"
+else
+  echo "ERROR: Health check failed after deploy." >&2
+  rollback_dist
+  exit 1
+fi

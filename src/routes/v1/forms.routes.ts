@@ -1,5 +1,8 @@
 import { Router } from 'express';
 import { phoneOtpSendRateLimit } from '../../middlewares/rate-limit.middleware';
+import { requireTurnstile } from '../../middlewares/turnstile.middleware';
+import { validateBody } from '../../validation/validate-body.middleware';
+import { authPhoneBodySchema } from '../../validation/schemas';
 import { sendFormSubmitPhoneOtp } from '../../services/phone-auth.service';
 
 const formsRouter = Router();
@@ -12,7 +15,12 @@ function clientIp(req: { headers: Record<string, unknown>; ip?: string }): strin
 }
 
 /** POST /api/v1/forms/mobile/send-code — send OTP for website enquiry forms (India +91, IN market). */
-formsRouter.post('/forms/mobile/send-code', phoneOtpSendRateLimit, async (req, res, next) => {
+formsRouter.post(
+  '/forms/mobile/send-code',
+  phoneOtpSendRateLimit,
+  requireTurnstile,
+  validateBody(authPhoneBodySchema),
+  async (req, res, next) => {
   try {
     const phone = String(req.body?.phone || '').trim();
     if (!phone) {

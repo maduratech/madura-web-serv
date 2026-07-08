@@ -1,3 +1,4 @@
+import { sanitizeCmsHtml } from '../lib/html-sanitize';
 import { supabase } from '../lib/supabase';
 import {
   blogPublicSegment,
@@ -252,7 +253,7 @@ function blogInputToDb(input: Partial<CmsBlogPost>): Record<string, unknown> {
   }
   if (input.author_name !== undefined) row.author_name = input.author_name?.trim() || null;
   if (input.hero_image_url !== undefined) row.hero_image_url = input.hero_image_url?.trim() || null;
-  if (input.body_html !== undefined) row.body_html = input.body_html || null;
+  if (input.body_html !== undefined) row.body_html = sanitizeCmsHtml(input.body_html);
   if (input.related_tour_ids !== undefined) {
     row.related_tour_ids = normalizeRelatedTourIds(input.related_tour_ids);
   }
@@ -280,7 +281,7 @@ export async function createBlogPost(input: Partial<CmsBlogPost>): Promise<CmsBl
     content_type: contentType,
     author_name: input.author_name?.trim() || null,
     hero_image_url: input.hero_image_url?.trim() || null,
-    body_html: input.body_html || null,
+    body_html: sanitizeCmsHtml(input.body_html),
     related_tour_ids: normalizeRelatedTourIds(input.related_tour_ids),
     is_published: isPublished,
     published_at: isPublished ? now : null,
