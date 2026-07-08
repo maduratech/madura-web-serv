@@ -42,12 +42,20 @@ const SAFE_CLIENT_PATTERNS = [
   /^destination is required/i,
   /^file name and content are required/i,
   /^customer uploads are temporarily unavailable/i,
+  /^this tour requires at least \d+ adults/i,
+  /^please select a collection tier/i,
+  /^no group rate applies for this party size/i,
+  /^traveller #\d+ is missing required fields/i,
+  /^travellers count must match/i,
+  /^tour not found/i,
+  /^invalid departure selected/i,
+  /^online booking is available when your travel date/i,
 ];
 
 function isSafeClientMessage(message: string): boolean {
   const trimmed = String(message || '').trim();
   if (!trimmed) return false;
-  if (trimmed.length > 160) return false;
+  if (trimmed.length > 220) return false;
   return SAFE_CLIENT_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 

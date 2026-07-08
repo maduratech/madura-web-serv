@@ -41,6 +41,7 @@ import {
 import { collectionTierLabel } from '../lib/tour-collection-tiers';
 import { enqueueCrmBookingSync } from '../jobs/crm.job';
 import { env } from '../config/env';
+import { HttpError } from '../lib/http-error';
 import {
   chargeAmountMinorUnits,
   chargeCurrencyForStorefront,
@@ -3193,7 +3194,7 @@ export async function getTourDepartures(tourId: number, marketCountry = 'in') {
 
 function validateCreateBookingPayload(input: CreateBookingInput): void {
   if (!input.tour_id) {
-    throw new Error('tour_id is required.');
+    throw new HttpError(400, 'tour_id is required.');
   }
 
   const adults = Number(input.adults || 0);
@@ -3202,11 +3203,11 @@ function validateCreateBookingPayload(input: CreateBookingInput): void {
   const totalTravellers = adults + children + infants;
 
   if (totalTravellers <= 0) {
-    throw new Error('At least one traveller is required.');
+    throw new HttpError(400, 'At least one traveller is required.');
   }
 
   if (!Array.isArray(input.travellers) || input.travellers.length !== totalTravellers) {
-    throw new Error('travellers count must match adults + children + infants.');
+    throw new HttpError(400, 'travellers count must match adults + children + infants.');
   }
 
   for (const [idx, traveller] of input.travellers.entries()) {
@@ -3218,12 +3219,12 @@ function validateCreateBookingPayload(input: CreateBookingInput): void {
       !traveller.email;
     if (idx === 0) {
       if (missingCore) {
-        throw new Error(`Traveller #${idx + 1} is missing required fields.`);
+        throw new HttpError(400, `Traveller #${idx + 1} is missing required fields.`);
       }
       continue;
     }
     if (missingCore) {
-      throw new Error(`Traveller #${idx + 1} is missing required fields.`);
+      throw new HttpError(400, `Traveller #${idx + 1} is missing required fields.`);
     }
   }
 }
@@ -3247,7 +3248,7 @@ export async function createBooking(input: CreateBookingInput) {
     .maybeSingle();
 
   if (!tourRow) {
-    throw new Error('Tour not found.');
+    throw new HttpError(404, 'Tour not found.');
   }
 
   const cmsMeta = parseTourCmsMeta((tourRow as { overview?: string | null } | null)?.overview);
@@ -3319,7 +3320,7 @@ export async function createBooking(input: CreateBookingInput) {
         .eq('id', departureId)
         .single();
       if (fallback.error || !fallback.data) {
-        throw new Error('Invalid departure selected for this tour.');
+        throw new HttpError(400, 'Invalid departure selected for this tour.');
       }
       departure = fallback.data as unknown as BookingDepartureRow;
       // eslint-disable-next-line no-console
@@ -3330,7 +3331,7 @@ export async function createBooking(input: CreateBookingInput) {
       });
     }
     if (!departure) {
-      throw new Error('Invalid departure selected for this tour.');
+      throw new HttpError(400, 'Invalid departure selected for this tour.');
     }
     effectiveTourId = Number(departure.tour_id || input.tour_id);
     const depRow = departure as TourPriceSheet;
@@ -3367,17 +3368,23 @@ export async function createBooking(input: CreateBookingInput) {
   if (isGroupPax) {
     const minAdults = groupPaxMinAdults(cmsMeta);
     if (adults < minAdults) {
-      throw new Error(`This tour requires at least ${minAdults} adults to book online. Please send an enquiry.`);
+      throw new HttpError(
+        400,
+        `This tour requires at least ${minAdults} adults to book online. Please send an enquiry.`
+      );
     }
     if (groupPaxTiers.length) {
       const tierId = String(input.collection_tier_id || '').trim();
       if (!tierId || !groupPaxTiers.some((t) => t.id === tierId)) {
-        throw new Error('Please select a collection tier (Comfort / Signature / Royal).');
+        throw new HttpError(400, 'Please select a collection tier (Comfort / Signature / Royal).');
       }
     }
     const resolved = resolveGroupPaxSlab(adults, groupPaxSlabs, input.collection_tier_id);
     if (!resolved) {
-      throw new Error('No group rate applies for this party size. Please contact us for a quote.');
+      throw new HttpError(
+        400,
+        'No group rate applies for this party size. Please contact us for a quote.'
+      );
     }
   }
 

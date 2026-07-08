@@ -1,3 +1,5 @@
+import { HttpError } from './http-error';
+
 /** Minimum calendar days between today and the travel / departure date for online booking. */
 export const BOOKING_MIN_ADVANCE_DAYS = 7;
 
@@ -28,6 +30,6 @@ export function assertBookableTravelDate(travelDate: string): void {
   const normalized = String(travelDate || '').trim().slice(0, 10);
   if (!normalized) return;
   if (!isTravelDateBookable(normalized)) {
-    throw new Error(BOOKING_ADVANCE_NOTICE);
+    throw new HttpError(400, BOOKING_ADVANCE_NOTICE);
   }
 }
