@@ -2496,12 +2496,7 @@ function resolveListingTriplePrice(
   rowTriple: number | null | undefined
 ): number | null {
   if (isGroupPaxSlabPricing(cmsMeta)) return null;
-  return (
-    departureTriple ??
-    marketTriple ??
-    rowTriple ??
-    (startingTwin ? Math.round(startingTwin * 0.9) : null)
-  );
+  return departureTriple ?? marketTriple ?? rowTriple ?? null;
 }
 
 function selectLowestAdultRate(
