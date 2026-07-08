@@ -51,6 +51,7 @@ bookingsRouter.post(
     const result = await createBookingPaymentOrder({
       booking_id: bookingId,
       amount: req.body?.amount != null ? Number(req.body.amount) : undefined,
+      display_currency: req.body?.display_currency ?? undefined,
     });
     return res.status(201).json({
       message: 'Payment order created successfully.',
@@ -103,7 +104,10 @@ bookingsRouter.post(
   async (req, res, next) => {
   try {
     const bookingId = Number(req.params.bookingId || req.body.booking_id || 0);
-    const result = await createBookingBalancePaymentOrder({ booking_id: bookingId });
+    const result = await createBookingBalancePaymentOrder({
+      booking_id: bookingId,
+      display_currency: req.body?.display_currency ?? undefined,
+    });
     return res.status(201).json({
       message: 'Balance payment order created successfully.',
       data: result,

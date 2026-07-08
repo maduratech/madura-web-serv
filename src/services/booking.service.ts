@@ -237,6 +237,8 @@ export type CreateBookingPaymentOrderInput = {
   booking_id: number;
   /** CRM itinerary or international checkout: customer-chosen payment (full or partial). */
   amount?: number | null;
+  /** ISO 4217 code the customer saw on checkout (INR / USD / AUD). Required when `bookings.display_currency` is unset. */
+  display_currency?: string | null;
 };
 
 export type VerifyBookingPaymentInput = {
@@ -3537,7 +3539,7 @@ export async function createBooking(input: CreateBookingInput) {
   if (departureId != null) {
     bookingBaseInsert.departure_id = departureId;
   }
-  if (displayCurrency && displayCurrency !== 'INR') {
+  if (displayCurrency) {
     bookingBaseInsert.display_currency = displayCurrency;
   }
   const bookingBaseInsertUpperStatus = {
@@ -3598,6 +3600,23 @@ export async function createBooking(input: CreateBookingInput) {
     bookingError = retryInsert.error || null;
   }
 
+  if (
+    !booking &&
+    bookingError &&
+    /column .* does not exist/i.test(String(bookingError.message || ''))
+  ) {
+    const slimInsert = { ...bookingBaseInsert };
+    delete slimInsert.display_currency;
+    delete slimInsert.display_fx_rate;
+    const retryInsert = await supabase
+      .from('bookings')
+      .insert(slimInsert)
+      .select('id,tour_id,departure_id,total_price,status,created_at')
+      .single();
+    booking = (retryInsert.data as BookingRow | null) || null;
+    bookingError = retryInsert.error || null;
+  }
+
   if (bookingError || !booking) {
     const msg = String(bookingError?.message || 'Unknown error');
     if (/departure_id.*not-null/i.test(msg)) {
@@ -3613,7 +3632,7 @@ export async function createBooking(input: CreateBookingInput) {
   if (Array.isArray(input.room_details) && input.room_details.length > 0) {
     roomPatch.room_details = input.room_details;
   }
-  if (displayCurrency && displayCurrency !== 'INR') {
+  if (displayCurrency) {
     roomPatch.display_currency = displayCurrency;
   }
   if (input.user_id) {
@@ -3805,12 +3824,21 @@ async function computeInrPackageTotalForBooking(booking: Record<string, unknown>
   });
 }
 
+function displayCurrencyForPayment(
+  context: { displayCurrency: string | null },
+  storefront: PaymentStorefront
+): string {
+  const saved = String(context.displayCurrency || '').toUpperCase().trim();
+  if (saved) return saved;
+  return chargeCurrencyForStorefront(storefront);
+}
+
 async function packageTotalForPayment(
   context: { booking: Record<string, unknown>; displayCurrency: string | null },
   storefront: PaymentStorefront
 ): Promise<number> {
   const chargeCur = chargeCurrencyForStorefront(storefront);
-  const displayCur = String(context.displayCurrency || 'INR').toUpperCase().trim() || 'INR';
+  const displayCur = displayCurrencyForPayment(context, storefront);
   const displayTotal = Number((context.booking as { total_price?: number | null }).total_price || 0);
 
   if (chargeCur === displayCur) return displayTotal;
@@ -4009,9 +4037,9 @@ async function getBookingPaymentContext(bookingId: number) {
   let bookingError: { message?: string } | null = null;
 
   const bookingSelectWide =
-    'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id,rooms,room_details,travel_date,return_date,departure_city,collection_tier_id,display_currency,display_fx_rate,mts_id,crm_lead_id,created_at,updated_at,payment_verified_at';
+    'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id,payment_currency,rooms,room_details,travel_date,return_date,departure_city,collection_tier_id,display_currency,display_fx_rate,mts_id,crm_lead_id,created_at,updated_at,payment_verified_at';
   const bookingSelectMid =
-    'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id,rooms,room_details,travel_date,return_date,departure_city,collection_tier_id';
+    'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id,payment_currency,rooms,room_details,travel_date,return_date,departure_city,collection_tier_id';
   const bookingSelectMidLegacy =
     'id,tour_id,departure_id,total_price,status,payment_amount,payment_status,payment_id,payment_order_id,rooms,room_details';
   const bookingSelectNarrow =
@@ -4130,7 +4158,15 @@ async function getBookingPaymentContext(bookingId: number) {
   };
 
   const displayCurrencyRaw = String(bookingRow.display_currency || '').toUpperCase().trim();
-  const displayCurrency = displayCurrencyRaw && displayCurrencyRaw !== 'INR' ? displayCurrencyRaw : null;
+  const paymentCurrencyRaw = String(
+    (bookingRow as { payment_currency?: string | null }).payment_currency || ''
+  )
+    .toUpperCase()
+    .trim();
+  const displayCurrency =
+    displayCurrencyRaw ||
+    (paymentCurrencyRaw && paymentCurrencyRaw !== 'INR' ? paymentCurrencyRaw : '') ||
+    null;
   const displayFxRate = Number(bookingRow.display_fx_rate) > 0 ? Number(bookingRow.display_fx_rate) : null;
   const formatInr = (amount: number) => formatBookingAmount(amount, displayCurrency || 'INR');
 
@@ -4175,11 +4211,20 @@ function attachChildAgesToTravellers(
   });
 }
 
+function resolvePaymentStorefront(
+  context: Awaited<ReturnType<typeof getBookingPaymentContext>>,
+  overrideCurrency?: string | null
+): PaymentStorefront {
+  const fromRequest = String(overrideCurrency || '').toUpperCase().trim();
+  if (fromRequest) return resolveStorefront(fromRequest);
+  return resolveStorefront(context.displayCurrency);
+}
+
 export async function createBookingPaymentOrder(input: CreateBookingPaymentOrderInput) {
   if (!input.booking_id) throw new Error('booking_id is required.');
 
   const context = await getBookingPaymentContext(input.booking_id);
-  const storefront = resolveStorefront(context.displayCurrency);
+  const storefront = resolvePaymentStorefront(context, input.display_currency);
   const resolvedRegion = resolveTourRegionFromData(context.tourRegion, context.destination, context.continent);
   const advanceAmount = await resolvePaymentChargeAmount(
     context,
@@ -4412,7 +4457,7 @@ export async function createBookingBalancePaymentOrder(input: CreateBookingPayme
   if (!input.booking_id) throw new Error('booking_id is required.');
 
   const context = await getBookingPaymentContext(input.booking_id);
-  const storefront = resolveStorefront(context.displayCurrency);
+  const storefront = resolvePaymentStorefront(context, input.display_currency);
 
   const totalAmountInInr = await packageTotalForPayment(context, storefront);
   const paidAmountInInr = await getPaidAmountForBooking(context.booking);
