@@ -27,14 +27,10 @@ export function razorpayAccountConfigured(account: RazorpayAccount): boolean {
   return Boolean(keyId && keySecret);
 }
 
-/** India storefront only — Australia uses Square (see `payment-storefront.ts`). */
+/** India Razorpay account — used for all storefronts (INR charges; international cards supported). */
 export function resolveRazorpayAccountForCurrency(
-  displayCurrency: string | null | undefined
+  _displayCurrency: string | null | undefined
 ): RazorpayAccount {
-  const cur = String(displayCurrency || '').toUpperCase().trim();
-  if (cur === 'AUD') {
-    throw new Error('Australia (AUD) bookings use Square, not Razorpay.');
-  }
   return 'in';
 }
 

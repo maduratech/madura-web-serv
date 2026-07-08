@@ -10,7 +10,7 @@ export const env = {
     process.env.RAZORPAY_IN_KEY_SECRET || process.env.RAZORPAY_KEY_SECRET || '',
   RAZORPAY_IN_WEBHOOK_SECRET:
     process.env.RAZORPAY_IN_WEBHOOK_SECRET || process.env.RAZORPAY_WEBHOOK_SECRET || '',
-  /** Australia (/au/) — Square Web Payments (AUD). */
+  /** Legacy Square Web Payments (unused — all markets use Razorpay). */
   SQUARE_APPLICATION_ID: process.env.SQUARE_APPLICATION_ID || '',
   SQUARE_ACCESS_TOKEN: process.env.SQUARE_ACCESS_TOKEN || '',
   SQUARE_LOCATION_ID: process.env.SQUARE_LOCATION_ID || '',
