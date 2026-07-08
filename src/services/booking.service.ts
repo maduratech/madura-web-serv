@@ -11,7 +11,12 @@ import {
 } from '../lib/catalog-cache';
 import { requestSupabaseRecoveryOnCatalogStale } from '../lib/supabase-recovery';
 import { createListingProfiler } from '../lib/listing-profile';
-import { stripOverviewToMetaPrefix } from '../lib/tour-overview-meta';
+import {
+  joinOverviewWithMeta,
+  splitOverviewWithMeta,
+  stripOverviewToMetaPrefix,
+  type TourCmsMeta as OverviewCmsMeta,
+} from '../lib/tour-overview-meta';
 import { assertBookableTravelDate } from '../lib/booking-advance';
 import { lookupDeparturePricingUsd } from '../lib/departure-pricing-key';
 import {
@@ -37,6 +42,7 @@ import {
   isGroupPaxSlabPricing,
   normalizeGroupPaxSlabs,
   resolveGroupPaxSlab,
+  type GroupPaxSlab,
 } from '../lib/group-pax-pricing';
 import { collectionTierLabel } from '../lib/tour-collection-tiers';
 import { enqueueCrmBookingSync } from '../jobs/crm.job';
@@ -102,6 +108,7 @@ import {
 } from '../lib/tour-market-audience';
 import { foreignAmountToInr, fetchFxRatesToInr, STATIC_RATES_TO_INR } from '../lib/fx-rates-to-inr';
 import {
+  convertCostingAmountToCurrency,
   convertCostingAmountToDisplay,
   readCmsCostingCurrency,
 } from '../lib/cms-costing-currency';
@@ -2141,6 +2148,76 @@ function crmStorefrontUsesUsd(cmsMeta: TourCmsMeta): boolean {
   return false;
 }
 
+/**
+ * Group-size slab rates are stored in the tour's costing currency (e.g. USD).
+ * Convert every per-person / collection-tier rate into `targetCurrency` so the
+ * storefront (which has no live FX) and the booking charge both work in the
+ * visitor's display currency.
+ */
+function convertGroupPaxSlabsCurrency(
+  slabs: GroupPaxSlab[] | null | undefined,
+  fromCurrency: string,
+  targetCurrency: string,
+  ratesToInr: Record<string, number>
+): GroupPaxSlab[] {
+  const list = Array.isArray(slabs) ? slabs : [];
+  if (!list.length) return list;
+  if (String(fromCurrency || '').toUpperCase().trim() === String(targetCurrency || '').toUpperCase().trim()) {
+    return list;
+  }
+  return list.map((slab) => {
+    const next: GroupPaxSlab = { ...slab };
+    if (slab.per_person_inr != null) {
+      next.per_person_inr = convertCostingAmountToCurrency(
+        slab.per_person_inr,
+        fromCurrency,
+        targetCurrency,
+        ratesToInr
+      );
+    }
+    if (slab.tier_rates_inr && typeof slab.tier_rates_inr === 'object') {
+      const rates: Record<string, number> = {};
+      for (const [tierId, rate] of Object.entries(slab.tier_rates_inr)) {
+        const converted = convertCostingAmountToCurrency(rate, fromCurrency, targetCurrency, ratesToInr);
+        if (converted != null && converted > 0) rates[tierId] = converted;
+      }
+      next.tier_rates_inr = rates;
+    }
+    return next;
+  });
+}
+
+/**
+ * Rewrite a tour's `overview` so its embedded group-pax slabs are expressed in
+ * the market's display currency. No-op for room-sharing tours or when the
+ * costing currency already matches the display currency (e.g. INR tours in IN).
+ */
+function convertGroupPaxOverviewToMarketDisplay(
+  overview: string | null | undefined,
+  market: string,
+  fx: StorefrontFxContext
+): string | null {
+  if (!overview) return overview ?? null;
+  const meta = parseTourCmsMeta(overview);
+  if (!isGroupPaxSlabPricing(meta)) return overview;
+  const costingCurrency = readCmsCostingCurrency(meta).toUpperCase();
+  const displayCurrency = marketDisplayCurrency(normalizeMarketCountry(market));
+  if (costingCurrency === displayCurrency) return overview;
+  const { body } = splitOverviewWithMeta(overview);
+  const convertedSlabs = convertGroupPaxSlabsCurrency(
+    meta.group_pax_slabs,
+    costingCurrency,
+    displayCurrency,
+    fx.ratesToInr
+  );
+  const nextMeta = {
+    ...meta,
+    group_pax_slabs: convertedSlabs,
+    cms_costing_currency: displayCurrency,
+  };
+  return joinOverviewWithMeta(body, nextMeta as unknown as OverviewCmsMeta);
+}
+
 export function resolveStorefrontPricingCurrency(
   cmsMeta: TourCmsMeta,
   marketCountry?: string
@@ -3145,7 +3222,7 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
     ),
     tour_includes: Array.isArray(row.tour_includes) ? row.tour_includes : [],
     tour_exclusions: Array.isArray(row.tour_exclusions) ? row.tour_exclusions : [],
-    overview: row.overview || null,
+    overview: convertGroupPaxOverviewToMarketDisplay(row.overview, market, fx),
     itinerary_days: itineraryDays,
     max_travellers: row.max_travellers ?? null,
     min_age: row.min_age ?? null,
@@ -3361,9 +3438,20 @@ export async function createBooking(input: CreateBookingInput) {
   const crmSnap = cmsMeta.crm_costing_snapshot;
   const crmSnapCurrency = String(crmSnap?.currency || cmsMeta.crm_source_currency || '').toUpperCase().trim();
   const crmSnapTotal = Number(crmSnap?.total);
-  const groupPaxSlabs = normalizeGroupPaxSlabs(cmsMeta.group_pax_slabs);
   const groupPaxTiers = effectiveCollectionTiers(cmsMeta);
   const isGroupPax = isGroupPaxSlabPricing(cmsMeta);
+  // Slabs are stored in the tour's costing currency (e.g. USD). Charge in the
+  // display currency so the amount matches what the storefront shows.
+  let groupPaxSlabs = normalizeGroupPaxSlabs(cmsMeta.group_pax_slabs);
+  if (isGroupPax) {
+    const slabCostingCurrency = readCmsCostingCurrency(cmsMeta).toUpperCase();
+    if (slabCostingCurrency !== displayCurrency) {
+      const fx = await loadStorefrontFxContext();
+      groupPaxSlabs = normalizeGroupPaxSlabs(
+        convertGroupPaxSlabsCurrency(groupPaxSlabs, slabCostingCurrency, displayCurrency, fx.ratesToInr)
+      );
+    }
+  }
 
   if (isGroupPax) {
     const minAdults = groupPaxMinAdults(cmsMeta);
@@ -3407,7 +3495,7 @@ export async function createBooking(input: CreateBookingInput) {
       slabs: groupPaxSlabs,
       tierId: input.collection_tier_id,
       discountPercent,
-      childSheet: depSheetInr,
+      childSheet: depSheetDisplay,
     });
   } else {
     totalPrice = computeBookingTotalInr({

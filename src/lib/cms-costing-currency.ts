@@ -39,17 +39,17 @@ export function readCmsCostingCurrency(
   return 'INR';
 }
 
-/** Convert a CMS-entered amount to the visitor's storefront currency (daily FX via INR hub). */
-export function convertCostingAmountToDisplay(
+/** Convert a CMS-entered amount from one currency to another (daily FX via INR hub). */
+export function convertCostingAmountToCurrency(
   amount: number | null | undefined,
   costingCurrency: string,
-  marketCountry: MarketCountryCode,
+  targetCurrency: string,
   ratesToInr: Record<string, number> = STATIC_RATES_TO_INR
 ): number | null {
   const n = Number(amount);
   if (!Number.isFinite(n) || n <= 0) return null;
   const from = String(costingCurrency || 'INR').toUpperCase().trim() || 'INR';
-  const to = marketDisplayCurrency(marketCountry);
+  const to = String(targetCurrency || 'INR').toUpperCase().trim() || 'INR';
   if (from === to) return Math.round(n);
   const inr = foreignAmountToInr(n, from, ratesToInr);
   if (!inr) return null;
@@ -57,4 +57,19 @@ export function convertCostingAmountToDisplay(
   const toRate = Number(ratesToInr[to]);
   if (!Number.isFinite(toRate) || toRate <= 0) return null;
   return Math.round(inr / toRate);
+}
+
+/** Convert a CMS-entered amount to the visitor's storefront currency (daily FX via INR hub). */
+export function convertCostingAmountToDisplay(
+  amount: number | null | undefined,
+  costingCurrency: string,
+  marketCountry: MarketCountryCode,
+  ratesToInr: Record<string, number> = STATIC_RATES_TO_INR
+): number | null {
+  return convertCostingAmountToCurrency(
+    amount,
+    costingCurrency,
+    marketDisplayCurrency(marketCountry),
+    ratesToInr
+  );
 }
