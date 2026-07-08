@@ -43,6 +43,7 @@ import { enqueueCrmBookingSync } from '../jobs/crm.job';
 import { env } from '../config/env';
 import {
   chargeAmountMinorUnits,
+  chargeCurrencyForStorefront,
   resolveStorefront,
   type PaymentStorefront,
 } from '../lib/payment-storefront';
@@ -226,7 +227,7 @@ function formatInrDual(
 
 export type CreateBookingPaymentOrderInput = {
   booking_id: number;
-  /** CRM itinerary link: customer-chosen payment (full or partial). */
+  /** CRM itinerary or international checkout: customer-chosen payment (full or partial). */
   amount?: number | null;
 };
 
@@ -519,7 +520,6 @@ function advancePaymentDescription(
   destination: string
 ): string {
   const label = tourTitle || destination || 'your tour';
-  if (storefront === 'au') return `50% advance payment — ${label}`;
   return `Booking fee — ${label}`;
 }
 
@@ -630,9 +630,9 @@ function formatBookingAmount(amount: number, displayCurrency: string | null | un
 
 function chargeCurrencyForBooking(
   _displayCurrency: string | null | undefined,
-  _storefront: PaymentStorefront
-): 'INR' | 'AUD' {
-  return 'INR';
+  storefront: PaymentStorefront
+): 'INR' | 'USD' | 'AUD' {
+  return chargeCurrencyForStorefront(storefront);
 }
 
 async function upsertBookingPaymentFields(bookingId: number, fields: Record<string, unknown>) {
@@ -3719,11 +3719,35 @@ async function packageTotalForPayment(
   context: { booking: Record<string, unknown>; displayCurrency: string | null },
   storefront: PaymentStorefront
 ): Promise<number> {
-  const chargeCur = chargeCurrencyForBooking(context.displayCurrency, storefront);
-  if (chargeCur === 'INR' && context.displayCurrency && context.displayCurrency !== 'INR') {
+  const chargeCur = chargeCurrencyForStorefront(storefront);
+  const displayCur = String(context.displayCurrency || 'INR').toUpperCase().trim() || 'INR';
+  const displayTotal = Number((context.booking as { total_price?: number | null }).total_price || 0);
+
+  if (chargeCur === displayCur) return displayTotal;
+
+  if (chargeCur === 'INR') {
     return computeInrPackageTotalForBooking(context.booking);
   }
-  return Number((context.booking as { total_price?: number | null }).total_price || 0);
+
+  const fx = await loadStorefrontFxContext();
+  const inrPerUsd = Number(fx.ratesToInr.USD) || 83;
+  const inrPerAud = Number(fx.ratesToInr.AUD) || 64.73;
+
+  let inrTotal: number;
+  if (displayCur === 'INR') {
+    inrTotal = displayTotal;
+  } else if (displayCur === 'USD') {
+    inrTotal = displayTotal * inrPerUsd;
+  } else if (displayCur === 'AUD') {
+    inrTotal = displayTotal * inrPerAud;
+  } else {
+    inrTotal = await computeInrPackageTotalForBooking(context.booking);
+  }
+
+  if (chargeCur === 'USD') {
+    return Math.round((inrTotal / inrPerUsd) * 100) / 100;
+  }
+  return Math.round((inrTotal / inrPerAud) * 100) / 100;
 }
 
 async function resolvePaymentChargeAmount(
@@ -3751,9 +3775,17 @@ async function resolvePaymentChargeAmount(
         : remaining;
     return Math.max(1, Math.min(raw, remaining));
   }
-  /** Australia storefront (/au/): 50% of package total as advance. */
-  if (storefront === 'au') {
-    return Math.max(0, Math.round(packageTotal * 0.5));
+  /** International (AUD / USD): per-traveller slab or customer-chosen full/partial amount. */
+  if (storefront !== 'in') {
+    const remaining = Math.max(0, Math.round(packageTotalAfterTax - paid));
+    if (remaining <= 0) return 0;
+    if (requestedAmount != null && Number.isFinite(Number(requestedAmount))) {
+      const raw = Math.round(Number(requestedAmount));
+      return Math.max(1, Math.min(raw, remaining));
+    }
+    const perTraveller = getAdvanceAmountForCurrency(region, chargeCur, packageTotalAfterTax);
+    const travellerCount = countBookingFeeTravellers(context);
+    return perTraveller * Math.max(1, travellerCount);
   }
   const perTraveller = getAdvanceAmountForCurrency(region, chargeCur, packageTotalAfterTax);
   const travellerCount = countBookingFeeTravellers(context);
@@ -4065,7 +4097,7 @@ export async function createBookingPaymentOrder(input: CreateBookingPaymentOrder
     'advance',
     input.amount
   );
-  const charge = chargeAmountMinorUnits(advanceAmount, 'in');
+  const charge = chargeAmountMinorUnits(advanceAmount, storefront);
   const tourMetaForPayment = await loadTourMetaForBooking(context.booking);
   const crmFlexiblePayment = crmItineraryPaymentEnabled(tourMetaForPayment);
   const paymentDescription = crmFlexiblePayment
@@ -4081,7 +4113,7 @@ export async function createBookingPaymentOrder(input: CreateBookingPaymentOrder
     throw new Error('Razorpay credentials for India (INR) are not configured.');
   }
   const client = getRazorpayClient('in');
-  const currency = chargeCurrencyForAccount('in');
+  const currency = charge.currency;
   const order = await client.orders.create({
     amount: charge.minorUnits,
     currency,
@@ -4300,13 +4332,13 @@ export async function createBookingBalancePaymentOrder(input: CreateBookingPayme
   }
 
   const remainingCharge = await resolvePaymentChargeAmount(context, storefront, 'balance');
-  const charge = chargeAmountMinorUnits(remainingCharge, 'in');
+  const charge = chargeAmountMinorUnits(remainingCharge, storefront);
   const description = `Balance payment for ${context.booking.mts_id || context.tourTitle || context.destination || 'your tour'}`;
 
   if (!razorpayAccountConfigured('in')) {
     throw new Error('Razorpay credentials for India (INR) are not configured.');
   }
-  const currency = chargeCurrencyForAccount('in');
+  const currency = charge.currency;
   const client = getRazorpayClient('in');
   const order = await client.orders.create({
     amount: charge.minorUnits,
@@ -4352,6 +4384,7 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
   if (!input.booking_id) throw new Error('booking_id is required.');
 
   const context = await getBookingPaymentContext(input.booking_id);
+  const storefront = resolveStorefront(context.displayCurrency);
 
   if (!input.razorpay_order_id || !input.razorpay_payment_id || !input.razorpay_signature) {
     throw new Error('razorpay_order_id, razorpay_payment_id and razorpay_signature are required.');
@@ -4386,7 +4419,7 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
     (context.booking as { payment_amount?: number | null })?.payment_amount || 0
   );
   let currentPaymentAmountInInr = bookingPaymentStored;
-  let paymentCurrency: string = chargeCurrencyForAccount('in');
+  let paymentCurrency: string = chargeCurrencyForStorefront(storefront);
   let paidAtIso = new Date().toISOString();
   let razorpayBankRrn = '';
   let razorpayDescription = '';
@@ -4424,7 +4457,7 @@ export async function verifyBookingPayment(input: VerifyBookingPaymentInput) {
       // Order notes are best-effort; default advance behavior remains.
     }
   }
-  const fullAmountInInr = await packageTotalForPayment(context, 'in');
+  const fullAmountInInr = await packageTotalForPayment(context, storefront);
   const cumulativePaidAmountInInr =
     paymentPurpose === 'balance'
       ? Math.min(fullAmountInInr, paidBefore + currentPaymentAmountInInr)

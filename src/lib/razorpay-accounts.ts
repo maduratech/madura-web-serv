@@ -4,7 +4,7 @@ import { env } from '../config/env';
 
 export type RazorpayAccount = 'in';
 
-export type RazorpayChargeCurrency = 'INR';
+export type RazorpayChargeCurrency = 'INR' | 'AUD' | 'USD';
 
 type RazorpayCredentials = {
   keyId: string;
@@ -27,15 +27,18 @@ export function razorpayAccountConfigured(account: RazorpayAccount): boolean {
   return Boolean(keyId && keySecret);
 }
 
-/** India Razorpay account — used for all storefronts (INR charges; international cards supported). */
+/** India Razorpay account — INR (IN), AUD (AU), USD (GB/global); international cards supported. */
 export function resolveRazorpayAccountForCurrency(
   _displayCurrency: string | null | undefined
 ): RazorpayAccount {
   return 'in';
 }
 
-export function chargeCurrencyForAccount(_account: RazorpayAccount): RazorpayChargeCurrency {
-  return 'INR';
+export function chargeCurrencyForAccount(
+  _account: RazorpayAccount,
+  currency?: RazorpayChargeCurrency
+): RazorpayChargeCurrency {
+  return currency || 'INR';
 }
 
 export function getRazorpayClient(account: RazorpayAccount): Razorpay {
