@@ -1779,16 +1779,31 @@ async function fetchBookingCountsByTourId(marketCountry = 'in'): Promise<Map<num
   return counts;
 }
 
+function mapToursListingForDestinationPricing(
+  listing: Awaited<ReturnType<typeof getToursListing>>
+): DestinationPageListingItem[] {
+  return listing.map((item) => ({
+    id: item.id,
+    destination: item.destination,
+    destination_slug: item.destination_slug,
+    destination_slugs: item.destination_slugs,
+    starting_from_twin: item.starting_from_twin,
+    starting_from_triple: item.starting_from_triple,
+    starting_from_quad: item.starting_from_quad,
+    starting_from_single: item.starting_from_single,
+    pricing_model: item.pricing_model,
+    starting_from_sharing_note: item.starting_from_sharing_note,
+    image_url: item.image_url,
+  }));
+}
+
 export async function getDestinationShowcase(marketCountry = 'in') {
   const market = normalizeMarketCountry(marketCountry);
-  const fx = { ...storefrontFxSnapshot(), ratesToInr: { ...STATIC_RATES_TO_INR } };
-  const [allDestinations, toursRaw, departuresRaw, bookingCountsByTourId, destinationHierarchy] =
-    await Promise.all([
+  const [allDestinations, toursRaw, bookingCountsByTourId, toursListing] = await Promise.all([
     fetchDestinationRowsForShowcase(),
     fetchShowcaseTourRows(),
-    fetchShowcaseDepartures(),
     fetchBookingCountsByTourId(market),
-    fetchDestinationHierarchyIndex(),
+    getToursListing(market),
   ]);
 
   const tours = (toursRaw as unknown as ShowcaseTourRow[]).filter((t) => {
@@ -1798,22 +1813,7 @@ export async function getDestinationShowcase(marketCountry = 'in') {
     return tourVisibleForMarket(meta.market_audience, market, meta.storefronts);
   });
 
-  const departuresByTourId = new Map<number, NonNullable<ListingTourRow['departures']>>();
-  for (const dep of departuresRaw) {
-    const tourId = Number((dep as { tour_id?: number }).tour_id);
-    if (!Number.isFinite(tourId)) continue;
-    const list = departuresByTourId.get(tourId) || [];
-    list.push(dep as NonNullable<ListingTourRow['departures']>[number]);
-    departuresByTourId.set(tourId, list);
-  }
-
-  const listingItems = buildShowcaseDestinationListingItems(
-    tours,
-    departuresByTourId,
-    market,
-    destinationHierarchy,
-    fx
-  );
+  const listingItems = mapToursListingForDestinationPricing(toursListing);
 
   const destinationById = new Map<number, DestinationShowcaseRow>();
   const destinationByName = new Map<string, DestinationShowcaseRow>();
@@ -2004,37 +2004,12 @@ export type DestinationsDirectorySection = {
 /** All header destinations grouped by region (India, Mainland Europe, …) for /destination index. */
 export async function getDestinationsDirectory(marketCountry = 'in'): Promise<DestinationsDirectorySection[]> {
   const market = normalizeMarketCountry(marketCountry);
-  const fx = { ...storefrontFxSnapshot(), ratesToInr: { ...STATIC_RATES_TO_INR } };
-  const [allDestinations, toursRaw, departuresRaw, destinationHierarchy] = await Promise.all([
+  const [allDestinations, toursListing] = await Promise.all([
     fetchDestinationRowsForShowcase(),
-    fetchShowcaseTourRows(),
-    fetchShowcaseDepartures(),
-    fetchDestinationHierarchyIndex(),
+    getToursListing(market),
   ]);
 
-  const tours = (toursRaw as unknown as ShowcaseTourRow[]).filter((t) => {
-    if (!isTourListedPublicly(parseTourVisibility(t))) return false;
-    const meta = parseTourCmsMeta(t.overview);
-    if (crmMetaHasCrmItinerary(meta)) return true;
-    return tourVisibleForMarket(meta.market_audience, market, meta.storefronts);
-  });
-
-  const departuresByTourId = new Map<number, NonNullable<ListingTourRow['departures']>>();
-  for (const dep of departuresRaw) {
-    const tourId = Number((dep as { tour_id?: number }).tour_id);
-    if (!Number.isFinite(tourId)) continue;
-    const list = departuresByTourId.get(tourId) || [];
-    list.push(dep as NonNullable<ListingTourRow['departures']>[number]);
-    departuresByTourId.set(tourId, list);
-  }
-
-  const listingItems = buildShowcaseDestinationListingItems(
-    tours,
-    departuresByTourId,
-    market,
-    destinationHierarchy,
-    fx
-  );
+  const listingItems = mapToursListingForDestinationPricing(toursListing);
 
   const destinationBySlug = new Map<string, DestinationShowcaseRow>();
   for (const d of allDestinations) {
@@ -2873,26 +2848,6 @@ function mapTourRowToListingPricingSlice(
     starting_from_sharing_note: startingSharingNote,
     pricing_model: groupPaxSlabTour ? ('group_pax_slab' as const) : ('room_sharing' as const),
   };
-}
-
-function buildShowcaseDestinationListingItems(
-  tours: ShowcaseTourRow[],
-  departuresByTourId: Map<number, NonNullable<ListingTourRow['departures']>>,
-  market: MarketCountryCode,
-  destinationHierarchy: Map<number, DestinationHierarchyRow>,
-  fx: StorefrontFxContext = { ...storefrontFxSnapshot(), ratesToInr: { ...STATIC_RATES_TO_INR } }
-): DestinationPageListingItem[] {
-  return tours.map((tour) => ({
-    id: Number(tour.id),
-    image_url: resolveShowcaseTourImage(tour),
-    ...mapTourRowToListingPricingSlice(
-      tour,
-      departuresByTourId.get(Number(tour.id)) || [],
-      market,
-      destinationHierarchy,
-      fx
-    ),
-  }));
 }
 
 function buildToursListingResult(
