@@ -53,3 +53,43 @@ export function tourMatchesDestinationSlug(
   const primary = normalizeDestinationSlug(String(primarySlug || ''));
   return Boolean(primary && primary === key);
 }
+
+/** Mirrors madura-web `tourListingMatchesDestinationSlug` for package-page tour sets. */
+export function tourListingMatchesDestinationSlug(
+  tour: {
+    destination: string;
+    destination_slug: string;
+    destination_slugs: string[];
+  },
+  pageSlug: string
+): boolean {
+  const key = normalizeDestinationSlug(pageSlug);
+  if (!key) return false;
+
+  const slugs = tour.destination_slugs || [];
+  if (slugs.some((slug) => normalizeDestinationSlug(slug) === key)) return true;
+
+  if (normalizeDestinationSlug(tour.destination_slug) === key) return true;
+  if (normalizeDestinationSlug(tour.destination) === key) return true;
+
+  return false;
+}
+
+export function filterToursForDestinationPage<
+  T extends {
+    id: number;
+    destination: string;
+    destination_slug: string;
+    destination_slugs: string[];
+  },
+>(tours: T[], pageSlug: string): T[] {
+  const seen = new Set<number>();
+  const items: T[] = [];
+  for (const tour of tours) {
+    if (!tourListingMatchesDestinationSlug(tour, pageSlug)) continue;
+    if (seen.has(tour.id)) continue;
+    seen.add(tour.id);
+    items.push(tour);
+  }
+  return items;
+}

@@ -91,6 +91,10 @@ import {
   type DestinationHierarchyRow,
 } from '../lib/tour-destinations';
 import {
+  computeDestinationPageListingStats,
+  type DestinationPageListingItem,
+} from '../lib/tour-listing-price';
+import {
   buildDestinationDisplayLabel,
   destinationKind,
   HEADER_REGION_PARENT_SLUGS,
@@ -1777,11 +1781,14 @@ async function fetchBookingCountsByTourId(marketCountry = 'in'): Promise<Map<num
 
 export async function getDestinationShowcase(marketCountry = 'in') {
   const market = normalizeMarketCountry(marketCountry);
-  const [allDestinations, toursRaw, departuresRaw, bookingCountsByTourId] = await Promise.all([
+  const fx = { ...storefrontFxSnapshot(), ratesToInr: { ...STATIC_RATES_TO_INR } };
+  const [allDestinations, toursRaw, departuresRaw, bookingCountsByTourId, destinationHierarchy] =
+    await Promise.all([
     fetchDestinationRowsForShowcase(),
     fetchShowcaseTourRows(),
     fetchShowcaseDepartures(),
     fetchBookingCountsByTourId(market),
+    fetchDestinationHierarchyIndex(),
   ]);
 
   const tours = (toursRaw as unknown as ShowcaseTourRow[]).filter((t) => {
@@ -1800,6 +1807,14 @@ export async function getDestinationShowcase(marketCountry = 'in') {
     departuresByTourId.set(tourId, list);
   }
 
+  const listingItems = buildShowcaseDestinationListingItems(
+    tours,
+    departuresByTourId,
+    market,
+    destinationHierarchy,
+    fx
+  );
+
   const destinationById = new Map<number, DestinationShowcaseRow>();
   const destinationByName = new Map<string, DestinationShowcaseRow>();
   for (const d of allDestinations) {
@@ -1807,44 +1822,20 @@ export async function getDestinationShowcase(marketCountry = 'in') {
     destinationByName.set(String(d.name), d);
   }
 
-  const packageCountByDestinationId = new Map<number, number>();
   const visitorCountByDestinationId = new Map<number, number>();
-  const minPriceByDestinationId = new Map<number, number>();
-  const tourImageByDestinationId = new Map<number, string>();
 
   for (const tour of tours) {
     const destinationIds = resolveShowcaseTourDestinationIds(tour, destinationById, destinationByName);
     if (!destinationIds.length) continue;
 
-    const listPrice = resolveTourListingStartingTwin(
-      tour,
-      departuresByTourId.get(Number(tour.id)) || [],
-      market,
-    );
     const bookings = bookingCountsByTourId.get(Number(tour.id)) ?? 0;
-    const tourImage = resolveShowcaseTourImage(tour);
 
     for (const destinationId of destinationIds) {
-      packageCountByDestinationId.set(
-        destinationId,
-        (packageCountByDestinationId.get(destinationId) ?? 0) + 1,
-      );
-
-      if (tourImage && !tourImageByDestinationId.has(destinationId)) {
-        tourImageByDestinationId.set(destinationId, tourImage);
-      }
-
       if (bookings > 0) {
         visitorCountByDestinationId.set(
           destinationId,
           (visitorCountByDestinationId.get(destinationId) ?? 0) + bookings,
         );
-      }
-
-      if (listPrice == null) continue;
-      const existing = minPriceByDestinationId.get(destinationId);
-      if (existing === undefined || listPrice < existing) {
-        minPriceByDestinationId.set(destinationId, listPrice);
       }
     }
   }
@@ -1865,14 +1856,15 @@ export async function getDestinationShowcase(marketCountry = 'in') {
       const slug = normalizeDestinationSlug(
         String(d.slug || d.name.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-')),
       );
+      const listingStats = computeDestinationPageListingStats(listingItems, slug);
       return {
         id: destId,
         name: d.name,
         slug,
         continent,
-        image_url: resolveDestinationShowcaseImage(d, tourImageByDestinationId.get(destId)),
-        starting_from: minPriceByDestinationId.get(destId) ?? null,
-        package_count: packageCountByDestinationId.get(destId) ?? 0,
+        image_url: resolveDestinationShowcaseImage(d, listingStats.imageUrl),
+        starting_from: listingStats.minPrice,
+        package_count: listingStats.packageCount,
         visitor_count: visitorCountByDestinationId.get(destId) ?? 0,
       };
     });
@@ -2012,11 +2004,12 @@ export type DestinationsDirectorySection = {
 /** All header destinations grouped by region (India, Mainland Europe, …) for /destination index. */
 export async function getDestinationsDirectory(marketCountry = 'in'): Promise<DestinationsDirectorySection[]> {
   const market = normalizeMarketCountry(marketCountry);
-  const [allDestinations, toursRaw, departuresRaw, bookingCountsByTourId] = await Promise.all([
+  const fx = { ...storefrontFxSnapshot(), ratesToInr: { ...STATIC_RATES_TO_INR } };
+  const [allDestinations, toursRaw, departuresRaw, destinationHierarchy] = await Promise.all([
     fetchDestinationRowsForShowcase(),
     fetchShowcaseTourRows(),
     fetchShowcaseDepartures(),
-    fetchBookingCountsByTourId(market),
+    fetchDestinationHierarchyIndex(),
   ]);
 
   const tours = (toursRaw as unknown as ShowcaseTourRow[]).filter((t) => {
@@ -2035,47 +2028,18 @@ export async function getDestinationsDirectory(marketCountry = 'in'): Promise<De
     departuresByTourId.set(tourId, list);
   }
 
-  const destinationById = new Map<number, DestinationShowcaseRow>();
+  const listingItems = buildShowcaseDestinationListingItems(
+    tours,
+    departuresByTourId,
+    market,
+    destinationHierarchy,
+    fx
+  );
+
   const destinationBySlug = new Map<string, DestinationShowcaseRow>();
-  const destinationByName = new Map<string, DestinationShowcaseRow>();
   for (const d of allDestinations) {
-    destinationById.set(Number(d.id), d);
-    destinationByName.set(String(d.name), d);
     const slug = normalizeDestinationSlug(String(d.slug || d.name || ''));
     if (slug) destinationBySlug.set(slug, d);
-  }
-
-  const packageCountByDestinationId = new Map<number, number>();
-  const minPriceByDestinationId = new Map<number, number>();
-  const tourImageByDestinationId = new Map<number, string>();
-
-  for (const tour of tours) {
-    const destinationIds = resolveShowcaseTourDestinationIds(tour, destinationById, destinationByName);
-    if (!destinationIds.length) continue;
-
-    const listPrice = resolveTourListingStartingTwin(
-      tour,
-      departuresByTourId.get(Number(tour.id)) || [],
-      market,
-    );
-    const tourImage = resolveShowcaseTourImage(tour);
-
-    for (const destinationId of destinationIds) {
-      packageCountByDestinationId.set(
-        destinationId,
-        (packageCountByDestinationId.get(destinationId) ?? 0) + 1,
-      );
-
-      if (tourImage && !tourImageByDestinationId.has(destinationId)) {
-        tourImageByDestinationId.set(destinationId, tourImage);
-      }
-
-      if (listPrice == null) continue;
-      const existing = minPriceByDestinationId.get(destinationId);
-      if (existing === undefined || listPrice < existing) {
-        minPriceByDestinationId.set(destinationId, listPrice);
-      }
-    }
   }
 
   let syntheticId = -1;
@@ -2087,15 +2051,16 @@ export async function getDestinationsDirectory(marketCountry = 'in'): Promise<De
       const slug = normalizeDestinationSlug(name);
       const row = destinationBySlug.get(slug);
       const destId = row ? Number(row.id) : syntheticId--;
+      const listingStats = computeDestinationPageListingStats(listingItems, slug);
       return {
         id: destId,
         name: row?.name?.trim() || name,
         slug,
         image_url: row
-          ? resolveDestinationShowcaseImage(row, tourImageByDestinationId.get(Number(row.id)))
+          ? resolveDestinationShowcaseImage(row, listingStats.imageUrl)
           : DESTINATION_SHOWCASE_FALLBACK_IMAGE,
-        starting_from: row ? (minPriceByDestinationId.get(Number(row.id)) ?? null) : null,
-        package_count: row ? (packageCountByDestinationId.get(Number(row.id)) ?? 0) : 0,
+        starting_from: listingStats.minPrice,
+        package_count: listingStats.packageCount,
       };
     });
 
@@ -2829,6 +2794,107 @@ export async function getToursListing(marketCountry = 'in') {
   return result;
 }
 
+function mapTourRowToListingPricingSlice(
+  row: {
+    destination_id?: number | null;
+    destination?: string | null;
+    overview?: string | null;
+    twin_sharing_price?: number | null;
+    triple_sharing_price?: number | null;
+    single_sharing_price?: number | null;
+    quad_sharing_price?: number | null;
+    infant_price?: number | null;
+    child_price?: number | null;
+    youth_price?: number | null;
+    discounted_price?: number | null;
+    destination_ref?: { name?: string | null; slug?: string | null } | null;
+  },
+  departures: NonNullable<ListingTourRow['departures']>,
+  market: MarketCountryCode,
+  destinationHierarchy: Map<number, DestinationHierarchyRow>,
+  fx: StorefrontFxContext = { ...storefrontFxSnapshot(), ratesToInr: { ...STATIC_RATES_TO_INR } }
+) {
+  const cmsMeta = parseTourCmsMeta(row.overview);
+  const groupPaxSlabTour = isGroupPaxSlabPricing(cmsMeta);
+  const marketBands = resolveMarketPriceBands(row, cmsMeta, market, fx);
+  const discountPercent = inferDiscountPercent(
+    marketBands.twin ?? row.twin_sharing_price,
+    row.discounted_price,
+    cmsMeta.discount_percent
+  );
+  const departureBands = resolveDepartureShelfBandsMin(departures, discountPercent);
+  const groupPaxFrom = isGroupPaxSlabPricing(cmsMeta)
+    ? groupPaxStartingFrom(cmsMeta, defaultCollectionTierId(cmsMeta), discountPercent)
+    : null;
+  const groupPaxDisplay =
+    groupPaxFrom && groupPaxFrom.perPersonInr > 0
+      ? convertCostingAmountToDisplay(
+          groupPaxFrom.perPersonInr,
+          readCmsCostingCurrency(cmsMeta),
+          market,
+          fx.ratesToInr
+        )
+      : null;
+  const startingTwin =
+    groupPaxDisplay ||
+    departureBands?.lowestAdult?.value ||
+    resolveTourListingStartingTwin(row, departures, market, fx);
+  const startingTriple = resolveListingTriplePrice(
+    cmsMeta,
+    startingTwin,
+    departureBands?.triple,
+    marketBands.triple,
+    row.triple_sharing_price
+  );
+  const startingSingle = groupPaxSlabTour
+    ? null
+    : departureBands?.single ?? marketBands.single ?? row.single_sharing_price ?? null;
+  const startingQuad = groupPaxSlabTour
+    ? null
+    : departureBands?.quad ?? marketBands.quad ?? row.quad_sharing_price ?? null;
+  const startingSharingNote = groupPaxSlabTour ? groupPaxFrom?.sharingLabel ?? null : null;
+  const destination = row.destination_ref?.name || row.destination || 'Unknown';
+  const primarySlug = row.destination_ref?.slug || toSlug(destination);
+  const linkedDestinationIds = readTourDestinationIds({
+    destination_id: row.destination_id,
+    overview: row.overview,
+  });
+  const destination_slugs = expandDestinationSlugs(linkedDestinationIds, destinationHierarchy);
+  if (!destination_slugs.length && primarySlug) destination_slugs.push(primarySlug);
+
+  return {
+    destination,
+    destination_slug: primarySlug,
+    destination_slugs,
+    starting_from_twin: startingTwin,
+    starting_from_triple: startingTriple,
+    starting_from_single: startingSingle,
+    starting_from_quad: startingQuad,
+    starting_from_sharing_note: startingSharingNote,
+    pricing_model: groupPaxSlabTour ? ('group_pax_slab' as const) : ('room_sharing' as const),
+  };
+}
+
+function buildShowcaseDestinationListingItems(
+  tours: ShowcaseTourRow[],
+  departuresByTourId: Map<number, NonNullable<ListingTourRow['departures']>>,
+  market: MarketCountryCode,
+  destinationHierarchy: Map<number, DestinationHierarchyRow>,
+  fx: StorefrontFxContext = { ...storefrontFxSnapshot(), ratesToInr: { ...STATIC_RATES_TO_INR } }
+): DestinationPageListingItem[] {
+  return tours.map((tour) => ({
+    id: Number(tour.id),
+    image_url: resolveShowcaseTourImage(tour),
+    ...mapTourRowToListingPricingSlice(
+      tour,
+      departuresByTourId.get(Number(tour.id)) || [],
+      market,
+      destinationHierarchy,
+      fx
+    ),
+  }));
+}
+
 function buildToursListingResult(
   data: ListingTourRow[],
   marketCountry: string,
@@ -2859,35 +2925,15 @@ function buildToursListingResult(
       cmsMeta.discount_percent
     );
     const departureBands = resolveDepartureShelfBandsMin(departures, discountPercent);
-    const groupPaxFrom = isGroupPaxSlabPricing(cmsMeta)
-      ? groupPaxStartingFrom(cmsMeta, defaultCollectionTierId(cmsMeta), discountPercent)
-      : null;
-    const groupPaxDisplay =
-      groupPaxFrom && groupPaxFrom.perPersonInr > 0
-        ? convertCostingAmountToDisplay(
-            groupPaxFrom.perPersonInr,
-            readCmsCostingCurrency(cmsMeta),
-            market,
-            fx.ratesToInr
-          )
-        : null;
-    const startingTwin =
-      groupPaxDisplay ||
-      departureBands?.lowestAdult?.value ||
-      resolveTourListingStartingTwin(row, departures, market, fx);
-    const startingTriple = resolveListingTriplePrice(
-      cmsMeta,
-      startingTwin,
-      departureBands?.triple,
-      marketBands.triple,
-      row.triple_sharing_price
-    );
-    const startingSingle = groupPaxSlabTour
-      ? null
-      : departureBands?.single ?? marketBands.single ?? row.single_sharing_price ?? null;
-    const startingQuad = groupPaxSlabTour
-      ? null
-      : departureBands?.quad ?? marketBands.quad ?? row.quad_sharing_price ?? null;
+    const pricing = mapTourRowToListingPricingSlice(row, departures, market, destinationHierarchy, fx);
+    const startingTwin = pricing.starting_from_twin;
+    const startingTriple = pricing.starting_from_triple;
+    const startingSingle = pricing.starting_from_single;
+    const startingQuad = pricing.starting_from_quad;
+    const startingSharingNote = pricing.starting_from_sharing_note;
+    const destination = pricing.destination;
+    const primarySlug = pricing.destination_slug;
+    const destination_slugs = pricing.destination_slugs;
     const startingInfant = groupPaxSlabTour
       ? null
       : departureBands?.infant ?? marketBands.infant ?? bandPrices.infant_price ?? null;
@@ -2897,15 +2943,6 @@ function buildToursListingResult(
     const startingYouth = groupPaxSlabTour
       ? null
       : departureBands?.youth ?? marketBands.youth ?? bandPrices.youth_price ?? null;
-    const startingSharingNote = groupPaxSlabTour ? groupPaxFrom?.sharingLabel ?? null : null;
-    const destination = row.destination_ref?.name || row.destination || 'Unknown';
-    const primarySlug = row.destination_ref?.slug || toSlug(destination);
-    const linkedDestinationIds = readTourDestinationIds({
-      destination_id: (row as { destination_id?: number | null }).destination_id,
-      overview: (row as { overview?: string | null }).overview,
-    });
-    const destination_slugs = expandDestinationSlugs(linkedDestinationIds, destinationHierarchy);
-    if (!destination_slugs.length && primarySlug) destination_slugs.push(primarySlug);
     const heroImage = normalizeMediaUrl(row.hero_image_url);
     const gallery = Array.isArray(row.gallery_image_urls)
       ? row.gallery_image_urls
@@ -2949,7 +2986,7 @@ function buildToursListingResult(
       starting_from_child: startingChild,
       starting_from_youth: startingYouth,
       starting_from_sharing_note: startingSharingNote,
-      pricing_model: groupPaxSlabTour ? ('group_pax_slab' as const) : ('room_sharing' as const),
+      pricing_model: pricing.pricing_model,
       departure_cities: departureCities,
       upcoming_departures,
       tour_includes: Array.isArray(row.tour_includes) ? row.tour_includes : [],
