@@ -6,9 +6,10 @@ export type PaymentGateway = 'razorpay' | 'square';
 export type ChargeCurrency = 'INR' | 'AUD' | 'USD';
 
 /**
- * TEMP (QA): Square + Razorpay on GB checkout. Remove `'gb'` after product sign-off.
+ * Square dual-gateway checkout is disabled (Razorpay-only everywhere).
+ * Re-add storefronts here (e.g. `'au'`) when Square should return.
  */
-export const SQUARE_DUAL_GATEWAY_STOREFRONTS: readonly PaymentStorefront[] = ['au', 'gb'];
+export const SQUARE_DUAL_GATEWAY_STOREFRONTS: readonly PaymentStorefront[] = [];
 
 export function squareDualGatewayStorefront(storefront: PaymentStorefront): boolean {
   return SQUARE_DUAL_GATEWAY_STOREFRONTS.includes(storefront);
