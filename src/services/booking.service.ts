@@ -2501,6 +2501,26 @@ function resolveListingTriplePrice(
   return departureTriple ?? marketTriple ?? rowTriple ?? null;
 }
 
+/** CMS `duration_days` wins over departure date spans (placeholders often skew nights). */
+function resolveTourDurationNights(
+  row: { duration_days?: number | null; id?: number },
+  departures: Array<{ start_date?: string | null; end_date?: string | null }>,
+  fallbackNights = 4
+): number {
+  if (row.duration_days && row.duration_days > 0) {
+    return Math.max(1, row.duration_days - 1);
+  }
+  const startEndPair = departures.find((d) => d.start_date && d.end_date);
+  if (startEndPair?.start_date && startEndPair?.end_date) {
+    const start = new Date(startEndPair.start_date);
+    const end = new Date(startEndPair.end_date);
+    const diffMs = end.getTime() - start.getTime();
+    return Math.max(1, Math.round(diffMs / (1000 * 60 * 60 * 24)));
+  }
+  if (row.id != null) return 3 + (row.id % 5);
+  return fallbackNights;
+}
+
 function selectLowestAdultRate(
   sheet: TourPriceSheet,
   discountPercent: number | null,
@@ -2636,6 +2656,10 @@ function resolveTourListingStartingTwin(
         ) ?? groupFrom.perPersonInr
       );
     }
+  }
+  const departureBands = resolveDepartureShelfBandsMin(departures, discountPercent);
+  if (departureBands?.lowestAdult?.value) {
+    return departureBands.lowestAdult.value;
   }
   const storefrontCurrency = resolveStorefrontPricingCurrency(cmsMeta, market);
   const crmForeignListing = storefrontCurrency !== 'INR';
@@ -2803,20 +2827,10 @@ function buildToursListingResult(
 
   return rows.map((row) => {
     const departures = Array.isArray(row.departures) ? row.departures : [];
-    const startEndPair = departures.find((d) => d.start_date && d.end_date);
-    let durationNights = 0;
-    if (startEndPair?.start_date && startEndPair?.end_date) {
-      const start = new Date(startEndPair.start_date);
-      const end = new Date(startEndPair.end_date);
-      const diffMs = end.getTime() - start.getTime();
-      durationNights = Math.max(1, Math.round(diffMs / (1000 * 60 * 60 * 24)));
-    } else if (row.duration_days && row.duration_days > 0) {
-      durationNights = Math.max(1, row.duration_days - 1);
-    } else {
-      durationNights = 3 + (row.id % 5);
-    }
+    const durationNights = resolveTourDurationNights(row, departures);
 
     const cmsMeta = parseTourCmsMeta((row as { overview?: string | null }).overview);
+    const groupPaxSlabTour = isGroupPaxSlabPricing(cmsMeta);
     const marketBands = resolveMarketPriceBands(row, cmsMeta, market, fx);
     const bandPrices = childPricesFromDb(row);
     const discountPercent = inferDiscountPercent(
@@ -2848,11 +2862,22 @@ function buildToursListingResult(
       marketBands.triple,
       row.triple_sharing_price
     );
-    const startingSingle = departureBands?.single ?? marketBands.single ?? row.single_sharing_price ?? null;
-    const startingQuad = departureBands?.quad ?? marketBands.quad ?? row.quad_sharing_price ?? null;
-    const startingInfant = departureBands?.infant ?? marketBands.infant ?? bandPrices.infant_price ?? null;
-    const startingChild = departureBands?.child ?? marketBands.child ?? bandPrices.child_price ?? null;
-    const startingYouth = departureBands?.youth ?? marketBands.youth ?? bandPrices.youth_price ?? null;
+    const startingSingle = groupPaxSlabTour
+      ? null
+      : departureBands?.single ?? marketBands.single ?? row.single_sharing_price ?? null;
+    const startingQuad = groupPaxSlabTour
+      ? null
+      : departureBands?.quad ?? marketBands.quad ?? row.quad_sharing_price ?? null;
+    const startingInfant = groupPaxSlabTour
+      ? null
+      : departureBands?.infant ?? marketBands.infant ?? bandPrices.infant_price ?? null;
+    const startingChild = groupPaxSlabTour
+      ? null
+      : departureBands?.child ?? marketBands.child ?? bandPrices.child_price ?? null;
+    const startingYouth = groupPaxSlabTour
+      ? null
+      : departureBands?.youth ?? marketBands.youth ?? bandPrices.youth_price ?? null;
+    const startingSharingNote = groupPaxSlabTour ? groupPaxFrom?.sharingLabel ?? null : null;
     const destination = row.destination_ref?.name || row.destination || 'Unknown';
     const primarySlug = row.destination_ref?.slug || toSlug(destination);
     const linkedDestinationIds = readTourDestinationIds({
@@ -2903,6 +2928,8 @@ function buildToursListingResult(
       starting_from_infant: startingInfant,
       starting_from_child: startingChild,
       starting_from_youth: startingYouth,
+      starting_from_sharing_note: startingSharingNote,
+      pricing_model: groupPaxSlabTour ? ('group_pax_slab' as const) : ('room_sharing' as const),
       departure_cities: departureCities,
       upcoming_departures,
       tour_includes: Array.isArray(row.tour_includes) ? row.tour_includes : [],
@@ -3070,21 +3097,11 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
   const prices = departures
     .map((d) => Number(d.price))
     .filter((price) => Number.isFinite(price) && price > 0);
-  const startEndPair = departures.find((d) => d.start_date && d.end_date);
-  let durationNights = 0;
-  if (startEndPair?.start_date && startEndPair?.end_date) {
-    const start = new Date(startEndPair.start_date);
-    const end = new Date(startEndPair.end_date);
-    const diffMs = end.getTime() - start.getTime();
-    durationNights = Math.max(1, Math.round(diffMs / (1000 * 60 * 60 * 24)));
-  } else if (row.duration_days && row.duration_days > 0) {
-    durationNights = Math.max(1, row.duration_days - 1);
-  } else {
-    durationNights = 8;
-  }
+  const durationNights = resolveTourDurationNights(row, departures, 4);
 
   const derivedTwin = prices.length ? Math.min(...prices) : null;
   const cmsMeta = parseTourCmsMeta(row.overview);
+  const groupPaxSlabTour = isGroupPaxSlabPricing(cmsMeta);
   if (!crmMetaHasCrmItinerary(cmsMeta) && !tourVisibleForMarket(cmsMeta.market_audience, market, cmsMeta.storefronts)) {
     return null;
   }
@@ -3198,11 +3215,21 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
       marketBands.triple,
       row.triple_sharing_price
     ),
-    starting_from_single: departureBands?.single ?? marketBands.single ?? row.single_sharing_price ?? null,
-    starting_from_quad: departureBands?.quad ?? marketBands.quad ?? row.quad_sharing_price ?? null,
-    starting_from_infant: departureBands?.infant ?? marketBands.infant ?? detailBand.infant_price ?? null,
-    starting_from_child: departureBands?.child ?? marketBands.child ?? detailBand.child_price ?? null,
-    starting_from_youth: departureBands?.youth ?? marketBands.youth ?? detailBand.youth_price ?? null,
+    starting_from_single: groupPaxSlabTour
+      ? null
+      : departureBands?.single ?? marketBands.single ?? row.single_sharing_price ?? null,
+    starting_from_quad: groupPaxSlabTour
+      ? null
+      : departureBands?.quad ?? marketBands.quad ?? row.quad_sharing_price ?? null,
+    starting_from_infant: groupPaxSlabTour
+      ? null
+      : departureBands?.infant ?? marketBands.infant ?? detailBand.infant_price ?? null,
+    starting_from_child: groupPaxSlabTour
+      ? null
+      : departureBands?.child ?? marketBands.child ?? detailBand.child_price ?? null,
+    starting_from_youth: groupPaxSlabTour
+      ? null
+      : departureBands?.youth ?? marketBands.youth ?? detailBand.youth_price ?? null,
     starting_from_twin_inr: row.twin_sharing_price ?? derivedTwin,
     starting_from_triple_inr: row.triple_sharing_price ?? null,
     starting_from_single_inr: row.single_sharing_price ?? null,
@@ -3813,6 +3840,22 @@ async function computeInrPackageTotalForBooking(booking: Record<string, unknown>
   }));
   const adults = pricedRooms.reduce((sum, room) => sum + Number(room.adults || 0), 0);
   const children = pricedRooms.reduce((sum, room) => sum + Number(room.children || 0), 0);
+
+  if (isGroupPaxSlabPricing(cmsMeta)) {
+    const slabs = normalizeGroupPaxSlabs(cmsMeta.group_pax_slabs);
+    const tierId =
+      String((booking as { collection_tier_id?: string | null }).collection_tier_id || '').trim() ||
+      null;
+    return computeGroupPaxBookingTotalInr({
+      adults,
+      children,
+      child_ages: pricedRooms.flatMap((r) => r.child_ages || []),
+      slabs,
+      tierId,
+      discountPercent,
+      childSheet: depSheetInr,
+    });
+  }
 
   return computeBookingTotalInr({
     sheet: depSheetInr,
