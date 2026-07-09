@@ -79,7 +79,7 @@ export async function createSquarePayment(input: {
   sourceId: string;
   idempotencyKey: string;
   amountMinor: number;
-  currency: 'AUD';
+  currency: 'AUD' | 'USD';
   referenceId?: string;
   note?: string;
 }): Promise<SquarePaymentResult> {

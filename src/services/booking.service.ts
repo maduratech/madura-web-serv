@@ -52,6 +52,7 @@ import {
   chargeAmountMinorUnits,
   chargeCurrencyForStorefront,
   resolveStorefront,
+  squareDualGatewayStorefront,
   type PaymentGateway,
   type PaymentStorefront,
 } from '../lib/payment-storefront';
@@ -4284,7 +4285,7 @@ function resolvePaymentStorefront(
 
 function listCheckoutGatewaysForStorefront(storefront: PaymentStorefront): PaymentGateway[] {
   const gateways: PaymentGateway[] = ['razorpay'];
-  if (storefront === 'au' && squareConfigured()) {
+  if (squareDualGatewayStorefront(storefront) && squareConfigured()) {
     gateways.push('square');
   }
   return gateways;
@@ -4368,8 +4369,8 @@ export async function createBookingPaymentOrder(input: CreateBookingPaymentOrder
   } = session;
 
   if (gateway === 'square') {
-    if (storefront !== 'au') {
-      throw new Error('Square checkout is only available on the Australia storefront.');
+    if (!squareDualGatewayStorefront(storefront)) {
+      throw new Error('Square checkout is not available for this storefront.');
     }
     if (!squareConfigured()) {
       throw new Error('Square payments are not configured on this server.');
@@ -4468,8 +4469,8 @@ export async function chargeSquareBookingPayment(input: ChargeSquareBookingPayme
   const purpose = input.purpose === 'balance' ? 'balance' : 'advance';
   const context = await getBookingPaymentContext(input.booking_id);
   const storefront = resolvePaymentStorefront(context, input.display_currency);
-  if (storefront !== 'au') {
-    throw new Error('Square payments are only supported for Australia (AUD) bookings.');
+  if (!squareDualGatewayStorefront(storefront)) {
+    throw new Error('Square payments are not supported for this storefront.');
   }
   const resolvedRegion = resolveTourRegionFromData(
     context.tourRegion,
@@ -4483,7 +4484,7 @@ export async function chargeSquareBookingPayment(input: ChargeSquareBookingPayme
     input.amount
   );
   const charge = chargeAmountMinorUnits(chargeAmount, storefront);
-  if (charge.currency !== 'AUD' || charge.minorUnits <= 0) {
+  if ((charge.currency !== 'AUD' && charge.currency !== 'USD') || charge.minorUnits <= 0) {
     throw new Error('Invalid payment amount for Square checkout.');
   }
   const tourMetaForPayment = await loadTourMetaForBooking(context.booking);
@@ -4504,7 +4505,7 @@ export async function chargeSquareBookingPayment(input: ChargeSquareBookingPayme
     sourceId,
     idempotencyKey,
     amountMinor: charge.minorUnits,
-    currency: 'AUD',
+    currency: charge.currency === 'USD' ? 'USD' : 'AUD',
     referenceId: `booking_${context.booking.id}`,
     note: paymentDescription,
   });
@@ -4840,8 +4841,8 @@ export async function createBookingBalancePaymentOrder(input: CreateBookingPayme
   const description = `Balance payment for ${context.booking.mts_id || context.tourTitle || context.destination || 'your tour'}`;
 
   if (gateway === 'square') {
-    if (storefront !== 'au') {
-      throw new Error('Square checkout is only available on the Australia storefront.');
+    if (!squareDualGatewayStorefront(storefront)) {
+      throw new Error('Square checkout is not available for this storefront.');
     }
     if (!squareConfigured()) {
       throw new Error('Square payments are not configured on this server.');

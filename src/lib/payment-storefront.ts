@@ -5,6 +5,15 @@ export type PaymentGateway = 'razorpay' | 'square';
 
 export type ChargeCurrency = 'INR' | 'AUD' | 'USD';
 
+/**
+ * TEMP (QA): Square + Razorpay on GB checkout. Remove `'gb'` after product sign-off.
+ */
+export const SQUARE_DUAL_GATEWAY_STOREFRONTS: readonly PaymentStorefront[] = ['au', 'gb'];
+
+export function squareDualGatewayStorefront(storefront: PaymentStorefront): boolean {
+  return SQUARE_DUAL_GATEWAY_STOREFRONTS.includes(storefront);
+}
+
 export function resolveStorefront(displayCurrency: string | null | undefined): PaymentStorefront {
   const cur = String(displayCurrency || '').toUpperCase().trim();
   if (!cur || cur === 'INR') return 'in';
