@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import {
+  chargeSquareBookingPayment,
   createBooking,
   createBookingBalancePaymentOrder,
   createBookingPaymentOrder,
@@ -8,6 +9,7 @@ import {
   createWebsiteLead,
   getBookingActivity,
   getBookingPaymentSummary,
+  getCheckoutPaymentGateways,
   handleRazorpayWebhook,
   updateBookingPaymentStatus,
   verifyBookingPayment
@@ -24,6 +26,16 @@ import { validateBody } from '../../validation/validate-body.middleware';
 import { enquiryBodySchema, websiteLeadBodySchema } from '../../validation/schemas';
 
 const bookingsRouter = Router();
+
+bookingsRouter.get('/checkout/payment-gateways', async (req, res, next) => {
+  try {
+    const currency = String(req.query.currency || req.query.display_currency || 'AUD').trim();
+    const result = await getCheckoutPaymentGateways(currency);
+    return res.json({ message: 'Payment gateways loaded.', data: result });
+  } catch (error) {
+    return next(error);
+  }
+});
 
 bookingsRouter.post('/bookings', attachAuthIfPresent, bookingCreateRateLimit, async (req, res, next) => {
   try {
@@ -52,6 +64,7 @@ bookingsRouter.post(
       booking_id: bookingId,
       amount: req.body?.amount != null ? Number(req.body.amount) : undefined,
       display_currency: req.body?.display_currency ?? undefined,
+      gateway: req.body?.gateway === 'square' ? 'square' : 'razorpay',
     });
     return res.status(201).json({
       message: 'Payment order created successfully.',
@@ -107,6 +120,7 @@ bookingsRouter.post(
     const result = await createBookingBalancePaymentOrder({
       booking_id: bookingId,
       display_currency: req.body?.display_currency ?? undefined,
+      gateway: req.body?.gateway === 'square' ? 'square' : undefined,
     });
     return res.status(201).json({
       message: 'Balance payment order created successfully.',
@@ -134,6 +148,30 @@ bookingsRouter.post(
     });
     return res.status(200).json({
       message: 'Payment verified successfully.',
+      data: result,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+bookingsRouter.post(
+  '/bookings/:bookingId/square-payment',
+  requireAuth,
+  paymentRateLimit,
+  requireBookingAccess,
+  async (req, res, next) => {
+  try {
+    const bookingId = Number(req.params.bookingId || req.body.booking_id || 0);
+    const result = await chargeSquareBookingPayment({
+      booking_id: bookingId,
+      source_id: String(req.body.source_id || ''),
+      display_currency: req.body?.display_currency ?? undefined,
+      amount: req.body?.amount != null ? Number(req.body.amount) : undefined,
+      purpose: req.body.purpose === 'balance' ? 'balance' : undefined,
+    });
+    return res.status(200).json({
+      message: 'Square payment completed successfully.',
       data: result,
     });
   } catch (error) {
