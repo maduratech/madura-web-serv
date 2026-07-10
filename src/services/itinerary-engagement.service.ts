@@ -96,6 +96,8 @@ export async function approveItineraryEngagement(input: {
   itineraryId: number;
   userId: string;
   crmCustomerId?: number | null;
+  email?: string | null;
+  phone?: string | null;
 }) {
   return crmPost('/api/integration/itinerary-engagement/approve', input);
 }
@@ -104,7 +106,25 @@ export async function requestItineraryChanges(input: {
   itineraryId: number;
   userId: string;
   crmCustomerId?: number | null;
+  email?: string | null;
+  phone?: string | null;
   text: string;
 }) {
   return crmPost('/api/integration/itinerary-engagement/request-changes', input);
+}
+
+export type ItineraryViewerAccess = {
+  allowed: boolean;
+  role?: 'primary' | 'traveler';
+  customer_id?: number;
+  reason?: string;
+};
+
+export async function fetchItineraryViewerAccess(input: {
+  itineraryId: number;
+  crmCustomerId?: number | null;
+  email?: string | null;
+  phone?: string | null;
+}): Promise<ItineraryViewerAccess> {
+  return crmPost('/api/integration/itinerary-engagement/viewer-access', input) as Promise<ItineraryViewerAccess>;
 }

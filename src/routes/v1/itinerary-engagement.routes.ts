@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   approveItineraryEngagement,
   fetchEngagementGateStatus,
+  fetchItineraryViewerAccess,
   recordItineraryHeartbeat,
   recordItineraryView,
   requestItineraryChanges,
@@ -176,6 +177,24 @@ itineraryEngagementRouter.post('/itinerary-engagement/heartbeat', async (req, re
   }
 });
 
+itineraryEngagementRouter.get('/itinerary-engagement/:itineraryId/viewer-access', requireAuth, async (req, res, next) => {
+  try {
+    const itineraryId = Number(req.params.itineraryId);
+    if (!itineraryId) {
+      return res.status(400).json({ message: 'Invalid itinerary id.' });
+    }
+    const result = await fetchItineraryViewerAccess({
+      itineraryId,
+      crmCustomerId: req.auth!.crmCustomerId,
+      email: req.auth!.email,
+      phone: req.auth!.phone,
+    });
+    return res.json(result);
+  } catch (err) {
+    return next(err);
+  }
+});
+
 itineraryEngagementRouter.post('/itinerary-engagement/approve', requireAuth, async (req, res, next) => {
   try {
     const itineraryId = Number(req.body?.itineraryId);
@@ -186,6 +205,8 @@ itineraryEngagementRouter.post('/itinerary-engagement/approve', requireAuth, asy
       itineraryId,
       userId: req.auth!.userId,
       crmCustomerId: req.auth!.crmCustomerId,
+      email: req.auth!.email,
+      phone: req.auth!.phone,
     });
     return res.json(result);
   } catch (err) {
@@ -207,6 +228,8 @@ itineraryEngagementRouter.post('/itinerary-engagement/request-changes', requireA
       itineraryId,
       userId: req.auth!.userId,
       crmCustomerId: req.auth!.crmCustomerId,
+      email: req.auth!.email,
+      phone: req.auth!.phone,
       text,
     });
     return res.json(result);
