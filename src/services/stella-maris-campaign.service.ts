@@ -9,29 +9,57 @@ function crmBaseUrl(): string {
   return base;
 }
 
+function crmIntegrationSecret(): string {
+  const secret = String(env.CRM_WEB_INTEGRATION_SECRET || '').trim();
+  if (!secret) {
+    throw new HttpError(
+      503,
+      'CRM web integration not configured (set CRM_WEB_INTEGRATION_SECRET).'
+    );
+  }
+  return secret;
+}
+
 export type StellaMarisProxyResult = {
   status: number;
   data: Record<string, unknown>;
 };
 
-/**
- * Forward Stella Maris campaign calls to CRM (server-to-server — no browser CORS).
- * Preserves CRM status codes and JSON body (e.g. already_spun 409).
- */
+/** Public CRM campaign routes (OTP guest flow). */
 export async function proxyStellaMarisCampaign(
   crmPath: string,
   body: Record<string, unknown>
 ): Promise<StellaMarisProxyResult> {
+  return crmPost(crmPath, body, false);
+}
+
+/** Trusted server call (logged-in website user) — uses x-integration-secret. */
+export async function proxyStellaMarisCampaignTrusted(
+  crmPath: string,
+  body: Record<string, unknown>
+): Promise<StellaMarisProxyResult> {
+  return crmPost(crmPath, body, true);
+}
+
+async function crmPost(
+  crmPath: string,
+  body: Record<string, unknown>,
+  trusted: boolean
+): Promise<StellaMarisProxyResult> {
   const url = `${crmBaseUrl()}${crmPath.startsWith('/') ? crmPath : `/${crmPath}`}`;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+  if (trusted) {
+    headers['x-integration-secret'] = crmIntegrationSecret();
+  }
 
   let response: Response;
   try {
     response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
+      headers,
       body: JSON.stringify(body || {}),
     });
   } catch (err) {
