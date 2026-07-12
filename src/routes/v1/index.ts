@@ -12,6 +12,7 @@ import { siteRouter } from './site.routes';
 import { itineraryEngagementRouter } from './itinerary-engagement.routes';
 import { authRouter } from './auth.routes';
 import { formsRouter } from './forms.routes';
+import { campaignsRouter } from './campaigns.routes';
 
 const v1Router = Router();
 v1Router.use(pricingRouter);
@@ -22,6 +23,7 @@ v1Router.use(visasRouter);
 v1Router.use(bookingsRouter);
 v1Router.use(authRouter);
 v1Router.use(formsRouter);
+v1Router.use(campaignsRouter);
 v1Router.use(accountRouter);
 v1Router.use('/cms', cmsRouter);
 v1Router.use('/integration', integrationRouter);
