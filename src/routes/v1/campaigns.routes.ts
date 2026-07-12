@@ -61,6 +61,16 @@ campaignsRouter.post('/campaigns/stella-maris/check', requireAuth, async (req, r
         full_name: req.auth?.fullName || null,
       });
     }
+    if (result.status === 409) {
+      return res.status(409).json({
+        ...result.data,
+        phone,
+        full_name:
+          (typeof result.data?.full_name === 'string' && result.data.full_name) ||
+          req.auth?.fullName ||
+          null,
+      });
+    }
     return res.status(result.status).json(result.data);
   } catch (err) {
     return next(err);
