@@ -235,7 +235,7 @@ cmsRouter.post('/tours/ai-parse-supplier', async (req, res, next) => {
     });
     res.json(result);
   } catch (err) {
-    clientError(res, err);
+    next(err);
   }
 });
 

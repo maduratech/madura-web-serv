@@ -50,6 +50,13 @@ const SAFE_CLIENT_PATTERNS = [
   /^tour not found/i,
   /^invalid departure selected/i,
   /^online booking is available when your travel date/i,
+  /^AI request timed out/i,
+  /^AI parse failed/i,
+  /^Please paste more content/i,
+  /^pastedText is required/i,
+  /^Could not extract a tour/i,
+  /^Content is too long/i,
+  /^Please paste more detail/i,
 ];
 
 function isSafeClientMessage(message: string): boolean {
