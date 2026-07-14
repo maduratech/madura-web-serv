@@ -38,6 +38,24 @@ export function tourVisibleOnStorefront(
   return selected.includes(marketCountryToStorefront(marketCountry));
 }
 
+/** Legacy blogs with no storefronts column are treated as visible on every market. */
+export function normalizeBlogStorefronts(value: unknown): TourStorefrontId[] {
+  const fromArray = Array.isArray(value)
+    ? value
+        .map((v) => String(v || '').trim().toLowerCase())
+        .filter((v): v is TourStorefrontId => v === 'india' || v === 'australia' || v === 'global')
+    : [];
+  if (fromArray.length) return ORDER.filter((id) => fromArray.includes(id));
+  return [...ORDER];
+}
+
+export function blogVisibleOnStorefront(
+  storefronts: TourStorefrontId[] | undefined | null,
+  marketCountry: string
+): boolean {
+  return normalizeBlogStorefronts(storefronts).includes(marketCountryToStorefront(marketCountry));
+}
+
 export function tourVisibleForMarketFromAudience(
   audience: TourMarketAudience | undefined | null,
   marketCountry: string

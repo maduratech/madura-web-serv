@@ -7,6 +7,11 @@ import { getToursListingByIds } from '../../services/booking.service';
 
 export const blogsRouter = Router();
 
+function parseMarket(raw: unknown): string {
+  const value = String(raw || 'in').trim().toLowerCase();
+  return value.split('-')[0] || 'in';
+}
+
 function mapPublicBlogListItem(row: Awaited<ReturnType<typeof listBlogPosts>>[number]) {
   return {
     id: row.id,
@@ -17,12 +22,14 @@ function mapPublicBlogListItem(row: Awaited<ReturnType<typeof listBlogPosts>>[nu
     hero_image_url: row.hero_image_url,
     published_at: row.published_at,
     excerpt: excerptFromHtml(row.body_html),
+    storefronts: row.storefronts,
   };
 }
 
-blogsRouter.get('/blogs', async (_req, res, next) => {
+blogsRouter.get('/blogs', async (req, res, next) => {
   try {
-    const items = await listBlogPosts({ publishedOnly: true, contentType: 'blog' });
+    const market = parseMarket(req.query.market);
+    const items = await listBlogPosts({ publishedOnly: true, contentType: 'blog', market });
     res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=120');
     res.json({
       items: items.map((row) => mapPublicBlogListItem(row)),
@@ -32,9 +39,10 @@ blogsRouter.get('/blogs', async (_req, res, next) => {
   }
 });
 
-blogsRouter.get('/guides', async (_req, res, next) => {
+blogsRouter.get('/guides', async (req, res, next) => {
   try {
-    const items = await listBlogPosts({ publishedOnly: true, contentType: 'guide' });
+    const market = parseMarket(req.query.market);
+    const items = await listBlogPosts({ publishedOnly: true, contentType: 'guide', market });
     res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=120');
     res.json({
       items: items.map((row) => mapPublicBlogListItem(row)),
@@ -46,13 +54,12 @@ blogsRouter.get('/guides', async (_req, res, next) => {
 
 blogsRouter.get('/blogs/:slug', async (req, res, next) => {
   try {
-    const row = await getPublishedBlogPostBySlug(String(req.params.slug || ''), 'blog');
+    const market = parseMarket(req.query.market);
+    const row = await getPublishedBlogPostBySlug(String(req.params.slug || ''), 'blog', market);
     if (!row) {
       res.status(404).json({ message: 'Blog post not found.' });
       return;
     }
-    const rawMarket = String(req.query.market || 'in').trim().toLowerCase();
-    const market = rawMarket.split('-')[0] || 'in';
     const related_tours = await getToursListingByIds(row.related_tour_ids, market);
     res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=120');
     res.json({ ...row, related_tours });
@@ -63,13 +70,12 @@ blogsRouter.get('/blogs/:slug', async (req, res, next) => {
 
 blogsRouter.get('/guide/:slug', async (req, res, next) => {
   try {
-    const row = await getPublishedBlogPostBySlug(String(req.params.slug || ''), 'guide');
+    const market = parseMarket(req.query.market);
+    const row = await getPublishedBlogPostBySlug(String(req.params.slug || ''), 'guide', market);
     if (!row) {
       res.status(404).json({ message: 'Guide not found.' });
       return;
     }
-    const rawMarket = String(req.query.market || 'in').trim().toLowerCase();
-    const market = rawMarket.split('-')[0] || 'in';
     const related_tours = await getToursListingByIds(row.related_tour_ids, market);
     res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=120');
     res.json({ ...row, related_tours });

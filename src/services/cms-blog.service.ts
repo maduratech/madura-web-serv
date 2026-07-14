@@ -5,6 +5,11 @@ import {
   normalizeBlogContentType,
   type BlogContentType,
 } from '../lib/blog-cms-meta';
+import {
+  blogVisibleOnStorefront,
+  normalizeBlogStorefronts,
+  type TourStorefrontId,
+} from '../lib/tour-storefront';
 
 export type CmsBlogPost = {
   id: number;
@@ -17,6 +22,7 @@ export type CmsBlogPost = {
   is_published: boolean;
   published_at: string | null;
   related_tour_ids: number[];
+  storefronts: TourStorefrontId[];
   created_at: string | null;
   updated_at: string | null;
 };
@@ -32,6 +38,7 @@ type BlogRow = {
   is_published?: boolean | null;
   published_at?: string | null;
   related_tour_ids?: number[] | null;
+  storefronts?: string[] | null;
   created_at?: string | null;
   updated_at?: string | null;
 };
@@ -79,12 +86,16 @@ function mapBlogRow(row: BlogRow): CmsBlogPost {
     is_published: row.is_published === true,
     published_at: row.published_at ?? null,
     related_tour_ids: normalizeRelatedTourIds(row.related_tour_ids),
+    storefronts: normalizeBlogStorefronts(row.storefronts),
     created_at: row.created_at ?? null,
     updated_at: row.updated_at ?? null,
   };
 }
 
 const SELECT_COLS =
+  'id,title,slug,content_type,author_name,hero_image_url,body_html,is_published,published_at,related_tour_ids,storefronts,created_at,updated_at';
+
+const SELECT_COLS_NO_STOREFRONTS =
   'id,title,slug,content_type,author_name,hero_image_url,body_html,is_published,published_at,related_tour_ids,created_at,updated_at';
 
 const SELECT_COLS_LEGACY =
@@ -103,6 +114,11 @@ function isMissingContentTypeColumn(message: string): boolean {
   return m.includes('content_type') && (m.includes('does not exist') || m.includes('could not find'));
 }
 
+function isMissingStorefrontsColumn(message: string): boolean {
+  const m = String(message || '').toLowerCase();
+  return m.includes('storefronts') && (m.includes('does not exist') || m.includes('could not find'));
+}
+
 async function selectBlogPosts(opts?: {
   publishedOnly?: boolean;
   contentType?: BlogContentType;
@@ -119,6 +135,9 @@ async function selectBlogPosts(opts?: {
   };
 
   let result = await run(SELECT_COLS);
+  if (result.error && isMissingStorefrontsColumn(result.error.message)) {
+    result = await run(SELECT_COLS_NO_STOREFRONTS);
+  }
   if (result.error && isMissingContentTypeColumn(result.error.message)) {
     result = await run(SELECT_COLS_LEGACY);
   }
@@ -140,6 +159,13 @@ async function selectBlogPosts(opts?: {
 
 async function selectBlogPostById(id: number): Promise<BlogRow | null> {
   let result = await supabase.from('cms_blog_posts').select(SELECT_COLS).eq('id', id).maybeSingle();
+  if (result.error && isMissingStorefrontsColumn(result.error.message)) {
+    result = await supabase
+      .from('cms_blog_posts')
+      .select(SELECT_COLS_NO_STOREFRONTS)
+      .eq('id', id)
+      .maybeSingle();
+  }
   if (result.error && isMissingContentTypeColumn(result.error.message)) {
     result = await supabase.from('cms_blog_posts').select(SELECT_COLS_LEGACY).eq('id', id).maybeSingle();
   }
@@ -170,6 +196,9 @@ async function selectBlogPostBySlug(
   };
 
   let result = await run(SELECT_COLS);
+  if (result.error && isMissingStorefrontsColumn(result.error.message)) {
+    result = await run(SELECT_COLS_NO_STOREFRONTS);
+  }
   if (result.error && isMissingContentTypeColumn(result.error.message)) {
     result = await run(SELECT_COLS_LEGACY);
   }
@@ -190,9 +219,14 @@ async function selectBlogPostBySlug(
 export async function listBlogPosts(opts?: {
   publishedOnly?: boolean;
   contentType?: BlogContentType;
+  market?: string;
 }): Promise<CmsBlogPost[]> {
   const rows = await selectBlogPosts(opts);
-  return rows.map((row) => mapBlogRow(row));
+  let posts = rows.map((row) => mapBlogRow(row));
+  if (opts?.market) {
+    posts = posts.filter((post) => blogVisibleOnStorefront(post.storefronts, opts.market!));
+  }
+  return posts;
 }
 
 export async function getBlogPost(id: number): Promise<CmsBlogPost | null> {
@@ -213,9 +247,11 @@ export async function getBlogPostBySlug(
 export async function getPublishedBlogPostBySlug(
   slug: string,
   contentType: BlogContentType = 'blog',
+  market?: string,
 ): Promise<CmsBlogPost | null> {
   const row = await getBlogPostBySlug(slug, contentType);
   if (!row || !row.is_published) return null;
+  if (market && !blogVisibleOnStorefront(row.storefronts, market)) return null;
   return row;
 }
 
@@ -257,6 +293,9 @@ function blogInputToDb(input: Partial<CmsBlogPost>): Record<string, unknown> {
   if (input.related_tour_ids !== undefined) {
     row.related_tour_ids = normalizeRelatedTourIds(input.related_tour_ids);
   }
+  if (input.storefronts !== undefined) {
+    row.storefronts = normalizeBlogStorefronts(input.storefronts);
+  }
   if (input.is_published !== undefined) {
     row.is_published = isPublished;
     if (isPublished) {
@@ -275,6 +314,7 @@ export async function createBlogPost(input: Partial<CmsBlogPost>): Promise<CmsBl
   const slug = await ensureUniqueSlug(input.slug || title, contentType);
   const now = new Date().toISOString();
   const isPublished = input.is_published === true;
+  const storefronts = normalizeBlogStorefronts(input.storefronts);
   const payload = {
     title,
     slug,
@@ -283,6 +323,7 @@ export async function createBlogPost(input: Partial<CmsBlogPost>): Promise<CmsBl
     hero_image_url: input.hero_image_url?.trim() || null,
     body_html: sanitizeCmsHtml(input.body_html),
     related_tour_ids: normalizeRelatedTourIds(input.related_tour_ids),
+    storefronts,
     is_published: isPublished,
     published_at: isPublished ? now : null,
     created_at: now,
@@ -293,16 +334,42 @@ export async function createBlogPost(input: Partial<CmsBlogPost>): Promise<CmsBl
     .insert(payload)
     .select(SELECT_COLS)
     .single();
-  if (error && (isMissingContentTypeColumn(error.message) || isMissingRelatedTourIdsColumn(error.message))) {
-    const { content_type: _contentType, related_tour_ids: _tours, ...legacyPayload } = payload;
-    const cols = isMissingContentTypeColumn(error.message) ? SELECT_COLS_LEGACY_NO_TOURS : SELECT_COLS_LEGACY;
-    const legacy = await supabase.from('cms_blog_posts').insert(legacyPayload).select(cols).single();
+  if (
+    error &&
+    (isMissingContentTypeColumn(error.message) ||
+      isMissingRelatedTourIdsColumn(error.message) ||
+      isMissingStorefrontsColumn(error.message))
+  ) {
+    const {
+      content_type: _contentType,
+      related_tour_ids: _tours,
+      storefronts: _storefronts,
+      ...legacyPayload
+    } = payload;
+    let cols = SELECT_COLS_LEGACY;
+    if (isMissingContentTypeColumn(error.message)) cols = SELECT_COLS_LEGACY_NO_TOURS;
+    else if (isMissingRelatedTourIdsColumn(error.message)) cols = SELECT_COLS_LEGACY_NO_TOURS;
+    else if (isMissingStorefrontsColumn(error.message)) cols = SELECT_COLS_NO_STOREFRONTS;
+    const insertPayload =
+      cols === SELECT_COLS_NO_STOREFRONTS
+        ? (() => {
+            const { storefronts: _sf, ...rest } = payload;
+            return rest;
+          })()
+        : legacyPayload;
+    const legacy = await supabase.from('cms_blog_posts').insert(insertPayload).select(cols).single();
     if (legacy.error) throw new Error(legacy.error.message);
-    return mapBlogRow({ ...(legacy.data as unknown as BlogRow), content_type: contentType });
+    return mapBlogRow({
+      ...(legacy.data as unknown as BlogRow),
+      content_type: contentType,
+      storefronts,
+    });
   }
   if (error) {
     if (isMissingBlogTable(error.message)) {
-      throw new Error('Blog table is missing. Run sql/cms_blog_posts.sql on Supabase.');
+      throw new Error(
+        'Blog table is missing. Run sql/cms_blog_posts.sql on Supabase. For storefronts, also run sql/cms_blog_posts_storefronts.sql.',
+      );
     }
     throw new Error(error.message);
   }
@@ -335,17 +402,36 @@ export async function updateBlogPost(id: number, input: Partial<CmsBlogPost>): P
     .eq('id', id)
     .select(SELECT_COLS)
     .single();
-  if (error && (isMissingContentTypeColumn(error.message) || isMissingRelatedTourIdsColumn(error.message))) {
-    const { content_type: _contentType, related_tour_ids: _tours, ...legacyPatch } = patch;
-    const cols =
-      patch.related_tour_ids !== undefined && isMissingRelatedTourIdsColumn(error.message)
-        ? SELECT_COLS_LEGACY_NO_TOURS
-        : SELECT_COLS_LEGACY;
-    const legacy = await supabase.from('cms_blog_posts').update(legacyPatch).eq('id', id).select(cols).single();
+  if (
+    error &&
+    (isMissingContentTypeColumn(error.message) ||
+      isMissingRelatedTourIdsColumn(error.message) ||
+      isMissingStorefrontsColumn(error.message))
+  ) {
+    const {
+      content_type: _contentType,
+      related_tour_ids: _tours,
+      storefronts: _storefronts,
+      ...legacyPatch
+    } = patch;
+    let cols = SELECT_COLS_LEGACY;
+    let updatePatch: Record<string, unknown> = legacyPatch;
+    if (isMissingStorefrontsColumn(error.message)) {
+      cols = SELECT_COLS_NO_STOREFRONTS;
+      const { storefronts: _sf, ...rest } = patch;
+      updatePatch = rest;
+    } else if (isMissingContentTypeColumn(error.message) || isMissingRelatedTourIdsColumn(error.message)) {
+      cols =
+        patch.related_tour_ids !== undefined && isMissingRelatedTourIdsColumn(error.message)
+          ? SELECT_COLS_LEGACY_NO_TOURS
+          : SELECT_COLS_LEGACY;
+    }
+    const legacy = await supabase.from('cms_blog_posts').update(updatePatch).eq('id', id).select(cols).single();
     if (legacy.error) throw new Error(legacy.error.message);
     return mapBlogRow({
       ...(legacy.data as unknown as BlogRow),
       content_type: normalizeBlogContentType(input.content_type ?? existing.content_type),
+      storefronts: input.storefronts !== undefined ? normalizeBlogStorefronts(input.storefronts) : existing.storefronts,
     });
   }
   if (error) throw new Error(error.message);
@@ -369,6 +455,7 @@ export async function duplicateBlogPost(id: number): Promise<CmsBlogPost> {
     hero_image_url: src.hero_image_url ?? undefined,
     body_html: src.body_html ?? undefined,
     related_tour_ids: src.related_tour_ids,
+    storefronts: src.storefronts,
     is_published: false,
   });
 }
