@@ -1424,9 +1424,11 @@ async function selectTourByIdQuick(id: number): Promise<TourRaw | null> {
     const { data, error } = await supabase.from('tours').select(base).eq('id', id).maybeSingle();
     if (!error && data) return data as unknown as TourRaw;
     lastErr = String(error?.message || '');
+    // maybeSingle → data:null, error:null when the row is gone
+    if (!error && !data) return null;
     if (!isSchemaColumnMismatch(lastErr)) break;
   }
-  if (lastErr.includes('0 rows') || lastErr.includes('JSON object requested')) return null;
+  if (!lastErr || lastErr.includes('0 rows') || lastErr.includes('JSON object requested')) return null;
   return null;
 }
 
@@ -1438,12 +1440,15 @@ async function selectTourById(id: number): Promise<TourRaw | null> {
       const { data, error } = await supabase.from('tours').select(sel).eq('id', id).maybeSingle();
       if (!error && data) return data as unknown as TourRaw;
       lastErr = String(error?.message || '');
+      // maybeSingle → data:null, error:null when the row is gone (deleted / missing)
+      if (!error && !data) return null;
       if (!isSchemaColumnMismatch(lastErr) && !/relationship/i.test(lastErr)) break;
     }
   }
   const quick = await selectTourByIdQuick(id);
   if (quick) return quick;
-  if (lastErr.includes('0 rows') || lastErr.includes('JSON object requested')) return null;
+  // Prefer 404 over 500 when the tour simply does not exist.
+  if (!lastErr || lastErr.includes('0 rows') || lastErr.includes('JSON object requested')) return null;
   requestSupabaseRecoveryOnCatalogStale(`cms tour ${id} fetch failed`);
   throw new Error(`Failed to fetch tour: ${lastErr}`);
 }

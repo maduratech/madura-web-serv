@@ -35,7 +35,6 @@ import {
 } from '../lib/tour-pricing';
 import {
   computeGroupPaxBookingTotalInr,
-  defaultCollectionTierId,
   effectiveCollectionTiers,
   groupPaxMinAdults,
   groupPaxStartingFrom,
@@ -2601,11 +2600,7 @@ function resolveTourListingStartingTwin(
     cmsMeta.discount_percent
   );
   if (isGroupPaxSlabPricing(cmsMeta)) {
-    const groupFrom = groupPaxStartingFrom(
-      cmsMeta,
-      defaultCollectionTierId(cmsMeta),
-      discountPercent
-    );
+    const groupFrom = groupPaxStartingFrom(cmsMeta, null, discountPercent);
     if (groupFrom.perPersonInr > 0) {
       return (
         convertCostingAmountToDisplay(
@@ -2799,7 +2794,7 @@ function mapTourRowToListingPricingSlice(
   );
   const departureBands = resolveDepartureShelfBandsMin(departures, discountPercent);
   const groupPaxFrom = isGroupPaxSlabPricing(cmsMeta)
-    ? groupPaxStartingFrom(cmsMeta, defaultCollectionTierId(cmsMeta), discountPercent)
+    ? groupPaxStartingFrom(cmsMeta, null, discountPercent)
     : null;
   const groupPaxDisplay =
     groupPaxFrom && groupPaxFrom.perPersonInr > 0
@@ -3146,7 +3141,7 @@ export async function getTourById(tourId: number, marketCountry = 'in'): Promise
     : null;
   const departureBands = resolveDepartureShelfBandsMin(departures, discountPercent);
   const groupPaxFrom = isGroupPaxSlabPricing(cmsMeta)
-    ? groupPaxStartingFrom(cmsMeta, defaultCollectionTierId(cmsMeta), discountPercent)
+    ? groupPaxStartingFrom(cmsMeta, null, discountPercent)
     : null;
   const groupPaxDisplay =
     groupPaxFrom && groupPaxFrom.perPersonInr > 0

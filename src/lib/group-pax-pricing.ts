@@ -241,7 +241,10 @@ export function collectionTierLabel(
   return tiers.find((t) => t.id === id)?.title ?? null;
 }
 
-/** Lowest per-person shelf rate for group-size slab tours (default collection tier). */
+/** Lowest per-person shelf rate for group-size slab tours.
+ * Pass a tierId to scope to that collection; omit/null = absolute lowest across all collections
+ * (default collection is for checkout “Recommended” only — not shelf “Starting from”).
+ */
 export function groupPaxStartingFrom(
   meta: GroupPaxPricingMeta,
   tierId?: string | null,
@@ -252,25 +255,30 @@ export function groupPaxStartingFrom(
     return { perPersonInr: 0, sharingLabel: null };
   }
 
-  const tiers = effectiveCollectionTiers(meta);
-  const effectiveTier = resolveCollectionTierId(
-    tierId,
-    0,
-    slabs,
-    tiers,
-    defaultCollectionTierId(meta)
-  );
+  const requestedTier = String(tierId || '').trim();
 
   let bestRate = 0;
   let bestLabel: string | null = null;
   for (const slab of slabs) {
-    const tier = effectiveTier || String(tierId || '').trim();
-    let rate = 0;
-    if (tier && slab.tier_rates_inr?.[tier] != null) {
-      rate = Number(slab.tier_rates_inr[tier]) || 0;
-    } else if (slab.per_person_inr != null) {
-      rate = Number(slab.per_person_inr) || 0;
+    const candidates: number[] = [];
+    if (requestedTier) {
+      if (slab.tier_rates_inr?.[requestedTier] != null) {
+        candidates.push(Number(slab.tier_rates_inr[requestedTier]) || 0);
+      } else if (slab.per_person_inr != null) {
+        candidates.push(Number(slab.per_person_inr) || 0);
+      }
+    } else {
+      if (slab.per_person_inr != null && slab.per_person_inr > 0) {
+        candidates.push(slab.per_person_inr);
+      }
+      if (slab.tier_rates_inr) {
+        for (const v of Object.values(slab.tier_rates_inr)) {
+          const n = Number(v);
+          if (Number.isFinite(n) && n > 0) candidates.push(n);
+        }
+      }
     }
+    const rate = candidates.length ? Math.min(...candidates.filter((n) => n > 0)) : 0;
     const display = applyDiscountPercent(rate, discountPercent);
     if (display > 0 && (bestRate === 0 || display < bestRate)) {
       bestRate = display;
@@ -283,15 +291,32 @@ export function groupPaxStartingFrom(
   }
 
   if (bestRate <= 0) {
-    const fallback = lowestGroupPaxDisplayInr(slabs, effectiveTier);
+    const fallback = requestedTier
+      ? lowestGroupPaxDisplayInr(slabs, requestedTier)
+      : lowestGroupPaxDisplayAcrossTiers(slabs);
     return {
       perPersonInr: applyDiscountPercent(fallback, discountPercent),
       sharingLabel: null,
     };
   }
 
+  const sharingLabel = bestLabel
+    ? (() => {
+        const unlockHint = 'Unlock to get your personalised price in seconds.';
+        let trimmed = bestLabel
+          .replace(/\s*group\s+pax\s+rate\s*$/i, '')
+          .replace(/\s*group\s+rate\s*$/i, '')
+          .replace(/\bpax\b/gi, '')
+          .trim();
+        if (!trimmed) {
+          return `The starting price is based on group size. ${unlockHint}`;
+        }
+        return `The starting price is based on a group of ${trimmed} passengers. ${unlockHint}`;
+      })()
+    : null;
+
   return {
     perPersonInr: bestRate,
-    sharingLabel: bestLabel ? `${bestLabel} group rate` : 'Group rate',
+    sharingLabel,
   };
 }
