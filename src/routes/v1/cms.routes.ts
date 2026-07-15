@@ -182,7 +182,7 @@ cmsRouter.delete('/destinations/:id', requireSuperAdmin, async (req, res, next) 
       return;
     }
     await deleteDestination(id);
-    res.status(204).send();
+    res.json({ ok: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to delete destination.';
     if (message.includes('not found')) {
@@ -290,7 +290,7 @@ cmsRouter.delete('/tours/:id', requireSuperAdmin, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     await deleteTour(id);
-    res.status(204).send();
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }
@@ -480,7 +480,7 @@ cmsRouter.delete('/staff/:id', requireSuperAdmin, async (req, res, next) => {
       return;
     }
     await removeCmsStaff(id);
-    res.status(204).send();
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }
@@ -516,7 +516,7 @@ cmsRouter.delete('/tour-taxonomy/:id', async (req, res, next) => {
       return;
     }
     await deleteTourTaxonomy(id);
-    res.status(204).send();
+    res.json({ ok: true });
   } catch (err) {
     clientError(res, err);
   }
@@ -584,7 +584,7 @@ cmsRouter.delete('/sidebar-badges/:id', async (req, res, next) => {
       return;
     }
     await deleteSidebarBadge(id);
-    res.status(204).send();
+    res.json({ ok: true });
   } catch (err) {
     clientError(res, err);
   }
@@ -651,7 +651,7 @@ cmsRouter.delete('/header-marquee/:id', async (req, res, next) => {
       return;
     }
     await deleteHeaderMarquee(id);
-    res.status(204).send();
+    res.json({ ok: true });
   } catch (err) {
     clientError(res, err);
   }
@@ -722,7 +722,7 @@ cmsRouter.delete('/blogs/:id', requireSuperAdmin, async (req, res, next) => {
       return;
     }
     await deleteBlogPost(id);
-    res.status(204).send();
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }
@@ -793,7 +793,7 @@ cmsRouter.delete('/visas/:id', requireSuperAdmin, async (req, res, next) => {
       return;
     }
     await deleteVisaPage(id);
-    res.status(204).send();
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }
