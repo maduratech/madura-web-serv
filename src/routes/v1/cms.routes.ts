@@ -68,7 +68,7 @@ function clientError(res: import('express').Response, err: unknown) {
   const message = err instanceof Error ? err.message : 'Request failed.';
   res.status(400).json({ message, error: message });
 }
-import { listCmsOrders } from '../../services/cms-orders.service';
+import { listCmsOrders, deleteCmsOrder } from '../../services/cms-orders.service';
 import { searchStockImages, searchStockVideos, uploadCmsMedia } from '../../services/cms-media.service';
 import { listTourDepartures, replaceTourDepartures } from '../../services/cms-departures.service';
 import { parseTourSupplierContentForCms } from '../../services/cms-ai.service';
@@ -212,6 +212,20 @@ cmsRouter.get('/tours', async (_req, res, next) => {
 cmsRouter.get('/orders', requireSuperAdmin, async (_req, res, next) => {
   try {
     res.json(await listCmsOrders());
+  } catch (err) {
+    next(err);
+  }
+});
+
+cmsRouter.delete('/orders/:id', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      res.status(400).json({ message: 'Invalid order id.' });
+      return;
+    }
+    await deleteCmsOrder(id);
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }

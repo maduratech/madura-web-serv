@@ -179,3 +179,27 @@ export async function listCmsOrders(): Promise<{
 
   return { orders, destination_stats };
 }
+
+export async function deleteCmsOrder(id: number): Promise<void> {
+  const bookingId = Math.floor(Number(id));
+  if (!Number.isFinite(bookingId) || bookingId <= 0) {
+    throw new Error('Invalid order id.');
+  }
+
+  // Clear dependent rows first (FK-safe). Ignore schema-missing tables.
+  const childDeletes: Array<{ table: string; col?: string }> = [
+    { table: 'travellers' },
+    { table: 'booking_transactions' },
+  ];
+  for (const { table } of childDeletes) {
+    const { error } = await supabase.from(table).delete().eq('booking_id', bookingId);
+    if (error && !/relation .* does not exist|schema cache|column .* does not exist/i.test(String(error.message || ''))) {
+      throw new Error(`Could not remove ${table} for order #${bookingId}: ${error.message}`);
+    }
+  }
+
+  const { error } = await supabase.from('bookings').delete().eq('id', bookingId);
+  if (error) {
+    throw new Error(error.message || `Failed to delete order #${bookingId}.`);
+  }
+}

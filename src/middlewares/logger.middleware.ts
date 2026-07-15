@@ -3,9 +3,14 @@ import { type NextFunction, type Request, type Response } from 'express';
 /** 404s that are normal app flow (frontend fallback, bots) — skip PM2 error-log noise. */
 function isExpectedNotFound(req: Request, status: number): boolean {
   if (status !== 404) return false;
-  const path = (req.path || req.originalUrl || '').split('?')[0];
-  if (req.method === 'GET' && path === '/') return true;
-  if (req.method === 'GET' && path.startsWith('/api/v1/tour-taxonomy-slug/')) return true;
+  const path = String(req.path || '').split('?')[0];
+  const url = String(req.originalUrl || '').split('?')[0];
+  const candidate = `${path} ${url}`;
+
+  if (req.method === 'GET' && (path === '/' || url === '/')) return true;
+  if (req.method === 'GET' && /\/favicon\.ico$/i.test(candidate)) return true;
+  // Destination package pages always probe taxonomy first; most destinations have no CMS taxonomy row.
+  if (req.method === 'GET' && candidate.includes('/tour-taxonomy-slug/')) return true;
   return false;
 }
 
