@@ -186,12 +186,17 @@ export async function deleteCmsOrder(id: number): Promise<void> {
     throw new Error('Invalid order id.');
   }
 
+  const existing = await supabase.from('bookings').select('id').eq('id', bookingId).maybeSingle();
+  if (existing.error) {
+    throw new Error(existing.error.message || `Failed to look up order #${bookingId}.`);
+  }
+  if (!existing.data) {
+    throw new Error(`Order #${bookingId} was not found.`);
+  }
+
   // Clear dependent rows first (FK-safe). Ignore schema-missing tables.
-  const childDeletes: Array<{ table: string; col?: string }> = [
-    { table: 'travellers' },
-    { table: 'booking_transactions' },
-  ];
-  for (const { table } of childDeletes) {
+  const childDeletes = ['travellers', 'booking_transactions'] as const;
+  for (const table of childDeletes) {
     const { error } = await supabase.from(table).delete().eq('booking_id', bookingId);
     if (error && !/relation .* does not exist|schema cache|column .* does not exist/i.test(String(error.message || ''))) {
       throw new Error(`Could not remove ${table} for order #${bookingId}: ${error.message}`);
