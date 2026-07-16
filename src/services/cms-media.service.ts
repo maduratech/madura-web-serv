@@ -55,11 +55,19 @@ export async function uploadCmsMedia(input: {
     upsert: false,
   });
   if (error) {
-    throw new Error(
-      error.message.includes('Bucket not found')
-        ? `Storage bucket "${bucket}" not found. Create a public bucket named "${bucket}" in Supabase.`
-        : error.message
-    );
+    const msg = error.message || 'Upload failed.';
+    if (msg.includes('Bucket not found')) {
+      throw new Error(
+        `Storage bucket "${bucket}" not found. Create a public bucket named "${bucket}" in Supabase.`
+      );
+    }
+    if (/mime type .+ is not supported/i.test(msg)) {
+      throw new Error(
+        `This file type (${mime}) is not allowed by the "${bucket}" storage bucket. ` +
+          'Ask an admin to add it under Supabase → Storage → cms-media → Allowed MIME types.'
+      );
+    }
+    throw new Error(msg);
   }
 
   const { data } = supabase.storage.from(bucket).getPublicUrl(path);
