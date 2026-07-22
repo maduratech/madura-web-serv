@@ -155,7 +155,12 @@ export async function searchStockImages(query: string, page = 1): Promise<{
       height: number;
       photographer: string;
       url: string;
-      src?: { medium?: string; large?: string; original?: string };
+      src?: {
+        medium?: string;
+        large?: string;
+        large2x?: string;
+        original?: string;
+      };
     }>;
     next_page?: string;
   };
@@ -163,7 +168,13 @@ export async function searchStockImages(query: string, page = 1): Promise<{
   const items: StockImageResult[] = (body.photos || []).map((photo) => ({
     id: String(photo.id),
     preview_url: photo.src?.medium || photo.src?.large || '',
-    full_url: photo.src?.large || photo.src?.original || photo.src?.medium || '',
+    // Prefer ≥720px sources for heroes/galleries (large2x ~1880, original full, large ~940).
+    full_url:
+      photo.src?.large2x ||
+      photo.src?.original ||
+      photo.src?.large ||
+      photo.src?.medium ||
+      '',
     width: photo.width,
     height: photo.height,
     photographer: photo.photographer,

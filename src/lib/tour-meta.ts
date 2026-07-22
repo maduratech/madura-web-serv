@@ -63,6 +63,20 @@ export type TourCmsMeta = {
   group_pax_tiers?: GroupPaxCollectionTier[];
   group_pax_default_tier_id?: string;
   group_pax_min_adults?: number;
+  tour_highlights?: Array<{ title: string; icon?: string; icon_url?: string }>;
+  tour_summary_itinerary?: {
+    header?: string;
+    days: Array<{
+      day: number;
+      slots: Array<{
+        period: 'morning' | 'noon_evening' | 'full_day' | 'leisure';
+        title: string;
+        description?: string;
+        image_url?: string;
+      }>;
+    }>;
+  };
+  tour_faqs?: Array<{ question: string; answer: string }>;
 };
 
 export function parseTourCmsMeta(raw: string | null | undefined): TourCmsMeta {
