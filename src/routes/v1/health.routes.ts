@@ -105,18 +105,19 @@ healthRouter.get('/health', async (req, res) => {
     crm_error = err instanceof Error ? err.message : 'crm check failed';
   }
 
-  const overall_ok = supabase_ok && crm_ok;
+  const overall_ok = supabase_ok;
+  const status = !supabase_ok ? 'unhealthy' : crm_ok ? 'healthy' : 'degraded';
 
   if (!healthSecretAuthorized(req)) {
     return res.status(overall_ok ? 200 : 503).json({
       ok: overall_ok,
-      status: overall_ok ? 'healthy' : 'degraded',
+      status,
     });
   }
 
   return res.status(overall_ok ? 200 : 503).json({
     ok: overall_ok,
-    status: overall_ok ? 'healthy' : 'degraded',
+    status,
     summary: {
       supabase_ok,
       crm_ok,

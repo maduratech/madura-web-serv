@@ -7,15 +7,45 @@ cd "$(dirname "$0")/.."
 PORT="${PORT:-4000}"
 HEALTH_URL="http://127.0.0.1:${PORT}/api/v1/health"
 HEALTH_SECRET="${HEALTH_CHECK_SECRET:-}"
+HEALTH_ATTEMPTS="${HEALTH_ATTEMPTS:-15}"
+HEALTH_SLEEP_SECS="${HEALTH_SLEEP_SECS:-2}"
+
+curl_health() {
+  if [[ -n "$HEALTH_SECRET" ]]; then
+    curl -sS -m 8 -H "x-health-secret: ${HEALTH_SECRET}" "$HEALTH_URL" || true
+  else
+    curl -sS -m 8 "$HEALTH_URL" || true
+  fi
+}
 
 health_ok() {
   local body
-  if [[ -n "$HEALTH_SECRET" ]]; then
-    body="$(curl -sf -H "x-health-secret: ${HEALTH_SECRET}" "$HEALTH_URL" || true)"
-  else
-    body="$(curl -sf "$HEALTH_URL" || true)"
-  fi
+  body="$(curl_health)"
   [[ -n "$body" ]] && echo "$body" | grep -q '"ok":true'
+}
+
+wait_for_health() {
+  local attempt=1
+  local body=""
+  echo "==> Health check (up to ${HEALTH_ATTEMPTS} tries)..."
+  while (( attempt <= HEALTH_ATTEMPTS )); do
+    body="$(curl_health)"
+    if [[ -n "$body" ]] && echo "$body" | grep -q '"ok":true'; then
+      echo "$body" | head -c 400
+      echo ""
+      return 0
+    fi
+    echo "  attempt ${attempt}/${HEALTH_ATTEMPTS}: not healthy yet${body:+ — ${body}}"
+    sleep "$HEALTH_SLEEP_SECS"
+    attempt=$((attempt + 1))
+  done
+  echo "==> Last health response:"
+  echo "${body:-"(empty — process may not be listening on :${PORT})"}"
+  echo "==> PM2 status:"
+  pm2 describe madura-web-serv || true
+  echo "==> Recent PM2 logs:"
+  pm2 logs madura-web-serv --lines 40 --nostream || true
+  return 1
 }
 
 rollback_dist() {
@@ -62,13 +92,9 @@ fi
 
 pm2 save
 
-echo "==> Health check..."
-sleep 2
-if health_ok; then
+if wait_for_health; then
   rm -rf dist.prev
   echo "Deploy healthy."
-  curl -sf "${HEALTH_URL}" | head -c 200 || true
-  echo ""
   echo "Done. Verify: pm2 describe madura-web-serv  (script should be dist/server.js)"
 else
   echo "ERROR: Health check failed after deploy." >&2
